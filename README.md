@@ -24,6 +24,30 @@ pnpm link --global
 
 Run `agemu --version` to confirm the installation.
 
+## Install the agent skill
+
+Install the skill for Codex, Claude Code, OpenCode, or another supported agent:
+
+```sh
+npx skills add zoilorys/agemu --skill agemu
+```
+
+The installer prompts for the target agents and installation scope. Start a new agent session after installation. The skill activates for repositories that contain `.agemu.json`.
+
+Codex users can instead install the native plugin:
+
+```sh
+codex plugin marketplace add zoilorys/agemu
+codex plugin add agemu@agemu
+```
+
+Claude Code users can instead install its native plugin:
+
+```sh
+claude plugin marketplace add zoilorys/agemu
+claude plugin install agemu@agemu
+```
+
 ## Configure an app
 
 Add `.agemu.json` to the root of the iOS app repository:

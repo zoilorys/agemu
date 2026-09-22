@@ -1,0 +1,16 @@
+{
+  "name": "agemu",
+  "owner": {
+    "name": "Illia Puzanov",
+    "url": "https://github.com/zoilorys"
+  },
+  "description": "Agent tooling for debugging iOS apps in Simulator.",
+  "plugins": [
+    {
+      "name": "agemu",
+      "source": "./.agents/plugins/agemu",
+      "description": "Debug configured iOS apps in Simulator with the agemu CLI",
+      "category": "development"
+    }
+  ]
+}

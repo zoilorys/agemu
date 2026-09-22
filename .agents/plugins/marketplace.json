@@ -1,0 +1,20 @@
+{
+  "name": "agemu",
+  "interface": {
+    "displayName": "Agemu"
+  },
+  "plugins": [
+    {
+      "name": "agemu",
+      "source": {
+        "source": "local",
+        "path": "./plugins/agemu"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "DeveloperTools"
+    }
+  ]
+}

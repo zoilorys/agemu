@@ -1,0 +1,25 @@
+{
+  "name": "agemu",
+  "version": "0.1.0",
+  "description": "Debug configured iOS apps in Simulator with the agemu CLI.",
+  "author": {
+    "name": "Illia Puzanov",
+    "url": "https://github.com/zoilorys"
+  },
+  "homepage": "https://github.com/zoilorys/agemu#readme",
+  "repository": "https://github.com/zoilorys/agemu",
+  "license": "MIT",
+  "keywords": ["ios", "simulator", "debugging", "xcode"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Agemu",
+    "shortDescription": "Debug iOS apps in Simulator.",
+    "longDescription": "Build, launch, inspect, and control configured iOS apps in Simulator with the agemu CLI.",
+    "developerName": "Illia Puzanov",
+    "category": "Developer Tools",
+    "capabilities": ["iOS Simulator debugging"],
+    "defaultPrompt": [
+      "Debug this iOS app in Simulator with agemu."
+    ]
+  }
+}
