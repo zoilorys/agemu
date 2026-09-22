@@ -10,6 +10,7 @@ import { buildApp } from '../commands/build.js';
 import { controlApp, type AppAction } from '../commands/app.js';
 import { diagnose, observe, showLogs } from '../commands/diagnostics.js';
 import { buildUiRunner, runUiPlan } from '../commands/ui.js';
+import { helpFor } from './help.js';
 
 const args = process.argv.slice(2);
 const packageVersion = (JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8')) as { version: string }).version;
@@ -31,7 +32,7 @@ const requiredString = (name: string): string => {
   return value;
 };
 if (args.includes('--help')) {
-  writeResult({ ok: true, data: { help: 'agemu [--pretty] [--debug] <command>' } }, pretty);
+  writeResult({ ok: true, data: { help: helpFor(command) } }, pretty);
 }
 else if (args.includes('--version')) {
   writeResult({ ok: true, data: { version: packageVersion } }, pretty);
