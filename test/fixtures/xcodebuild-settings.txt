@@ -1,0 +1,11 @@
+Build settings for action build and target Helper:
+    TARGET_BUILD_DIR = /tmp/DerivedData/Build/Products/Debug-iphonesimulator
+    WRAPPER_NAME = Helper.framework
+    EXECUTABLE_NAME = Helper
+    PRODUCT_BUNDLE_IDENTIFIER = com.example.helper
+
+Build settings for action build and target ExampleApp:
+    TARGET_BUILD_DIR = /tmp/DerivedData/Build/Products/Debug-iphonesimulator
+    WRAPPER_NAME = Example App.app
+    EXECUTABLE_NAME = ActualExecutable
+    PRODUCT_BUNDLE_IDENTIFIER = com.example.app

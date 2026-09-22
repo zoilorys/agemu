@@ -1,0 +1,7 @@
+.tasks/
+node_modules/
+dist/
+.pnpm-store/
+.agemu/
+.ios-debug/
+*.tgz

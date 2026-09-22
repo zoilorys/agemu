@@ -1,0 +1,31 @@
+{
+  "name": "agemu",
+  "version": "0.1.0",
+  "description": "Build, run, inspect, and control iOS apps in Simulator from a JSON-first CLI.",
+  "license": "MIT",
+  "author": "Illia Puzanov",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zoilorys/agemu.git"
+  },
+  "homepage": "https://github.com/zoilorys/agemu#readme",
+  "bugs": "https://github.com/zoilorys/agemu/issues",
+  "keywords": ["ios", "simulator", "xcode", "cli", "testing"],
+  "engines": { "node": ">=24" },
+  "packageManager": "pnpm@11.24.0",
+  "files": ["dist", "runner", "README.md", "LICENSE"],
+  "type": "module",
+  "bin": { "agemu": "dist/cli/main.js" },
+  "scripts": {
+    "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
+    "build": "pnpm clean && tsc -p tsconfig.json",
+    "test": "tsc -p tsconfig.json && vitest run",
+    "test:integration:native": "pnpm build && AGEMU_NATIVE=1 vitest run test/integration/native-workflow.test.ts",
+    "prepack": "pnpm build"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0",
+    "vitest": "^3.2.0"
+  }
+}
