@@ -5,6 +5,7 @@ const common = `Global options:
   --debug      Include error details in failed JSON responses.`;
 
 const commands: Record<string, string> = {
+  setup: `agemu setup\n  Find an Xcode project or workspace, scheme, bundle ID, and simulator.\n  Prompt when there are multiple choices, then write .agemu.json.`,
   config: `agemu config show
   Show the resolved .agemu.json configuration, excluding internal paths and redaction values.`,
   simulator: `agemu simulator list
@@ -56,9 +57,10 @@ export function helpFor(command?: string): string {
   if (command && commands[command]) return `${commands[command]}\n\n${common}`;
   return `agemu [--pretty] [--debug] <command> [options]
 Build, run, inspect, and control an iOS app in Simulator. Responses are JSON.
-Run from a directory containing .agemu.json (except for --help and --version).
+Run from a directory containing .agemu.json (except for setup, --help, and --version).
 
 Commands:
+  setup                Create .agemu.json for this project.
   config show          Show the resolved app configuration.
   simulator list       List available simulators.
   simulator boot       Boot the selected simulator.

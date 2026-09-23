@@ -50,7 +50,9 @@ claude plugin install agemu@agemu
 
 ## Configure an app
 
-Add `.agemu.json` to the root of the iOS app repository:
+Run `agemu setup` from the root of the iOS app repository. It finds the Xcode project or workspace, schemes, bundle IDs, and available simulators, and asks you to choose when needed. It writes `.agemu.json` without replacing an existing file.
+
+You can also add `.agemu.json` manually:
 
 ```json
 {
