@@ -25,7 +25,7 @@ describe('agemu CLI', () => {
       stderr: '',
     });
     await expect(run(process.execPath, [cli, '--version'])).resolves.toMatchObject({
-      stdout: '{"ok":true,"data":{"version":"0.1.0"}}\n',
+      stdout: '{"ok":true,"data":{"version":"0.1.1"}}\n',
       stderr: '',
     });
   });
