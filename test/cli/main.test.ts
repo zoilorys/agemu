@@ -20,14 +20,21 @@ describe('agemu CLI', () => {
   });
 
   it('returns JSON for help and version metadata', async () => {
-    await expect(run(process.execPath, [cli, '--help'])).resolves.toMatchObject({
-      stdout: '{"ok":true,"data":{"help":"agemu [--pretty] [--debug] <command>"}}\n',
-      stderr: '',
-    });
+    const { stdout, stderr } = await run(process.execPath, [cli, '--help']);
+    expect(stderr).toBe('');
+    expect(JSON.parse(stdout).data.help).toContain('ui run               Execute a JSON UI action plan.');
+    expect(JSON.parse(stdout).data.help).toContain('app open-url         Open a URL in Simulator.');
     await expect(run(process.execPath, [cli, '--version'])).resolves.toMatchObject({
-      stdout: '{"ok":true,"data":{"version":"0.1.0"}}\n',
+      stdout: '{"ok":true,"data":{"version":"0.1.1"}}\n',
       stderr: '',
     });
+  });
+
+  it('explains command options without requiring app configuration', async () => {
+    const { stdout } = await run(process.execPath, [cli, 'logs', '--help']);
+    const help = JSON.parse(stdout).data.help as string;
+    expect(help).toContain('--last accepts a number followed by s, m, h, or d');
+    expect(help).toContain('--level accepts default, info, debug, error, or fault');
   });
 
   it('requires a plan file for UI runs', async () => {
