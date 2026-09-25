@@ -1,5 +1,4 @@
-import { access, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { access, mkdir, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
@@ -37,7 +36,8 @@ test.skipIf(!enabled)('proves the public native workflow', async (context) => {
   const udid = process.env.AGEMU_NATIVE_SIMULATOR_UDID;
   if (!udid) context.skip('set AGEMU_NATIVE_SIMULATOR_UDID to one available iOS Simulator UDID');
 
-  const root = await mkdtemp(path.join(tmpdir(), 'agemu-native-'));
+  const root = path.join(repository, '.agemu', 'native-workflow', udid);
+  await mkdir(root, { recursive: true });
   const runId = randomUUID();
   let launched = false;
   let bootedByTest = false;
@@ -114,7 +114,6 @@ test.skipIf(!enabled)('proves the public native workflow', async (context) => {
       if (!shutdown.ok) console.error(`simulator cleanup failed; retained ${root}: ${shutdown.error.message}`);
       else bootedByTest = false;
     }
-    if (!retainEvidence && !launched && !bootedByTest) await rm(root, { recursive: true, force: true });
-    else console.error(`native evidence retained at ${evidence}`);
+    if (retainEvidence || launched || bootedByTest) console.error(`native evidence retained at ${evidence}`);
   }
 }, 180_000);

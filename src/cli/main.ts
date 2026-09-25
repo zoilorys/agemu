@@ -79,7 +79,7 @@ else if (args.includes('--version')) {
       : undefined;
     const config = await loadConfig();
     if (args.includes('build-runner')) data = await buildUiRunner(config, {}, true);
-    else if (source) data = await runUiPlan(config, source);
+    else if (source) data = await runUiPlan(config, source, { backend: option('backend') as 'auto' | 'idb' | 'xctest' | undefined });
     else throw new CliError('COMMAND_INVALID', 'ui requires build-runner or run with --plan or --plan-json');
   } else if (command === 'build') {
     const config = await loadConfig();

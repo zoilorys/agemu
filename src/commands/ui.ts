@@ -5,14 +5,16 @@ import type { LoadedConfig } from '../config/config.js';
 import { CliError } from '../core/errors.js';
 import { redact } from '../core/redact.js';
 import { listDevices, resolveDevice } from '../native/simctl.js';
-import { runProcess, type ProcessResult } from '../process/run-process.js';
+import { runProcess, type ProcessResult, type RunOptions } from '../process/run-process.js';
+import { tryRunIdbPlan } from './idb-ui.js';
 
 export type UiPlan = { version: 1; actions: unknown[] };
 type Dependencies = {
-  run?: (executable: string, args: string[]) => Promise<ProcessResult>;
+  run?: (executable: string, args: string[], options?: RunOptions) => Promise<ProcessResult>;
   resolveUdid?: (config: LoadedConfig) => Promise<string>;
   runnerProject?: string;
   now?: () => Date;
+  backend?: 'auto' | 'idb' | 'xctest';
 };
 
 const bundledRunner = fileURLToPath(new URL('../../runner/AgentRunner.xcodeproj', import.meta.url));
@@ -85,10 +87,20 @@ export async function runUiPlan(config: LoadedConfig, source: { file: string } |
   try { value = JSON.parse('file' in source ? await readFile(source.file, 'utf8') : source.json) as unknown; }
   catch (error) { throw new CliError('UI_VALIDATION_FAILED', `Cannot read UI plan: ${error instanceof Error ? error.message : String(error)}`); }
   const plan = validatePlan(value);
-  const built = await buildUiRunner(config, dependencies);
+  const backend = dependencies.backend ?? 'auto';
+  if (!['auto', 'idb', 'xctest'].includes(backend)) throw new CliError('UI_VALIDATION_FAILED', 'UI backend must be auto, idb, or xctest');
+  const runStarted = Date.now();
   const now = dependencies.now?.() ?? new Date();
   const directory = path.join(config.root, '.agemu', 'runs', now.toISOString().replaceAll(':', '-'));
   await mkdir(directory, { recursive: true });
+  const udid = await (dependencies.resolveUdid?.(config)
+    ?? (config.simulator.udid || listDevices().then(devices => resolveDevice(devices, config.simulator).udid)));
+  if (backend !== 'xctest') {
+    const fast = await tryRunIdbPlan(config, plan, udid, directory, run);
+    if (fast) return { ...fast, durationMs: Date.now() - runStarted };
+    if (backend === 'idb') throw new CliError('UI_DELIVERY_FAILED', 'idb is unavailable or the UI plan is incompatible with idb');
+  }
+  const built = await buildUiRunner(config, { ...dependencies, resolveUdid: async () => udid });
   const json = await checked(run, 'plutil', ['-convert', 'json', '-o', '-', built.manifest], 'Unable to read the XCTest run manifest');
   const manifestValue = JSON.parse(json.stdout) as unknown;
   const encodedPlan = Buffer.from(JSON.stringify({ ...plan, bundleId: config.bundleId }), 'utf8').toString('base64');
@@ -114,6 +126,7 @@ export async function runUiPlan(config: LoadedConfig, source: { file: string } |
   const runnerResult = marker ? JSON.parse(Buffer.from(marker.slice(marker.indexOf('AGEMU_RESULT:') + 13), 'base64').toString('utf8')) : undefined;
   return {
     run: path.relative(config.root, directory), udid: built.udid, bundleId: redact(config.bundleId, config.redactions ?? []),
+    backend: 'xctest', runnerCached: built.cached, durationMs: Date.now() - runStarted,
     actions: plan.actions.length, runnerResult, resultBundle: path.relative(config.root, resultBundle), transcript: path.relative(config.root, transcript),
   };
 }

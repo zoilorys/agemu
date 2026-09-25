@@ -119,15 +119,17 @@ Run the plan:
 agemu ui run --plan=ui-plan.json
 ```
 
+`ui run` uses `idb` when an installed companion supports the plan. Otherwise it uses the bundled XCTest runner. [Install idb](https://fbidb.io/docs/idb/installation/) to enable this path. Use `--backend=xctest` when you need an `.xcresult` bundle, or `--backend=idb` to require `idb`. An `idb` run returns `backend`, `transcript`, and `screenshots` paths. An XCTest run returns `backend`, `runnerCached`, `resultBundle`, and `transcript`.
+
 For a short plan, pass JSON directly:
 
 ```sh
 agemu ui run --plan-json='{"version":1,"actions":[{"screenshot":{"name":"current"}}]}'
 ```
 
-Targets accept an accessibility `identifier` or an exact `label`. The `tap` action also accepts `x` and `y` screen coordinates. The `inspect` action returns the XCTest accessibility hierarchy in `runnerResult.trees`.
+Targets accept an accessibility `identifier` or an exact `label`. The `tap` action also accepts `x` and `y` screen coordinates. The `inspect` action returns accessibility data in `runnerResult.trees`: XCTest debug text or `idb` JSON.
 
-The bundled XCTest runner needs no macOS Accessibility or Screen Recording permission. Each run saves an `.xcresult` bundle and `xcodebuild.log` under `.agemu/runs/`.
+The bundled XCTest runner needs no macOS Accessibility or Screen Recording permission. XCTest runs save an `.xcresult` bundle and `xcodebuild.log` under `.agemu/runs/`. `idb` runs save `idb.log` and any requested screenshots there.
 
 ## Develop
 
@@ -141,6 +143,8 @@ The native integration test needs an available Simulator:
 ```sh
 AGEMU_NATIVE_SIMULATOR_UDID=<udid> pnpm test:integration:native
 ```
+
+The native test keeps its Xcode DerivedData under `.agemu/native-workflow/<udid>/` so later runs use an incremental build.
 
 ## Contribute
 
