@@ -1,4 +1,4 @@
-import { mkdir, readFile, readdir, unlink, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, stat, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { LoadedConfig } from '../config/config.js';
@@ -9,6 +9,9 @@ import { runProcess, type ProcessResult, type RunOptions } from '../process/run-
 import { tryRunIdbPlan } from './idb-ui.js';
 
 export type UiPlan = { version: 1; actions: unknown[] };
+export type Point = { x: number; y: number };
+export type Swipe = { direction: 'up' | 'down' | 'left' | 'right'; identifier?: string; label?: string } | { from: Point; to: Point };
+export type LongPress = { identifier?: string; label?: string; x?: number; y?: number; duration?: number };
 type Dependencies = {
   run?: (executable: string, args: string[], options?: RunOptions) => Promise<ProcessResult>;
   resolveUdid?: (config: LoadedConfig) => Promise<string>;
@@ -24,6 +27,30 @@ function validatePlan(value: unknown): UiPlan {
   const plan = value as Record<string, unknown>;
   if (plan.version !== 1 || !Array.isArray(plan.actions) || plan.actions.length === 0) {
     throw new CliError('UI_VALIDATION_FAILED', 'The UI plan requires version 1 and at least one action');
+  }
+  const object = (item: unknown): item is Record<string, unknown> => typeof item === 'object' && item !== null && !Array.isArray(item);
+  const point = (item: unknown): item is Point => object(item) && Number.isFinite(item.x) && Number.isFinite(item.y);
+  for (const [index, raw] of plan.actions.entries()) {
+    if (!object(raw)) continue;
+    if ('swipe' in raw) {
+      const swipe = raw.swipe;
+      const directional = object(swipe) && ['up', 'down', 'left', 'right'].includes(String(swipe.direction))
+        && swipe.from === undefined && swipe.to === undefined
+        && (swipe.identifier === undefined || typeof swipe.identifier === 'string')
+        && (swipe.label === undefined || typeof swipe.label === 'string');
+      const coordinates = object(swipe) && swipe.direction === undefined && swipe.identifier === undefined && swipe.label === undefined
+        && point(swipe.from) && point(swipe.to)
+        && (swipe.from.x !== swipe.to.x || swipe.from.y !== swipe.to.y);
+      if (!directional && !coordinates) throw new CliError('UI_VALIDATION_FAILED', `Action ${index}: swipe needs a direction or distinct from/to coordinates`);
+    }
+    if ('longPress' in raw) {
+      const press = raw.longPress;
+      const target = object(press) && (typeof press.identifier === 'string' || typeof press.label === 'string');
+      const coordinates = object(press) && Number.isFinite(press.x) && Number.isFinite(press.y);
+      if (!object(press) || (!target && !coordinates) || (press.duration !== undefined && (!Number.isFinite(press.duration) || Number(press.duration) <= 0))) {
+        throw new CliError('UI_VALIDATION_FAILED', `Action ${index}: longPress needs a target or coordinates and a positive duration`);
+      }
+    }
   }
   return value as UiPlan;
 }
@@ -69,6 +96,12 @@ export async function buildUiRunner(config: LoadedConfig, dependencies: Dependen
   const derivedData = path.join(config.root, '.agemu', 'RunnerDerivedData');
   const project = dependencies.runnerProject ?? bundledRunner;
   let manifest = rebuild ? undefined : await findXctestrun(derivedData).catch(() => undefined);
+  if (manifest) {
+    const builtAt = (await stat(manifest)).mtimeMs;
+    const sources = [path.join(project, 'project.pbxproj'), path.join(path.dirname(project), 'AgentRunner', 'AgentRunner.swift')];
+    const changed = await Promise.all(sources.map(source => stat(source).then(info => info.mtimeMs > builtAt).catch(() => false)));
+    if (changed.some(Boolean)) manifest = undefined;
+  }
   const cached = Boolean(manifest);
   if (!manifest) {
     await checked(run, 'xcodebuild', [

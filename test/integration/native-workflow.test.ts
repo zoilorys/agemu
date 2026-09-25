@@ -95,6 +95,21 @@ test.skipIf(!enabled)('proves the public native workflow', async (context) => {
     expect(logs?.logs).toEqual(expect.arrayContaining([expect.stringContaining(`agemu-native-run:${runId}`)]));
     await access(path.join(root, String(logs?.artifact)));
 
+    const gestures = data(await run(root, ['ui', 'run', '--backend=xctest', '--plan-json=' + JSON.stringify({
+      version: 1, actions: [
+        { swipe: { identifier: 'resultsList', direction: 'up' } },
+        { assertValue: { identifier: 'gestureStatus', value: 'scrolled' } },
+        { longPress: { identifier: 'pressTarget', duration: 1 } },
+        { assertValue: { identifier: 'gestureStatus', value: 'pressed' } },
+        { launch: {} },
+        { swipe: { from: { x: 120, y: 650 }, to: { x: 120, y: 250 } } },
+        { assertValue: { identifier: 'gestureStatus', value: 'scrolled' } },
+        { longPress: { x: 120, y: 125, duration: 1 } },
+        { assertValue: { identifier: 'gestureStatus', value: 'pressed' } },
+      ],
+    })]), 'ui run gestures');
+    expect(gestures).toMatchObject({ backend: 'xctest', runnerResult: { completed: 9 } });
+
     data(await run(root, ['app', 'terminate']), 'app terminate');
     launched = false;
     if (bootedByTest) {
@@ -116,4 +131,4 @@ test.skipIf(!enabled)('proves the public native workflow', async (context) => {
     }
     if (retainEvidence || launched || bootedByTest) console.error(`native evidence retained at ${evidence}`);
   }
-}, 180_000);
+}, 240_000);

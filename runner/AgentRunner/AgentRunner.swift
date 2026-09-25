@@ -5,6 +5,8 @@ final class AgentRunner: XCTestCase {
     private struct Action: Decodable {
         let launch: Launch?
         let tap: Target?
+        let swipe: Swipe?
+        let longPress: LongPress?
         let type: TypeAction?
         let wait: WaitAction?
         let assertVisible: Target?
@@ -14,6 +16,9 @@ final class AgentRunner: XCTestCase {
     }
     private struct Launch: Decodable { let arguments: [String]?; let environment: [String: String]? }
     private struct Target: Decodable { let identifier: String?; let label: String?; let x: Double?; let y: Double? }
+    private struct Point: Decodable { let x: Double; let y: Double }
+    private struct Swipe: Decodable { let direction: String?; let identifier: String?; let label: String?; let from: Point?; let to: Point? }
+    private struct LongPress: Decodable { let identifier: String?; let label: String?; let x: Double?; let y: Double?; let duration: Double? }
     private struct TypeAction: Decodable { let identifier: String?; let label: String?; let text: String }
     private struct WaitAction: Decodable { let identifier: String?; let label: String?; let timeout: Double? }
     private struct ValueAssertion: Decodable { let identifier: String?; let label: String?; let value: String }
@@ -36,6 +41,10 @@ final class AgentRunner: XCTestCase {
                 app.launch()
             } else if let target = action.tap {
                 try tap(target, in: app)
+            } else if let swipe = action.swipe {
+                try swipeGesture(swipe, in: app)
+            } else if let press = action.longPress {
+                try longPressGesture(press, in: app)
             } else if let type = action.type {
                 let element = try element(Target(identifier: type.identifier, label: type.label, x: nil, y: nil), in: app)
                 element.tap()
@@ -74,9 +83,42 @@ final class AgentRunner: XCTestCase {
     @MainActor
     private func tap(_ target: Target, in app: XCUIApplication) throws {
         if let x = target.x, let y = target.y {
-            app.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: x, dy: y)).tap()
+            coordinate(x: x, y: y, in: app).tap()
         } else {
             try element(target, in: app).tap()
+        }
+    }
+
+    @MainActor
+    private func coordinate(x: Double, y: Double, in app: XCUIApplication) -> XCUICoordinate {
+        app.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: x, dy: y))
+    }
+
+    @MainActor
+    private func longPressGesture(_ press: LongPress, in app: XCUIApplication) throws {
+        let duration = press.duration ?? 1
+        if let x = press.x, let y = press.y {
+            coordinate(x: x, y: y, in: app).press(forDuration: duration)
+        } else {
+            try element(Target(identifier: press.identifier, label: press.label, x: nil, y: nil), in: app).press(forDuration: duration)
+        }
+    }
+
+    @MainActor
+    private func swipeGesture(_ swipe: Swipe, in app: XCUIApplication) throws {
+        if let from = swipe.from, let to = swipe.to {
+            coordinate(x: from.x, y: from.y, in: app).press(forDuration: 0.05,
+                thenDragTo: coordinate(x: to.x, y: to.y, in: app))
+            return
+        }
+        let target = Target(identifier: swipe.identifier, label: swipe.label, x: nil, y: nil)
+        let surface = swipe.identifier != nil || swipe.label != nil ? try element(target, in: app) : app
+        switch swipe.direction {
+        case "up": surface.swipeUp()
+        case "down": surface.swipeDown()
+        case "left": surface.swipeLeft()
+        case "right": surface.swipeRight()
+        default: throw NSError(domain: "AgentRunner", code: 2, userInfo: [NSLocalizedDescriptionKey: "Swipe requires a direction or coordinates"])
         }
     }
 }

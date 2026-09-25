@@ -39,6 +39,38 @@ describe('XCTest run manifest', () => {
 });
 
 describe('UI backend selection', () => {
+  it('scrolls a target and holds a point through idb', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-gestures-'));
+    const commands: string[][] = [];
+    let scrolled = false;
+    let menu = false;
+    const config = { version: 1 as const, project: path.join(root, 'App.xcodeproj'), scheme: 'App', configuration: 'Debug',
+      bundleId: 'com.example.app', simulator: { udid: 'PHONE' }, root };
+    try {
+      const plan = { version: 1, actions: [
+        { swipe: { identifier: 'results', direction: 'up' } },
+        { assertVisible: { label: 'Next item' } },
+        { longPress: { x: 42, y: 80, duration: 1.5 } },
+        { assertVisible: { label: 'Context menu' } },
+      ] };
+      const output = await runUiPlan(config, { json: JSON.stringify(plan) }, { run: async (executable, args) => {
+        commands.push([executable, ...args]);
+        if (executable === 'xcodebuild') throw new Error('XCTest must not start');
+        if (executable === 'idb' && args[1] === 'describe-all') return result(JSON.stringify([
+          { AXUniqueId: 'results', frame: { x: 20, y: 100, width: 200, height: 400 } },
+          ...(scrolled ? [{ AXLabel: 'Next item' }] : []),
+          ...(menu ? [{ AXLabel: 'Context menu' }] : []),
+        ]));
+        if (executable === 'idb' && args[1] === 'swipe' && args[2] === '120' && args[3] === '420' && args[5] === '180') scrolled = true;
+        if (executable === 'idb' && args[1] === 'tap' && args[2] === '42' && args[5] === '1.5') menu = true;
+        return result();
+      } });
+      expect(output).toMatchObject({ backend: 'idb', runnerResult: { completed: 4 } });
+      expect(commands).toContainEqual(['idb', 'ui', 'swipe', '120', '420', '120', '180', '--udid', 'PHONE']);
+      expect(commands).toContainEqual(['idb', 'ui', 'tap', '42', '80', '--duration', '1.5', '--udid', 'PHONE']);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
   it('uses a working idb companion and matches exact labels before tapping', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'agemu-idb-'));
     const commands: string[][] = [];

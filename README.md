@@ -106,6 +106,8 @@ Build and install the app first. Then create `ui-plan.json`:
     { "launch": { "arguments": ["--ui-testing"], "environment": { "RUN_ID": "example" } } },
     { "wait": { "identifier": "email", "timeout": 5 } },
     { "type": { "identifier": "email", "text": "agent@example.com" } },
+    { "swipe": { "direction": "up", "identifier": "resultsList" } },
+    { "longPress": { "label": "More options", "duration": 1.5 } },
     { "tap": { "identifier": "save" } },
     { "assertVisible": { "label": "Saved" } },
     { "screenshot": { "name": "saved" } }
@@ -127,7 +129,7 @@ For a short plan, pass JSON directly:
 agemu ui run --plan-json='{"version":1,"actions":[{"screenshot":{"name":"current"}}]}'
 ```
 
-Targets accept an accessibility `identifier` or an exact `label`. The `tap` action also accepts `x` and `y` screen coordinates. The `inspect` action returns accessibility data in `runnerResult.trees`: XCTest debug text or `idb` JSON.
+Targets accept an accessibility `identifier` or an exact `label`. The `tap` and `longPress` actions also accept `x` and `y` screen coordinates. `longPress` holds for `duration` seconds (default `1`). Swipe a scrollable element with `{ "swipe": { "direction": "up", "identifier": "resultsList" } }`, or swipe the whole screen by omitting the target. Directions are `up`, `down`, `left`, and `right`; they describe finger movement, so swiping up scrolls content down the page. For a precise path, use `{ "swipe": { "from": { "x": 100, "y": 500 }, "to": { "x": 100, "y": 100 } } }`. Screen swipes without a target use XCTest. The `inspect` action returns accessibility data in `runnerResult.trees`: XCTest debug text or `idb` JSON.
 
 The bundled XCTest runner needs no macOS Accessibility or Screen Recording permission. XCTest runs save an `.xcresult` bundle and `xcodebuild.log` under `.agemu/runs/`. `idb` runs save `idb.log` and any requested screenshots there.
 

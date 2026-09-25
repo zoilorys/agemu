@@ -4,12 +4,12 @@ import type { LoadedConfig } from '../config/config.js';
 import { CliError } from '../core/errors.js';
 import { redact } from '../core/redact.js';
 import type { ProcessResult, RunOptions } from '../process/run-process.js';
-import type { UiPlan } from './ui.js';
+import type { LongPress, Point, Swipe, UiPlan } from './ui.js';
 
 type Run = (executable: string, args: string[], options?: RunOptions) => Promise<ProcessResult>;
 type Target = { identifier?: string; label?: string; x?: number; y?: number };
 type Element = { AXUniqueId?: unknown; AXLabel?: unknown; AXValue?: unknown; frame?: { x?: number; y?: number; width?: number; height?: number } };
-const operations = new Set(['launch', 'wait', 'type', 'tap', 'assertVisible', 'assertValue', 'screenshot', 'inspect']);
+const operations = new Set(['launch', 'wait', 'type', 'tap', 'swipe', 'longPress', 'assertVisible', 'assertValue', 'screenshot', 'inspect']);
 
 function record(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -27,6 +27,8 @@ function compatible(plan: UiPlan): boolean {
     if (keys[0] === 'screenshot') return value.name === undefined || typeof value.name === 'string';
     if (keys[0] === 'inspect') return true;
     const targeted = typeof value.identifier === 'string' || typeof value.label === 'string';
+    if (keys[0] === 'swipe') return value.from !== undefined || targeted;
+    if (keys[0] === 'longPress') return targeted || (Number.isFinite(value.x) && Number.isFinite(value.y));
     if (keys[0] === 'tap') return targeted || (Number.isFinite(value.x) && Number.isFinite(value.y));
     if (!targeted) return false;
     if (keys[0] === 'type') return typeof value.text === 'string';
@@ -54,6 +56,25 @@ function center(element: Element): [number, number] {
     throw new Error('The matched element has no usable screen frame');
   }
   return [Math.round(frame.x! + frame.width! / 2), Math.round(frame.y! + frame.height! / 2)];
+}
+
+function swipePoints(frame: NonNullable<Element['frame']>, direction: string): [Point, Point] {
+  if (!Number.isFinite(frame.x) || !Number.isFinite(frame.y) || !Number.isFinite(frame.width) || !Number.isFinite(frame.height)) {
+    throw new Error('The matched element has no usable screen frame');
+  }
+  const x = frame.x!;
+  const y = frame.y!;
+  const width = frame.width!;
+  const height = frame.height!;
+  if (width <= 0 || height <= 0) throw new Error('The matched element has no usable screen frame');
+  const start = { x: x + width / 2, y: y + height / 2 };
+  const end = { ...start };
+  const distance = (direction === 'up' || direction === 'down' ? height : width) * 0.3;
+  if (direction === 'up') { start.y += distance; end.y -= distance; }
+  if (direction === 'down') { start.y -= distance; end.y += distance; }
+  if (direction === 'left') { start.x += distance; end.x -= distance; }
+  if (direction === 'right') { start.x -= distance; end.x += distance; }
+  return [start, end];
 }
 
 export async function tryRunIdbPlan(config: LoadedConfig, plan: UiPlan, udid: string, directory: string, run: Run) {
@@ -109,6 +130,17 @@ export async function tryRunIdbPlan(config: LoadedConfig, plan: UiPlan, udid: st
           : center(await targetElement(value as Target));
         await execute('idb', ['ui', 'tap', String(coordinates[0]), String(coordinates[1]), '--udid', udid]);
         if (kind === 'type') await execute('idb', ['ui', 'text', '--udid', udid, '--', value.text as string]);
+      } else if (kind === 'longPress') {
+        const press = value as LongPress;
+        const coordinates = Number.isFinite(press.x) && Number.isFinite(press.y)
+          ? [press.x!, press.y!] : center(await targetElement(press));
+        await execute('idb', ['ui', 'tap', String(Math.round(coordinates[0])), String(Math.round(coordinates[1])),
+          '--duration', String(press.duration ?? 1), '--udid', udid]);
+      } else if (kind === 'swipe') {
+        const swipe = value as Swipe;
+        const [from, to] = 'from' in swipe ? [swipe.from, swipe.to] : swipePoints((await targetElement(swipe)).frame ?? {}, swipe.direction);
+        await execute('idb', ['ui', 'swipe', String(Math.round(from.x)), String(Math.round(from.y)),
+          String(Math.round(to.x)), String(Math.round(to.y)), '--udid', udid]);
       } else if (kind === 'assertVisible' || kind === 'assertValue') {
         const element = await targetElement(value as Target);
         if (kind === 'assertValue' && element.AXValue !== value.value) throw new Error(`Element value does not match: ${value.identifier ?? value.label}`);

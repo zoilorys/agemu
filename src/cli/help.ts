@@ -50,7 +50,7 @@ agemu ui run (--plan=FILE | --plan-json=JSON) [--backend=auto|idb|xctest]
   Pass JSON inline for short plans, or use a file for longer plans.
   auto uses idb when its companion supports the plan, then falls back to XCTest.
   Use xctest to keep an .xcresult bundle; idb saves a transcript and screenshots.
-  Build and install the app first. Actions include launch, wait, type, tap,
+  Build and install the app first. Actions include launch, wait, type, tap, swipe, longPress,
   assertVisible, screenshot, and inspect.`,
   doctor: `agemu doctor
   Check Node.js, Xcode, configuration, simulator selection, and write access.`,
