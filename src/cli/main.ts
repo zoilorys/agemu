@@ -69,11 +69,18 @@ else if (args.includes('--version')) {
   } else if (command === 'observe') {
     data = await observe(await loadConfig());
   } else if (command === 'ui') {
-    const plan = args.includes('run') ? path.resolve(requiredString('plan')) : undefined;
+    const plan = option('plan');
+    const planJson = option('plan-json');
+    if (args.includes('run') && plan !== undefined && planJson !== undefined) {
+      throw new CliError('UI_VALIDATION_FAILED', 'Use either --plan or --plan-json');
+    }
+    const source = args.includes('run')
+      ? planJson !== undefined ? { json: requiredString('plan-json') } : { file: path.resolve(requiredString('plan')) }
+      : undefined;
     const config = await loadConfig();
     if (args.includes('build-runner')) data = await buildUiRunner(config, {}, true);
-    else if (plan) data = await runUiPlan(config, plan);
-    else throw new CliError('COMMAND_INVALID', 'ui requires build-runner or run --plan=<file>');
+    else if (source) data = await runUiPlan(config, source, { backend: option('backend') as 'auto' | 'idb' | 'xctest' | undefined });
+    else throw new CliError('COMMAND_INVALID', 'ui requires build-runner or run with --plan or --plan-json');
   } else if (command === 'build') {
     const config = await loadConfig();
     data = await buildApp(config);

@@ -32,7 +32,7 @@ Install the skill for Codex, Claude Code, OpenCode, or another supported agent:
 npx skills add zoilorys/agemu --skill agemu
 ```
 
-The installer prompts for the target agents and installation scope. Start a new agent session after installation. The skill activates for repositories that contain `.agemu.json`.
+The installer prompts for the target agents and installation scope. Start a new agent session after installation. The skill activates for iOS app repositories and guides the agent to create `.agemu.json` if needed.
 
 Codex users can instead install the native plugin:
 
@@ -106,6 +106,8 @@ Build and install the app first. Then create `ui-plan.json`:
     { "launch": { "arguments": ["--ui-testing"], "environment": { "RUN_ID": "example" } } },
     { "wait": { "identifier": "email", "timeout": 5 } },
     { "type": { "identifier": "email", "text": "agent@example.com" } },
+    { "swipe": { "direction": "up", "identifier": "resultsList" } },
+    { "longPress": { "label": "More options", "duration": 1.5 } },
     { "tap": { "identifier": "save" } },
     { "assertVisible": { "label": "Saved" } },
     { "screenshot": { "name": "saved" } }
@@ -119,9 +121,17 @@ Run the plan:
 agemu ui run --plan=ui-plan.json
 ```
 
-Targets accept an accessibility `identifier` or an exact `label`. The `tap` action also accepts `x` and `y` screen coordinates. The `inspect` action returns the XCTest accessibility hierarchy in `runnerResult.trees`.
+`ui run` uses `idb` when an installed companion supports the plan. Otherwise it uses the bundled XCTest runner. [Install idb](https://fbidb.io/docs/idb/installation/) to enable this path. Use `--backend=xctest` when you need an `.xcresult` bundle, or `--backend=idb` to require `idb`. An `idb` run returns `backend`, `transcript`, and `screenshots` paths. An XCTest run returns `backend`, `runnerCached`, `resultBundle`, and `transcript`.
 
-The bundled XCTest runner needs no macOS Accessibility or Screen Recording permission. Each run saves an `.xcresult` bundle and `xcodebuild.log` under `.agemu/runs/`.
+For a short plan, pass JSON directly:
+
+```sh
+agemu ui run --plan-json='{"version":1,"actions":[{"screenshot":{"name":"current"}}]}'
+```
+
+Targets accept an accessibility `identifier` or an exact `label`. The `tap` and `longPress` actions also accept `x` and `y` screen coordinates. `longPress` holds for `duration` seconds (default `1`). Swipe a scrollable element with `{ "swipe": { "direction": "up", "identifier": "resultsList" } }`, or swipe the whole screen by omitting the target. Directions are `up`, `down`, `left`, and `right`; they describe finger movement, so swiping up scrolls content down the page. For a precise path, use `{ "swipe": { "from": { "x": 100, "y": 500 }, "to": { "x": 100, "y": 100 } } }`. Screen swipes without a target use XCTest. The `inspect` action returns accessibility data in `runnerResult.trees`: XCTest debug text or `idb` JSON.
+
+The bundled XCTest runner needs no macOS Accessibility or Screen Recording permission. XCTest runs save an `.xcresult` bundle and `xcodebuild.log` under `.agemu/runs/`. Its build is reused until runner sources change; `runnerCached` reports whether the run used that build. `idb` runs save `idb.log` and any requested screenshots there.
 
 ## Develop
 
@@ -135,6 +145,8 @@ The native integration test needs an available Simulator:
 ```sh
 AGEMU_NATIVE_SIMULATOR_UDID=<udid> pnpm test:integration:native
 ```
+
+The native test keeps its Xcode DerivedData under `.agemu/native-workflow/<udid>/` so later runs use an incremental build.
 
 ## Contribute
 
