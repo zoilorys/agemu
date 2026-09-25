@@ -45,8 +45,9 @@ agemu app open-url --url=URL
   ui: `agemu ui build-runner
   Build the bundled XCTest runner for the selected simulator.
 
-agemu ui run --plan=FILE
+agemu ui run (--plan=FILE | --plan-json=JSON)
   Run a JSON UI action plan and save XCTest results under .agemu/runs/.
+  Pass JSON inline for short plans, or use a file for longer plans.
   Build and install the app first. Actions include launch, wait, type, tap,
   assertVisible, screenshot, and inspect.`,
   doctor: `agemu doctor

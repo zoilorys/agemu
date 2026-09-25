@@ -79,10 +79,10 @@ export async function buildUiRunner(config: LoadedConfig, dependencies: Dependen
   return { udid, derivedData, manifest, cached };
 }
 
-export async function runUiPlan(config: LoadedConfig, planFile: string, dependencies: Dependencies = {}) {
+export async function runUiPlan(config: LoadedConfig, source: { file: string } | { json: string }, dependencies: Dependencies = {}) {
   const run = dependencies.run ?? runProcess;
   let value: unknown;
-  try { value = JSON.parse(await readFile(planFile, 'utf8')) as unknown; }
+  try { value = JSON.parse('file' in source ? await readFile(source.file, 'utf8') : source.json) as unknown; }
   catch (error) { throw new CliError('UI_VALIDATION_FAILED', `Cannot read UI plan: ${error instanceof Error ? error.message : String(error)}`); }
   const plan = validatePlan(value);
   const built = await buildUiRunner(config, dependencies);

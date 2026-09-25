@@ -37,13 +37,28 @@ describe('agemu CLI', () => {
     expect(help).toContain('--level accepts default, info, debug, error, or fault');
   });
 
-  it('requires a plan file for UI runs', async () => {
+  it('requires a plan source for UI runs', async () => {
     await expect(run(process.execPath, [cli, 'ui', 'run']))
       .rejects.toMatchObject({
         code: 1,
         stdout: expect.stringContaining('"code":"UI_VALIDATION_FAILED"'),
         stderr: '',
       });
+  });
+
+  it('validates inline UI plans before starting the runner', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-cli-test-'));
+    await writeFile(path.join(root, '.agemu.json'), JSON.stringify({
+      version: 1, project: 'App.xcodeproj', scheme: 'App', configuration: 'Debug', bundleId: 'com.example.app', simulator: { udid: 'fixture' },
+    }));
+    try {
+      await expect(run(process.execPath, [cli, 'ui', 'run', '--plan-json={"version":1,"actions":[]}'], { cwd: root }))
+        .rejects.toMatchObject({ code: 1, stdout: expect.stringContaining('"code":"UI_VALIDATION_FAILED"') });
+      await expect(run(process.execPath, [cli, 'ui', 'run', '--plan=file.json', '--plan-json={}'], { cwd: root }))
+        .rejects.toMatchObject({ code: 1, stdout: expect.stringContaining('Use either --plan or --plan-json') });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it('shows normalized config without its internal root', async () => {

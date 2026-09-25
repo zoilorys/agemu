@@ -32,7 +32,7 @@ Install the skill for Codex, Claude Code, OpenCode, or another supported agent:
 npx skills add zoilorys/agemu --skill agemu
 ```
 
-The installer prompts for the target agents and installation scope. Start a new agent session after installation. The skill activates for repositories that contain `.agemu.json`.
+The installer prompts for the target agents and installation scope. Start a new agent session after installation. The skill activates for iOS app repositories and guides the agent to create `.agemu.json` if needed.
 
 Codex users can instead install the native plugin:
 
@@ -117,6 +117,12 @@ Run the plan:
 
 ```sh
 agemu ui run --plan=ui-plan.json
+```
+
+For a short plan, pass JSON directly:
+
+```sh
+agemu ui run --plan-json='{"version":1,"actions":[{"screenshot":{"name":"current"}}]}'
 ```
 
 Targets accept an accessibility `identifier` or an exact `label`. The `tap` action also accepts `x` and `y` screen coordinates. The `inspect` action returns the XCTest accessibility hierarchy in `runnerResult.trees`.
