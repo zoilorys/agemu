@@ -9,7 +9,7 @@ import type { Device } from '../../src/native/simctl.js';
 import type { ProcessResult } from '../../src/process/run-process.js';
 
 const device: Device = { udid: 'PHONE', name: 'iPhone', runtime: 'iOS-18-0', state: 'Booted', isAvailable: true };
-const config = (root: string): LoadedConfig => ({ version: 1, project: `${root}/App.xcodeproj`, scheme: 'App', configuration: 'Debug', bundleId: 'com.example.app', simulator: { udid: 'PHONE' }, redactions: ['secret-value'], root });
+const config = (root: string): LoadedConfig => ({ version: 2 as const, platform: 'ios' as const, app: { type: 'native' as const, project: `${root}/App.xcodeproj`, scheme: 'App', configuration: 'Debug', bundleId: 'com.example.app' }, simulator: { udid: 'PHONE' }, redactions: ['secret-value'], root });
 const state: AppState = { appPath: '/products/MyApp.app', bundleId: 'com.example.app', executableName: 'RealExecutable', udid: 'PHONE', configuration: 'Debug', updatedAt: '' };
 
 describe('logs show command', () => {

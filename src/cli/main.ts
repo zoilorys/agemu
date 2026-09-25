@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { errorResult, writeResult } from '../core/output.js';
 import { CliError } from '../core/errors.js';
-import { loadConfig } from '../config/config.js';
+import { loadConfig, nativeApp } from '../config/config.js';
 import { doctor } from '../doctor/doctor.js';
 import { bootDevice, listDevices, resolveDevice, shutdownDevice } from '../native/simctl.js';
 import { buildApp } from '../commands/build.js';
@@ -31,6 +31,11 @@ const requiredString = (name: string): string => {
     throw new CliError('UI_VALIDATION_FAILED', `--${name} requires a non-empty value`);
   }
   return value;
+};
+const loadNativeConfig = async () => {
+  const config = await loadConfig();
+  nativeApp(config);
+  return config;
 };
 if (args.includes('--help')) {
   writeResult({ ok: true, data: { help: helpFor(command) } }, pretty);
@@ -67,7 +72,7 @@ else if (args.includes('--version')) {
     const controlled = action === 'boot' ? await bootDevice(device) : await shutdownDevice(device);
     data = { action, device: controlled };
   } else if (command === 'observe') {
-    data = await observe(await loadConfig());
+    data = await observe(await loadNativeConfig());
   } else if (command === 'ui') {
     const plan = option('plan');
     const planJson = option('plan-json');
@@ -77,15 +82,15 @@ else if (args.includes('--version')) {
     const source = args.includes('run')
       ? planJson !== undefined ? { json: requiredString('plan-json') } : { file: path.resolve(requiredString('plan')) }
       : undefined;
-    const config = await loadConfig();
+    const config = await loadNativeConfig();
     if (args.includes('build-runner')) data = await buildUiRunner(config, {}, true);
     else if (source) data = await runUiPlan(config, source, { backend: option('backend') as 'auto' | 'idb' | 'xctest' | undefined });
     else throw new CliError('COMMAND_INVALID', 'ui requires build-runner or run with --plan or --plan-json');
   } else if (command === 'build') {
-    const config = await loadConfig();
+    const config = await loadNativeConfig();
     data = await buildApp(config);
   } else if (command === 'app') {
-    const config = await loadConfig();
+    const config = await loadNativeConfig();
     const action = (['install', 'launch', 'terminate', 'restart', 'open-url'] as AppAction[]).find((name) => args.includes(name));
     if (!action) throw new Error('app requires install, launch, terminate, or restart');
     data = await controlApp(config, action, {
@@ -94,13 +99,13 @@ else if (args.includes('--version')) {
       url: args.find((arg) => arg.startsWith('--url='))?.slice('--url='.length),
     });
   } else if (command === 'logs') {
-    const config = await loadConfig();
+    const config = await loadNativeConfig();
     if (!args.includes('show')) throw new CliError('COMMAND_INVALID', 'logs requires show');
     data = await showLogs(config, {
       last: option('last'), level: option('level'), limit: option('limit') === undefined ? undefined : Number(option('limit')),
     });
   } else if (command === 'diagnose') {
-    const config = await loadConfig();
+    const config = await loadNativeConfig();
     data = await diagnose(config, {
       last: option('last'), level: option('level'), limit: option('limit') === undefined ? undefined : Number(option('limit')),
     });

@@ -28,8 +28,8 @@ describe('XCTest run manifest', () => {
     await writeFile(manifest, 'fixture');
     try {
       const result = await buildUiRunner({
-        version: 1, project: path.join(root, 'App.xcodeproj'), scheme: 'App', configuration: 'Debug',
-        bundleId: 'com.example.app', simulator: { udid: 'PHONE' }, root,
+        version: 2 as const, platform: 'ios' as const, app: { type: 'native' as const, project: path.join(root, 'App.xcodeproj'), scheme: 'App', configuration: 'Debug',
+        bundleId: 'com.example.app' }, simulator: { udid: 'PHONE' }, root,
       }, {
         run: async () => { throw new Error('xcodebuild must not run'); },
       });
@@ -44,8 +44,8 @@ describe('UI backend selection', () => {
     const commands: string[][] = [];
     let scrolled = false;
     let menu = false;
-    const config = { version: 1 as const, project: path.join(root, 'App.xcodeproj'), scheme: 'App', configuration: 'Debug',
-      bundleId: 'com.example.app', simulator: { udid: 'PHONE' }, root };
+    const config = { version: 2 as const, platform: 'ios' as const, app: { type: 'native' as const, project: path.join(root, 'App.xcodeproj'), scheme: 'App', configuration: 'Debug',
+      bundleId: 'com.example.app' }, simulator: { udid: 'PHONE' }, root };
     try {
       const plan = { version: 1, actions: [
         { swipe: { identifier: 'results', direction: 'up' } },
@@ -76,8 +76,8 @@ describe('UI backend selection', () => {
     const commands: string[][] = [];
     let saved = false;
     let email = '';
-    const config = { version: 1 as const, project: path.join(root, 'App.xcodeproj'), scheme: 'App', configuration: 'Debug',
-      bundleId: 'com.example.app', simulator: { udid: 'PHONE' }, root };
+    const config = { version: 2 as const, platform: 'ios' as const, app: { type: 'native' as const, project: path.join(root, 'App.xcodeproj'), scheme: 'App', configuration: 'Debug',
+      bundleId: 'com.example.app' }, simulator: { udid: 'PHONE' }, root };
     try {
       const plan = { version: 1, actions: [
         { launch: {} }, { tap: { label: 'Save' } }, { type: { identifier: 'email', text: 'a@b.test' } },
@@ -111,8 +111,8 @@ describe('UI backend selection', () => {
     await mkdir(path.dirname(manifest), { recursive: true });
     await writeFile(manifest, 'fixture');
     try {
-      const config = { version: 1 as const, project: path.join(root, 'App.xcodeproj'), scheme: 'App', configuration: 'Debug',
-        bundleId: 'com.example.app', simulator: { udid: 'PHONE' }, root };
+      const config = { version: 2 as const, platform: 'ios' as const, app: { type: 'native' as const, project: path.join(root, 'App.xcodeproj'), scheme: 'App', configuration: 'Debug',
+        bundleId: 'com.example.app' }, simulator: { udid: 'PHONE' }, root };
       const output = await runUiPlan(config, { json: JSON.stringify({ version: 1, actions: [{ inspect: {} }] }) }, {
         run: async (executable, args) => {
           if (executable === 'idb') throw new Error('idb is not installed');

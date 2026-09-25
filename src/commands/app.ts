@@ -1,6 +1,6 @@
 import { access, readFile } from 'node:fs/promises';
 import path from 'node:path';
-import type { LoadedConfig } from '../config/config.js';
+import { nativeApp, type LoadedConfig } from '../config/config.js';
 import { CliError } from '../core/errors.js';
 import { redact } from '../core/redact.js';
 import { listDevices, resolveDevice, simctl, type SimctlRunner } from '../native/simctl.js';
@@ -55,7 +55,7 @@ export async function controlApp(config: LoadedConfig, action: AppAction, option
     : config.simulator.udid ?? listDevices().then((devices) => resolveDevice(devices, config.simulator).udid));
   const stateFile = path.join(config.root, '.agemu', 'state.json');
   const secrets = config.redactions ?? [];
-  const bundleId = config.bundleId;
+  const bundleId = nativeApp(config).bundleId;
   const terminate = () => checked(runner, ['terminate', udid, bundleId], secrets, true);
   const launch = () => checked(runner, [
     'launch', udid, bundleId, ...(options.arguments ?? []),
@@ -65,7 +65,7 @@ export async function controlApp(config: LoadedConfig, action: AppAction, option
     const state = dependencies.readState
       ? await dependencies.readState(stateFile)
       : await defaultState(stateFile, secrets);
-    if (state.bundleId !== bundleId || state.udid !== udid || state.configuration !== config.configuration) {
+    if (state.bundleId !== bundleId || state.udid !== udid || state.configuration !== nativeApp(config).configuration) {
       throw new CliError('APP_NOT_BUILT', 'Cached app state does not match the configured app, simulator, and configuration');
     }
     try { await (dependencies.appExists ?? access)(state.appPath); }

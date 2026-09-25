@@ -1,6 +1,6 @@
 import { mkdir, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import type { LoadedConfig } from '../config/config.js';
+import { nativeApp, type LoadedConfig } from '../config/config.js';
 import { CliError } from '../core/errors.js';
 import { redact } from '../core/redact.js';
 import { buildArguments, selectBuildProduct } from '../native/xcodebuild.js';
@@ -87,7 +87,7 @@ export async function buildApp(config: LoadedConfig, dependencies: Dependencies 
 
   let product;
   try {
-    product = selectBuildProduct(settings.stdout, config.bundleId);
+    product = selectBuildProduct(settings.stdout, nativeApp(config).bundleId);
   } catch (error) {
     throw new CliError('BUILD_FAILED', redact(error instanceof Error ? error.message : String(error), secrets), {
       log: redact(path.relative(config.root, settingsLog), secrets),
@@ -98,7 +98,7 @@ export async function buildApp(config: LoadedConfig, dependencies: Dependencies 
     bundleId: product.bundleId,
     executableName: product.executableName,
     udid,
-    configuration: config.configuration,
+    configuration: nativeApp(config).configuration,
     updatedAt: now.toISOString(),
   };
   await writeAtomic(path.join(stateDirectory, 'state.json'), state);
@@ -108,7 +108,7 @@ export async function buildApp(config: LoadedConfig, dependencies: Dependencies 
     executableName: redact(product.executableName, secrets),
     target: redact(product.target, secrets),
     udid: redact(udid, secrets),
-    configuration: redact(config.configuration, secrets),
+    configuration: redact(nativeApp(config).configuration, secrets),
     derivedData: redact(path.join(stateDirectory, 'DerivedData'), secrets),
     logs: { build: redact(path.relative(config.root, buildLog), secrets), settings: redact(path.relative(config.root, settingsLog), secrets) },
   };

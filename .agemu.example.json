@@ -1,9 +1,13 @@
 {
-  "version": 1,
-  "project": "../MyApp/MyApp.xcodeproj",
-  "scheme": "MyApp",
-  "configuration": "Debug",
-  "bundleId": "com.example.myapp",
+  "version": 2,
+  "platform": "ios",
+  "app": {
+    "type": "native",
+    "project": "../MyApp/MyApp.xcodeproj",
+    "scheme": "MyApp",
+    "configuration": "Debug",
+    "bundleId": "com.example.myapp"
+  },
   "simulator": {
     "name": "iPhone 17",
     "runtime": "iOS-26-5"

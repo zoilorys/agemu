@@ -5,7 +5,7 @@ import type { LoadedConfig } from '../../src/config/config.js';
 import type { ProcessResult, RunOptions } from '../../src/process/run-process.js';
 
 const config: LoadedConfig = {
-  version: 1, project: '/repo/App.xcodeproj', scheme: 'App', configuration: 'Debug', bundleId: 'com.example.app',
+  version: 2 as const, platform: 'ios' as const, app: { type: 'native' as const, project: '/repo/App.xcodeproj', scheme: 'App', configuration: 'Debug', bundleId: 'com.example.app' },
   simulator: { udid: 'PHONE' }, redactions: ['top-secret'], root: '/repo',
 };
 const state: AppState = { appPath: '/products/App.app', bundleId: 'com.example.app', executableName: 'AppExecutable', udid: 'PHONE', configuration: 'Debug', updatedAt: '' };

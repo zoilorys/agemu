@@ -13,7 +13,7 @@ const state: AppState = { appPath: '/products/App.app', bundleId: 'com.example.a
 describe('diagnose command', () => {
   it('keeps successful evidence when screenshot capture fails', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'agemu-diagnose-'));
-    const config: LoadedConfig = { version: 1, project: `${root}/App.xcodeproj`, scheme: 'App', configuration: 'Debug', bundleId: 'com.example.app', simulator: { udid: 'PHONE' }, redactions: ['secret-value'], root };
+    const config: LoadedConfig = { version: 2 as const, platform: 'ios' as const, app: { type: 'native' as const, project: `${root}/App.xcodeproj`, scheme: 'App', configuration: 'Debug', bundleId: 'com.example.app' }, simulator: { udid: 'PHONE' }, redactions: ['secret-value'], root };
     let invocation = 0;
     try {
       const result = await diagnose(config, { limit: 5 }, {

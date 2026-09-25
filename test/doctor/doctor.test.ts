@@ -37,7 +37,7 @@ describe('doctor', () => {
       const result = await doctor({
         root,
         run: async () => succeeded(),
-        loadConfig: async () => ({ version: 1, project: path.join(root, 'App.xcodeproj'), scheme: 'App', configuration: 'Debug', bundleId: 'com.example.app', simulator: { udid: 'fixture' }, root }),
+        loadConfig: async () => ({ version: 2 as const, platform: 'ios' as const, app: { type: 'native' as const, project: path.join(root, 'App.xcodeproj'), scheme: 'App', configuration: 'Debug', bundleId: 'com.example.app' }, simulator: { udid: 'fixture' }, root }),
         listDevices: async () => [{ udid: 'fixture', name: 'Fixture', runtime: 'iOS', state: 'Booted', isAvailable: true }],
       });
 
@@ -54,7 +54,7 @@ describe('doctor', () => {
       const result = await doctor({
         root,
         run: async () => succeeded(),
-        loadConfig: async () => ({ version: 1, project: path.join(root, 'App.xcodeproj'), scheme: 'App', configuration: 'Debug', bundleId: 'com.example.app', simulator: { udid: 'fixture' }, root }),
+        loadConfig: async () => ({ version: 2 as const, platform: 'ios' as const, app: { type: 'native' as const, project: path.join(root, 'App.xcodeproj'), scheme: 'App', configuration: 'Debug', bundleId: 'com.example.app' }, simulator: { udid: 'fixture' }, root }),
         listDevices: async () => [{ udid: 'fixture', name: 'Fixture', runtime: 'iOS-26-0', state: 'Booted', isAvailable: true }],
         canWrite: async () => undefined,
       });
@@ -64,6 +64,33 @@ describe('doctor', () => {
     } finally {
       await rm(root, { recursive: true, force: true });
     }
+  });
+
+  it.each(['react-native', 'expo'] as const)('reports pending %s workflow without probing an Xcode scheme', async (type) => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-doctor-'));
+    const calls: string[][] = [];
+    try {
+      const app = type === 'react-native'
+        ? { type, root, port: 8081, project: path.join(root, 'App.xcodeproj'), scheme: 'App', configuration: 'Debug', bundleId: 'com.example.app' }
+        : { type, root, port: 8081, launchTarget: 'expo-go' as const, hostBundleId: 'host.exp.Exponent' };
+      const result = await doctor({
+        root,
+        run: async (executable, args) => { calls.push([executable, ...args]); return succeeded(); },
+        loadConfig: async () => ({ version: 2, platform: 'ios', app, simulator: { udid: 'fixture' }, root }),
+        listDevices: async () => [{ udid: 'fixture', name: 'Fixture', runtime: 'iOS-26-0', state: 'Booted', isAvailable: true }],
+        canWrite: async () => undefined,
+      });
+
+      expect(result.ready).toBe(false);
+      expect(result.checks).toMatchObject({
+        config: { ok: true },
+        workflow: { ok: false, message: expect.stringContaining(`${type} workflow is not implemented`) },
+        project: { ok: false, message: expect.stringContaining(`${type} workflow is not implemented`) },
+        scheme: { ok: false, message: expect.stringContaining(`${type} workflow is not implemented`) },
+        simulator: { ok: true },
+      });
+      expect(calls.some((args) => args.includes('-showBuildSettings'))).toBe(false);
+    } finally { await rm(root, { recursive: true, force: true }); }
   });
 
 });

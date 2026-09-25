@@ -13,7 +13,7 @@ const processResult = (stdout = '', stderr = '', exitCode: number | null = 0): P
 const settings = `Build settings for action build and target secret-token-App:\n    TARGET_BUILD_DIR = /products/secret-token\n    WRAPPER_NAME = App.app\n    EXECUTABLE_NAME = ActualApp\n    PRODUCT_BUNDLE_IDENTIFIER = com.example.app\n`;
 
 function config(root: string): LoadedConfig {
-  return { version: 1, project: path.join(root, 'App.xcodeproj'), scheme: 'App', configuration: 'Debug', bundleId: 'com.example.app', simulator: { udid: 'PHONE' }, redactions: ['secret-token'], root };
+  return { version: 2 as const, platform: 'ios' as const, app: { type: 'native' as const, project: path.join(root, 'App.xcodeproj'), scheme: 'App', configuration: 'Debug', bundleId: 'com.example.app' }, simulator: { udid: 'PHONE' }, redactions: ['secret-token'], root };
 }
 
 describe('build command', () => {
@@ -75,7 +75,7 @@ describe('build command', () => {
 
   it('redacts a declared secret from product-selection errors', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'agemu-build-'));
-    const secretConfig = { ...config(root), bundleId: 'com.top-secret.app', redactions: ['top-secret'] };
+    const secretConfig = { ...config(root), app: { ...config(root).app, bundleId: 'com.top-secret.app' }, redactions: ['top-secret'] };
     const responses = [processResult(), processResult(settings)];
     try {
       await expect(buildApp(secretConfig, {

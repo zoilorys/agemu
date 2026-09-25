@@ -45,11 +45,10 @@ test.skipIf(!enabled)('proves the public native workflow', async (context) => {
   let evidence = root;
 
   await writeFile(path.join(root, '.agemu.json'), `${JSON.stringify({
-    version: 1,
-    project: fixtureProject,
+    version: 2 as const, platform: 'ios' as const, app: { type: 'native' as const, project: fixtureProject,
     scheme: 'NativeFixture',
     configuration: 'Debug',
-    bundleId: 'dev.agemu.agemu-native-fixture',
+    bundleId: 'dev.agemu.agemu-native-fixture' },
     simulator: { udid },
   }, null, 2)}\n`);
 

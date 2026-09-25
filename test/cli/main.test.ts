@@ -49,7 +49,7 @@ describe('agemu CLI', () => {
   it('validates inline UI plans before starting the runner', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'agemu-cli-test-'));
     await writeFile(path.join(root, '.agemu.json'), JSON.stringify({
-      version: 1, project: 'App.xcodeproj', scheme: 'App', configuration: 'Debug', bundleId: 'com.example.app', simulator: { udid: 'fixture' },
+      version: 2 as const, platform: 'ios' as const, app: { type: 'native' as const, project: 'App.xcodeproj', scheme: 'App', configuration: 'Debug', bundleId: 'com.example.app' }, simulator: { udid: 'fixture' },
     }));
     try {
       await expect(run(process.execPath, [cli, 'ui', 'run', '--plan-json={"version":1,"actions":[]}'], { cwd: root }))
@@ -64,7 +64,7 @@ describe('agemu CLI', () => {
   it('shows normalized config without its internal root', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'agemu-cli-test-'));
     await writeFile(path.join(root, '.agemu.json'), JSON.stringify({
-      version: 1, project: 'App.xcodeproj', scheme: 'App', configuration: 'Debug', bundleId: 'com.example.app', simulator: { udid: 'fixture' }, redactions: ['actual-secret'],
+      version: 2 as const, platform: 'ios' as const, app: { type: 'native' as const, project: 'App.xcodeproj', scheme: 'App', configuration: 'Debug', bundleId: 'com.example.app' }, simulator: { udid: 'fixture' }, redactions: ['actual-secret'],
     }));
     try {
       const { stdout } = await run(process.execPath, [cli, 'config', 'show'], { cwd: root });
@@ -72,7 +72,7 @@ describe('agemu CLI', () => {
       expect(JSON.parse(stdout)).toEqual({
         ok: true,
         data: {
-          version: 1, project: path.join(normalizedRoot, 'App.xcodeproj'), scheme: 'App', configuration: 'Debug', bundleId: 'com.example.app', simulator: { udid: 'fixture' },
+          version: 2 as const, platform: 'ios' as const, app: { type: 'native' as const, project: path.join(normalizedRoot, 'App.xcodeproj'), scheme: 'App', configuration: 'Debug', bundleId: 'com.example.app' }, simulator: { udid: 'fixture' },
         },
       });
     } finally {
@@ -83,11 +83,10 @@ describe('agemu CLI', () => {
   it('envelopes missing process tools from a command', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'agemu-cli-test-'));
     await writeFile(path.join(root, '.agemu.json'), JSON.stringify({
-      version: 1,
-      project: 'App.xcodeproj',
+      version: 2 as const, platform: 'ios' as const, app: { type: 'native' as const, project: 'App.xcodeproj',
       scheme: 'App',
       configuration: 'Debug',
-      bundleId: 'com.example.app',
+      bundleId: 'com.example.app' },
       simulator: { udid: 'fixture' },
     }));
     try {
@@ -106,11 +105,10 @@ describe('agemu CLI', () => {
     const root = await mkdtemp(path.join(tmpdir(), 'agemu-cli-test-'));
     const executable = path.join(root, 'xcodebuild');
     await writeFile(path.join(root, '.agemu.json'), JSON.stringify({
-      version: 1,
-      project: 'App.xcodeproj',
+      version: 2 as const, platform: 'ios' as const, app: { type: 'native' as const, project: 'App.xcodeproj',
       scheme: 'App',
       configuration: 'Debug',
-      bundleId: 'com.example.app',
+      bundleId: 'com.example.app' },
       simulator: { udid: 'fixture' },
     }));
     await writeFile(executable, `#!${process.execPath}\nprocess.stderr.write("fixture failure"); process.exit(23);\n`);
@@ -131,11 +129,10 @@ describe('agemu CLI', () => {
     const root = await mkdtemp(path.join(tmpdir(), 'agemu-cli-test-'));
     const executable = path.join(root, 'xcrun');
     await writeFile(path.join(root, '.agemu.json'), JSON.stringify({
-      version: 1,
-      project: 'App.xcodeproj',
+      version: 2 as const, platform: 'ios' as const, app: { type: 'native' as const, project: 'App.xcodeproj',
       scheme: 'App',
       configuration: 'Debug',
-      bundleId: 'com.example.app',
+      bundleId: 'com.example.app' },
       simulator: { udid: 'CONFIGURED' },
     }));
     const devices = {
@@ -166,11 +163,10 @@ describe('agemu CLI', () => {
     const root = await mkdtemp(path.join(tmpdir(), 'agemu-cli-test-'));
     const executable = path.join(root, 'xcrun');
     await writeFile(path.join(root, '.agemu.json'), JSON.stringify({
-      version: 1,
-      project: 'App.xcodeproj',
+      version: 2 as const, platform: 'ios' as const, app: { type: 'native' as const, project: 'App.xcodeproj',
       scheme: 'App',
       configuration: 'Debug',
-      bundleId: 'com.example.app',
+      bundleId: 'com.example.app' },
       simulator: { udid: 'CONFIGURED' },
     }));
     const devices = {
@@ -201,11 +197,10 @@ describe('agemu CLI', () => {
     const root = await mkdtemp(path.join(tmpdir(), 'agemu-cli-test-'));
     const executable = path.join(root, 'xcrun');
     await writeFile(path.join(root, '.agemu.json'), JSON.stringify({
-      version: 1,
-      project: 'App.xcodeproj',
+      version: 2 as const, platform: 'ios' as const, app: { type: 'native' as const, project: 'App.xcodeproj',
       scheme: 'App',
       configuration: 'Debug',
-      bundleId: 'com.example.app',
+      bundleId: 'com.example.app' },
       simulator: { name: 'Configured Phone', runtime: 'iOS-18-0' },
     }));
     const devices = {

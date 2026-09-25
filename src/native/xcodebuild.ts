@@ -1,16 +1,16 @@
 import path from 'node:path';
-import type { LoadedConfig } from '../config/config.js';
+import { nativeApp, type LoadedConfig } from '../config/config.js';
 
 export type BuildProduct = { appPath: string; bundleId: string; executableName: string; target: string };
 
 export function buildArguments(config: LoadedConfig, udid: string, action: 'build' | 'settings'): string[] {
-  const source = config.workspace
-    ? ['-workspace', config.workspace]
-    : ['-project', config.project!];
+  const source = nativeApp(config).workspace
+    ? ['-workspace', nativeApp(config).workspace!]
+    : ['-project', nativeApp(config).project!];
   return [
     ...source,
-    '-scheme', config.scheme,
-    '-configuration', config.configuration,
+    '-scheme', nativeApp(config).scheme,
+    '-configuration', nativeApp(config).configuration,
     '-destination', `platform=iOS Simulator,id=${udid}`,
     '-derivedDataPath', path.join(config.root, '.agemu', 'DerivedData'),
     ...(action === 'build' ? ['build'] : ['-showBuildSettings']),

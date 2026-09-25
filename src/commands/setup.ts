@@ -74,7 +74,10 @@ export async function setup(root = process.cwd(), interactive = true): Promise<{
   const settings = await checked([...sourceArgs, '-scheme', scheme, '-configuration', 'Debug', '-destination', `platform=iOS Simulator,id=${device.udid}`, '-showBuildSettings']);
   const bundleIds = [...new Set([...settings.matchAll(/^\s*PRODUCT_BUNDLE_IDENTIFIER\s*=\s*(\S+)\s*$/gm)].map((match) => match[1]).filter((id) => !id.includes('$') && !id.endsWith('.tests') && !id.endsWith('.Tests')))];
   const bundleId = await choose('bundle ID', bundleIds, (item) => item, interactive);
-  const config: DebugConfig = { version: 1, [kind]: source, scheme, configuration: 'Debug', bundleId, simulator: { udid: device.udid } };
+  const app: DebugConfig['app'] = kind === 'project'
+    ? { type: 'native', project: source, scheme, configuration: 'Debug', bundleId }
+    : { type: 'native', workspace: source, scheme, configuration: 'Debug', bundleId };
+  const config: DebugConfig = { version: 2, platform: 'ios', app, simulator: { udid: device.udid } };
   await writeFile(file, `${JSON.stringify(config, null, 2)}\n`, { flag: 'wx' });
   return { file, config };
 }

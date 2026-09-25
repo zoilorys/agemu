@@ -1,7 +1,7 @@
 import { access, stat } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import path from 'node:path';
-import { loadConfig, type LoadedConfig } from '../config/config.js';
+import { loadConfig, nativeApp, type LoadedConfig } from '../config/config.js';
 import { listDevices, resolveDevice, type Device } from '../native/simctl.js';
 import { runProcess, type ProcessResult } from '../process/run-process.js';
 
@@ -57,20 +57,31 @@ export async function doctor(dependencies: Dependencies = {}): Promise<DoctorRes
     config = await readConfig(root);
     checks.config = { ok: true, message: 'valid' };
   } catch (error) {
+    config = undefined;
     checks.config = { ok: false, message: message(error) };
   }
 
   if (!config) {
     for (const name of ['project', 'scheme', 'simulator'] as const) checks[name] = { ok: false, message: 'configuration is unavailable' };
+  } else if (config.app.type !== 'native') {
+    const unsupported = `${config.app.type} workflow is not implemented yet`;
+    checks.workflow = { ok: false, message: unsupported };
+    checks.project = { ok: false, message: unsupported };
+    checks.scheme = { ok: false, message: unsupported };
+    try {
+      selectDevice(await devices(), config.simulator);
+      checks.simulator = { ok: true, message: 'resolved' };
+    } catch (error) { checks.simulator = { ok: false, message: message(error) }; }
   } else {
-    const source = config.project ?? config.workspace!;
+    const app = nativeApp(config);
+    const source = app.project ?? app.workspace!;
     try {
       await access(source, constants.F_OK);
       checks.project = { ok: true, message: path.relative(root, source) || '.' };
     } catch (error) { checks.project = { ok: false, message: message(error) }; }
     try {
-      const arguments_ = [config.project ? '-project' : '-workspace', source, '-scheme', config.scheme, '-configuration', config.configuration, '-showBuildSettings'];
-      checks.scheme = passed(await run('xcodebuild', arguments_), `Scheme ${config.scheme} failed validation`);
+      const arguments_ = [app.project ? '-project' : '-workspace', source, '-scheme', app.scheme, '-configuration', app.configuration, '-showBuildSettings'];
+      checks.scheme = passed(await run('xcodebuild', arguments_), `Scheme ${app.scheme} failed validation`);
     } catch (error) { checks.scheme = { ok: false, message: message(error) }; }
     try {
       selectDevice(await devices(), config.simulator);

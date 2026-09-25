@@ -7,7 +7,7 @@ import { buildArguments, selectBuildProduct } from '../../src/native/xcodebuild.
 
 const root = '/repo';
 const base: LoadedConfig = {
-  version: 1, project: '/repo/App.xcodeproj', scheme: 'App', configuration: 'Debug', bundleId: 'com.example.app',
+  version: 2 as const, platform: 'ios' as const, app: { type: 'native' as const, project: '/repo/App.xcodeproj', scheme: 'App', configuration: 'Debug', bundleId: 'com.example.app' },
   simulator: { udid: 'PHONE' }, root,
 };
 let settings: string;
@@ -22,7 +22,7 @@ describe('xcodebuild', () => {
       '-project', '/repo/App.xcodeproj', '-scheme', 'App', '-configuration', 'Debug',
       '-destination', 'platform=iOS Simulator,id=PHONE', '-derivedDataPath', '/repo/.agemu/DerivedData', 'build',
     ]);
-    const workspace = { ...base, project: undefined, workspace: '/repo/App.xcworkspace' };
+    const workspace: LoadedConfig = { ...base, app: { ...base.app, project: undefined, workspace: '/repo/App.xcworkspace' } } as LoadedConfig;
     expect(buildArguments(workspace, 'OTHER', 'settings')).toEqual([
       '-workspace', '/repo/App.xcworkspace', '-scheme', 'App', '-configuration', 'Debug',
       '-destination', 'platform=iOS Simulator,id=OTHER', '-derivedDataPath', '/repo/.agemu/DerivedData', '-showBuildSettings',
