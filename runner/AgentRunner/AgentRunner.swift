@@ -17,10 +17,10 @@ final class AgentRunner: XCTestCase {
     private struct Launch: Decodable { let arguments: [String]?; let environment: [String: String]? }
     private struct Target: Decodable { let identifier: String?; let label: String?; let x: Double?; let y: Double? }
     private struct Point: Decodable { let x: Double; let y: Double }
-    private struct Swipe: Decodable { let direction: String?; let identifier: String?; let label: String?; let from: Point?; let to: Point? }
+    private struct Swipe: Decodable { let direction: String?; let identifier: String?; let label: String?; let from: Point?; let to: Point?; let duration: Double? }
     private struct LongPress: Decodable { let identifier: String?; let label: String?; let x: Double?; let y: Double?; let duration: Double? }
     private struct TypeAction: Decodable { let identifier: String?; let label: String?; let text: String }
-    private struct WaitAction: Decodable { let identifier: String?; let label: String?; let timeout: Double? }
+    private struct WaitAction: Decodable { let identifier: String?; let label: String?; let timeout: Double?; let duration: Double? }
     private struct ValueAssertion: Decodable { let identifier: String?; let label: String?; let value: String }
     private struct Screenshot: Decodable { let name: String? }
     private struct Empty: Decodable {}
@@ -50,8 +50,12 @@ final class AgentRunner: XCTestCase {
                 element.tap()
                 element.typeText(type.text)
             } else if let wait = action.wait {
-                let candidate = try element(Target(identifier: wait.identifier, label: wait.label, x: nil, y: nil), in: app)
-                XCTAssertTrue(candidate.waitForExistence(timeout: wait.timeout ?? 5), "Action \(index): element did not appear")
+                if let duration = wait.duration {
+                    Thread.sleep(forTimeInterval: duration)
+                } else {
+                    let candidate = try element(Target(identifier: wait.identifier, label: wait.label, x: nil, y: nil), in: app)
+                    XCTAssertTrue(candidate.waitForExistence(timeout: wait.timeout ?? 5), "Action \(index): element did not appear")
+                }
             } else if let target = action.assertVisible {
                 XCTAssertTrue(try element(target, in: app).exists, "Action \(index): element is not visible")
             } else if let assertion = action.assertValue {
@@ -107,17 +111,26 @@ final class AgentRunner: XCTestCase {
     @MainActor
     private func swipeGesture(_ swipe: Swipe, in app: XCUIApplication) throws {
         if let from = swipe.from, let to = swipe.to {
-            coordinate(x: from.x, y: from.y, in: app).press(forDuration: 0.05,
-                thenDragTo: coordinate(x: to.x, y: to.y, in: app))
+            let start = coordinate(x: from.x, y: from.y, in: app)
+            let end = coordinate(x: to.x, y: to.y, in: app)
+            if let duration = swipe.duration {
+                let distance = hypot(to.x - from.x, to.y - from.y)
+                start.press(forDuration: 0.05, thenDragTo: end,
+                    withVelocity: XCUIGestureVelocity(CGFloat(distance / duration)), thenHoldForDuration: 0)
+            } else {
+                start.press(forDuration: 0.05, thenDragTo: end)
+            }
             return
         }
         let target = Target(identifier: swipe.identifier, label: swipe.label, x: nil, y: nil)
         let surface = swipe.identifier != nil || swipe.label != nil ? try element(target, in: app) : app
+        let distance = (swipe.direction == "up" || swipe.direction == "down") ? surface.frame.height : surface.frame.width
+        let velocity = swipe.duration.map { XCUIGestureVelocity(CGFloat(distance * 0.3 / $0)) }
         switch swipe.direction {
-        case "up": surface.swipeUp()
-        case "down": surface.swipeDown()
-        case "left": surface.swipeLeft()
-        case "right": surface.swipeRight()
+        case "up": if let velocity { surface.swipeUp(velocity: velocity) } else { surface.swipeUp() }
+        case "down": if let velocity { surface.swipeDown(velocity: velocity) } else { surface.swipeDown() }
+        case "left": if let velocity { surface.swipeLeft(velocity: velocity) } else { surface.swipeLeft() }
+        case "right": if let velocity { surface.swipeRight(velocity: velocity) } else { surface.swipeRight() }
         default: throw NSError(domain: "AgentRunner", code: 2, userInfo: [NSLocalizedDescriptionKey: "Swipe requires a direction or coordinates"])
         }
     }

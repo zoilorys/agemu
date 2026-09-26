@@ -76,7 +76,20 @@ async function choose<T>(label: string, choices: T[], describe: (choice: T) => s
   } finally { prompt.close(); }
 }
 
-export async function setup(root = process.cwd(), interactive = true, expoGo = false, dependencies: { listDevices?: typeof listDevices; installedExpoGoHosts?: typeof installedExpoGoHosts } = {}): Promise<{ file: string; config: DebugConfig }> {
+async function chooseDevice(devices: Device[], interactive: boolean, udid?: string): Promise<Device> {
+  if (udid !== undefined) {
+    const selected = devices.find(device => device.udid === udid);
+    if (!selected) throw new CliError('SIMULATOR_NOT_FOUND', `No available iOS Simulator has UDID ${udid}`);
+    return selected;
+  }
+  if (!interactive || !process.stdin.isTTY || !process.stderr.isTTY) {
+    const booted = devices.filter(device => device.state === 'Booted');
+    if (booted.length === 1) return booted[0];
+  }
+  return choose<Device>('simulator', devices, item => `${item.name} (${item.runtime}, ${item.state}, ${item.udid})`, interactive);
+}
+
+export async function setup(root = process.cwd(), interactive = true, expoGo = false, dependencies: { listDevices?: typeof listDevices; installedExpoGoHosts?: typeof installedExpoGoHosts; udid?: string } = {}): Promise<{ file: string; config: DebugConfig }> {
   const file = path.join(root, '.agemu.json');
   try {
     await access(file);
@@ -94,7 +107,7 @@ export async function setup(root = process.cwd(), interactive = true, expoGo = f
   } catch { /* A native project need not have package.json. */ }
   if (expo) {
     const devices = await (dependencies.listDevices ?? listDevices)();
-    const device = await choose<Device>('simulator', devices, (item) => `${item.name} (${item.runtime}, ${item.state})`, interactive);
+    const device = await chooseDevice(devices, interactive, dependencies.udid);
     const target = expoGo ? 'expo-go' : interactive && process.stdin.isTTY && process.stderr.isTTY
       ? await choose('Expo launch target', ['development-build', 'expo-go'] as const, item => item, interactive)
       : 'development-build';
@@ -112,8 +125,8 @@ export async function setup(root = process.cwd(), interactive = true, expoGo = f
   const kind = source.endsWith('.xcworkspace') ? 'workspace' : 'project';
   const sourceArgs = [`-${kind}`, path.join(root, source)];
   const scheme = await choose('scheme', schemes(await checked([...sourceArgs, '-list', '-json']), kind), (item) => item, interactive);
-  const devices = await listDevices();
-  const device = await choose<Device>('simulator', devices, (item) => `${item.name} (${item.runtime}, ${item.state})`, interactive);
+  const devices = await (dependencies.listDevices ?? listDevices)();
+  const device = await chooseDevice(devices, interactive, dependencies.udid);
   const settings = await checked([...sourceArgs, '-scheme', scheme, '-configuration', 'Debug', '-destination', `platform=iOS Simulator,id=${device.udid}`, '-showBuildSettings']);
   const bundleIds = [...new Set([...settings.matchAll(/^\s*PRODUCT_BUNDLE_IDENTIFIER\s*=\s*(\S+)\s*$/gm)].map((match) => match[1]).filter((id) => !id.includes('$') && !id.endsWith('.tests') && !id.endsWith('.Tests')))];
   const bundleId = await choose('bundle ID', bundleIds, (item) => item, interactive);

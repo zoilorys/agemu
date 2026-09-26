@@ -30,6 +30,7 @@ function compatible(plan: UiPlan): boolean {
     if (keys[0] === 'swipe') return value.from !== undefined || targeted;
     if (keys[0] === 'longPress') return targeted || (Number.isFinite(value.x) && Number.isFinite(value.y));
     if (keys[0] === 'tap') return targeted || (Number.isFinite(value.x) && Number.isFinite(value.y));
+    if (keys[0] === 'wait' && value.duration !== undefined) return true;
     if (!targeted) return false;
     if (keys[0] === 'type') return typeof value.text === 'string';
     if (keys[0] === 'assertValue') return typeof value.value === 'string';
@@ -117,18 +118,29 @@ export async function tryRunIdbPlan(config: LoadedConfig, plan: UiPlan, udid: st
         for (const [key, entry] of Object.entries(value.environment ?? {})) environment[`SIMCTL_CHILD_${key}`] = String(entry);
         await execute('xcrun', ['simctl', 'launch', udid, targetBundleId(config), ...((value.arguments as string[] | undefined) ?? [])], { env: environment });
       } else if (kind === 'wait') {
-        const timeout = (value.timeout as number | undefined) ?? 5;
-        const deadline = Date.now() + timeout * 1000;
-        while (true) {
-          if (findElement(await elements(), value as Target)) break;
-          if (Date.now() >= deadline) throw new Error(`Element did not appear: ${value.identifier ?? value.label}`);
-          await new Promise(resolve => setTimeout(resolve, 250));
+        if (typeof value.duration === 'number') {
+          await new Promise(resolve => setTimeout(resolve, value.duration as number * 1000));
+        } else {
+          const timeout = (value.timeout as number | undefined) ?? 5;
+          const deadline = Date.now() + timeout * 1000;
+          while (true) {
+            if (findElement(await elements(), value as Target)) break;
+            if (Date.now() >= deadline) throw new Error(`Element did not appear: ${value.identifier ?? value.label}`);
+            await new Promise(resolve => setTimeout(resolve, 250));
+          }
         }
       } else if (kind === 'tap' || kind === 'type') {
-        const coordinates = kind === 'tap' && Number.isFinite(value.x) && Number.isFinite(value.y)
-          ? [value.x as number, value.y as number]
-          : center(await targetElement(value as Target));
-        await execute('idb', ['ui', 'tap', String(coordinates[0]), String(coordinates[1]), '--udid', udid]);
+        if (kind === 'tap' && Number.isFinite(value.x) && Number.isFinite(value.y)) {
+          await execute('idb', ['ui', 'tap', String(value.x), String(value.y), '--udid', udid]);
+        } else {
+          const target = value as Target;
+          const element = await targetElement(target);
+          const identifier = typeof element.AXUniqueId === 'string' && element.AXUniqueId.length > 0 ? element.AXUniqueId : undefined;
+          const matchKey = identifier ? 'AXUniqueId' : 'AXLabel';
+          const expectedKey = target.identifier !== undefined ? 'AXUniqueId' : 'AXLabel';
+          await execute('idb', ['ui', 'tap', identifier ?? target.label!, '--match-key', matchKey,
+            '--expected-key', expectedKey, '--expected-value', target.identifier ?? target.label!, '--api', 'axbridge', '--udid', udid]);
+        }
         if (kind === 'type') await execute('idb', ['ui', 'text', '--udid', udid, '--', value.text as string]);
       } else if (kind === 'longPress') {
         const press = value as LongPress;
@@ -140,7 +152,7 @@ export async function tryRunIdbPlan(config: LoadedConfig, plan: UiPlan, udid: st
         const swipe = value as Swipe;
         const [from, to] = 'from' in swipe ? [swipe.from, swipe.to] : swipePoints((await targetElement(swipe)).frame ?? {}, swipe.direction);
         await execute('idb', ['ui', 'swipe', String(Math.round(from.x)), String(Math.round(from.y)),
-          String(Math.round(to.x)), String(Math.round(to.y)), '--udid', udid]);
+          String(Math.round(to.x)), String(Math.round(to.y)), ...(swipe.duration === undefined ? [] : ['--duration', String(swipe.duration)]), '--udid', udid]);
       } else if (kind === 'assertVisible' || kind === 'assertValue') {
         const element = await targetElement(value as Target);
         if (kind === 'assertValue' && element.AXValue !== value.value) throw new Error(`Element value does not match: ${value.identifier ?? value.label}`);

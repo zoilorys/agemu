@@ -50,7 +50,7 @@ claude plugin install agemu@agemu
 
 ## Configure an app
 
-Run `agemu setup` from the app root. It detects native iOS, bare React Native, or Expo, selects a Simulator, and writes `.agemu.json` without replacing an existing file. Interactive Expo setup asks for the launch target; noninteractive setup selects a development build. Use `agemu setup --expo-go` to select Expo Go explicitly. Expo Go must already be installed on the selected Simulator. Setup and `doctor` do not install dependencies or generate native files.
+Run `agemu setup` from the app root. It detects native iOS, bare React Native, or Expo, selects a Simulator, and writes `.agemu.json` without replacing an existing file. Use `--udid=ID` to choose a Simulator. Noninteractive setup selects the sole booted Simulator when several are installed. Interactive Expo setup asks for the launch target; noninteractive setup selects a development build. Use `agemu setup --expo-go` to select Expo Go explicitly. Expo Go must already be installed on the selected Simulator. Setup and `doctor` do not install dependencies or generate native files.
 
 You can also add `.agemu.json` manually:
 
@@ -187,7 +187,8 @@ Build and install native, bare React Native, or Expo development apps first. For
     { "launch": { "arguments": ["--ui-testing"], "environment": { "RUN_ID": "example" } } },
     { "wait": { "identifier": "email", "timeout": 5 } },
     { "type": { "identifier": "email", "text": "agent@example.com" } },
-    { "swipe": { "direction": "up", "identifier": "resultsList" } },
+    { "swipe": { "direction": "up", "identifier": "resultsList", "duration": 0.3 } },
+    { "wait": { "duration": 0.5 } },
     { "longPress": { "label": "More options", "duration": 1.5 } },
     { "tap": { "identifier": "save" } },
     { "assertVisible": { "label": "Saved" } },
@@ -210,7 +211,7 @@ For a short plan, pass JSON directly:
 agemu ui run --plan-json='{"version":1,"actions":[{"screenshot":{"name":"current"}}]}'
 ```
 
-Targets accept an accessibility `identifier` or an exact `label`. The `tap` and `longPress` actions also accept `x` and `y` screen coordinates. `longPress` holds for `duration` seconds (default `1`). Swipe a scrollable element with `{ "swipe": { "direction": "up", "identifier": "resultsList" } }`, or swipe the whole screen by omitting the target. Directions are `up`, `down`, `left`, and `right`; they describe finger movement, so swiping up scrolls content down the page. For a precise path, use `{ "swipe": { "from": { "x": 100, "y": 500 }, "to": { "x": 100, "y": 100 } } }`. Screen swipes without a target use XCTest. The `inspect` action returns accessibility data in `runnerResult.trees`: XCTest debug text or `idb` JSON.
+Targets accept an accessibility `identifier` or an exact `label`. The `tap` and `longPress` actions also accept `x` and `y` screen coordinates. `longPress` holds for `duration` seconds (default `1`). Swipe a scrollable element with `{ "swipe": { "direction": "up", "identifier": "resultsList", "duration": 0.3 } }`, or swipe the whole screen by omitting the target. Directions are `up`, `down`, `left`, and `right`; they describe finger movement, so swiping up scrolls content down the page. For a precise path, use `{ "swipe": { "from": { "x": 100, "y": 500 }, "to": { "x": 100, "y": 100 }, "duration": 0.3 } }`. `idb` uses the requested duration; XCTest uses gesture velocity to approximate it. Screen swipes without a target use XCTest. `wait` accepts a target and optional `timeout` to wait for an element, or `duration` in seconds to pause before the next action. Use a timed wait after a swipe before capturing an animation-sensitive screenshot. For `idb`, targeted taps use an accessibility press with an exact-value guard instead of converting the reported frame to touch coordinates. Follow a tap with `wait` or an assertion for the expected result. The `inspect` action returns accessibility data in `runnerResult.trees`: XCTest debug text or `idb` JSON.
 
 The bundled XCTest runner needs no macOS Accessibility or Screen Recording permission. XCTest runs save an `.xcresult` bundle and `xcodebuild.log` under `.agemu/runs/`. Its build is reused until runner sources change; `runnerCached` reports whether the run used that build. `idb` runs save `idb.log` and any requested screenshots there.
 

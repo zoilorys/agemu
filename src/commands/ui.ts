@@ -10,7 +10,7 @@ import { tryRunIdbPlan } from './idb-ui.js';
 
 export type UiPlan = { version: 1; actions: unknown[] };
 export type Point = { x: number; y: number };
-export type Swipe = { direction: 'up' | 'down' | 'left' | 'right'; identifier?: string; label?: string } | { from: Point; to: Point };
+export type Swipe = ({ direction: 'up' | 'down' | 'left' | 'right'; identifier?: string; label?: string } | { from: Point; to: Point }) & { duration?: number };
 export type LongPress = { identifier?: string; label?: string; x?: number; y?: number; duration?: number };
 type Dependencies = {
   run?: (executable: string, args: string[], options?: RunOptions) => Promise<ProcessResult>;
@@ -41,7 +41,19 @@ function validatePlan(value: unknown): UiPlan {
       const coordinates = object(swipe) && swipe.direction === undefined && swipe.identifier === undefined && swipe.label === undefined
         && point(swipe.from) && point(swipe.to)
         && (swipe.from.x !== swipe.to.x || swipe.from.y !== swipe.to.y);
-      if (!directional && !coordinates) throw new CliError('UI_VALIDATION_FAILED', `Action ${index}: swipe needs a direction or distinct from/to coordinates`);
+      if ((!directional && !coordinates) || (object(swipe) && swipe.duration !== undefined && (!Number.isFinite(swipe.duration) || Number(swipe.duration) <= 0))) {
+        throw new CliError('UI_VALIDATION_FAILED', `Action ${index}: swipe needs a direction or distinct from/to coordinates and a positive duration`);
+      }
+    }
+    if ('wait' in raw) {
+      const wait = raw.wait;
+      const target = object(wait) && (typeof wait.identifier === 'string' || typeof wait.label === 'string');
+      const pause = object(wait) && wait.identifier === undefined && wait.label === undefined && wait.timeout === undefined
+        && typeof wait.duration === 'number' && Number.isFinite(wait.duration) && wait.duration >= 0;
+      if (!object(wait) || (!target && !pause) || (target && (wait.duration !== undefined || (wait.timeout !== undefined
+        && (typeof wait.timeout !== 'number' || !Number.isFinite(wait.timeout) || wait.timeout < 0))))) {
+        throw new CliError('UI_VALIDATION_FAILED', `Action ${index}: wait needs a target and optional timeout, or a nonnegative duration`);
+      }
     }
     if ('longPress' in raw) {
       const press = raw.longPress;

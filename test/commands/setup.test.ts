@@ -8,6 +8,34 @@ import type { ProcessResult } from '../../src/process/run-process.js';
 const result = (stdout: string): ProcessResult => ({ stdout, stderr: '', exitCode: 0, signal: null, startedAt: '', durationMs: 1 });
 
 describe('Expo setup discovery', () => {
+  it('selects the only booted Simulator during noninteractive setup', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-expo-booted-'));
+    try {
+      await writeFile(path.join(root, 'package.json'), JSON.stringify({ dependencies: { expo: '*' } }));
+      await writeFile(path.join(root, 'app.json'), JSON.stringify({ expo: { ios: { bundleIdentifier: 'com.example.dev' } } }));
+      const devices = [
+        { udid: 'OFF', name: 'iPhone 16', runtime: 'iOS-18-0', state: 'Shutdown', isAvailable: true },
+        { udid: 'ON', name: 'iPhone 17', runtime: 'iOS-19-0', state: 'Booted', isAvailable: true },
+      ];
+      const selected = await setup(root, false, false, { listDevices: async () => devices });
+      expect(selected.config.simulator.udid).toBe('ON');
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('uses an explicit UDID when several Simulators are available', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-expo-udid-'));
+    try {
+      await writeFile(path.join(root, 'package.json'), JSON.stringify({ dependencies: { expo: '*' } }));
+      await writeFile(path.join(root, 'app.json'), JSON.stringify({ expo: { ios: { bundleIdentifier: 'com.example.dev' } } }));
+      const devices = [
+        { udid: 'ONE', name: 'iPhone 16', runtime: 'iOS-18-0', state: 'Booted', isAvailable: true },
+        { udid: 'TWO', name: 'iPhone 17', runtime: 'iOS-19-0', state: 'Booted', isAvailable: true },
+      ];
+      const selected = await setup(root, false, false, { listDevices: async () => devices, udid: 'TWO' });
+      expect(selected.config.simulator.udid).toBe('TWO');
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
   it('sets up a development build without querying installed Expo Go hosts', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'agemu-expo-dev-'));
     try {

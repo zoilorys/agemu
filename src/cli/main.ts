@@ -44,7 +44,9 @@ else if (args.includes('--version')) {
 } else try {
   let data: unknown;
   if (command === 'setup') {
-    data = await setup(process.cwd(), true, args.includes('--expo-go'));
+    data = await setup(process.cwd(), true, args.includes('--expo-go'), {
+      udid: args.some(arg => arg === '--udid' || arg.startsWith('--udid=')) ? requiredString('udid') : undefined,
+    });
   } else if (command === 'config' && args.includes('show')) {
     const config = await loadConfig();
     const { root: _, redactions: __, ...safe } = config;

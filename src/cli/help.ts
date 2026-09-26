@@ -6,7 +6,7 @@ const common = `Global options:
 
 const commands: Record<string, string> = {
   server: `agemu server start\n  Start or reuse this project's Metro or Expo server. Expo development builds use --dev-client.\n\nagemu server status\n  Report server readiness and ownership; an unverified port occupant is a collision.\n\nagemu server stop\n  Stop only a server started by agemu for this project.`,
-  setup: `agemu setup [--expo-go]\n  Detect native iOS, bare React Native, or Expo and write version 2 .agemu.json.\n  Interactive Expo setup asks for the launch target; noninteractive setup selects a development build. Setup does not install dependencies or generate native files.\n  --expo-go requires an installed Expo Go host on the selected Simulator.`,
+  setup: `agemu setup [--expo-go] [--udid=ID]\n  Detect native iOS, bare React Native, or Expo and write version 2 .agemu.json.\n  --udid selects a Simulator; noninteractive setup otherwise uses the sole booted Simulator.\n  Interactive Expo setup asks for the launch target; noninteractive setup selects a development build. Setup does not install dependencies or generate native files.\n  --expo-go requires an installed Expo Go host on the selected Simulator.`,
   config: `agemu config show
   Show the resolved .agemu.json configuration, excluding internal paths and redaction values.`,
   simulator: `agemu simulator list
@@ -53,7 +53,7 @@ agemu ui run (--plan=FILE | --plan-json=JSON) [--backend=auto|idb|xctest]
   Pass JSON inline for short plans, or use a file for longer plans.
   auto uses idb when its companion supports the plan, then falls back to XCTest.
   Use xctest to keep an .xcresult bundle; idb saves a transcript and screenshots.
-  Build and install the app first, except Expo Go, which uses an installed host. Actions include launch, wait, type, tap, swipe, longPress,
+  Build and install the app first, except Expo Go, which uses an installed host. Swipe accepts duration in seconds; wait accepts a target with timeout or a duration-only pause. Actions include launch, wait, type, tap, swipe, longPress,
   assertVisible, screenshot, and inspect.`,
   doctor: `agemu doctor
   Check Node.js, Xcode, configuration, Simulator, app prerequisites, and write access. Does not install dependencies or generate native files.`,
