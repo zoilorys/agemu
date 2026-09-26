@@ -4,7 +4,7 @@ import path from 'node:path';
 import { CliError } from '../core/errors.js';
 import type { DebugConfig } from '../config/config.js';
 import { listDevices, type Device } from '../native/simctl.js';
-import { runProcess } from '../process/run-process.js';
+import { runProcess, type ProcessResult, type RunOptions } from '../process/run-process.js';
 
 const ignored = new Set(['.git', 'node_modules', '.build', '.agemu', 'Pods', 'DerivedData', 'build']);
 
@@ -34,6 +34,25 @@ function schemes(json: string, kind: 'project' | 'workspace'): string[] {
     if (Array.isArray(values)) return values.filter((value): value is string => typeof value === 'string');
   } catch { /* Report the same actionable error below. */ }
   throw new CliError('PROCESS_FAILED', 'xcodebuild did not return a scheme list');
+}
+
+export async function resolveExpoBundleId(root: string, run: (executable: string, args: string[], options?: RunOptions) => Promise<ProcessResult> = runProcess): Promise<string> {
+  const dynamic = await Promise.all(['app.config.js', 'app.config.ts', 'app.config.mjs'].map(async name => access(path.join(root, name)).then(() => true, () => false)));
+  let value: unknown;
+  if (dynamic.some(Boolean)) {
+    const cli = path.join(root, 'node_modules', 'expo', 'bin', 'cli');
+    try { await access(cli); } catch { throw new CliError('TOOL_NOT_FOUND', 'Local Expo CLI is required to read app.config; install project dependencies'); }
+    const result = await run(process.execPath, [cli, 'config', '--json', '--type', 'public'], { cwd: root, timeoutMs: 30_000 });
+    if (result.exitCode !== 0) throw new CliError('CONFIG_INVALID', 'Expo could not resolve app.config; inspect the project configuration');
+    try { value = JSON.parse(result.stdout); } catch { throw new CliError('CONFIG_INVALID', 'Expo config did not return JSON'); }
+  } else {
+    try { value = JSON.parse(await readFile(path.join(root, 'app.json'), 'utf8')); }
+    catch { throw new CliError('CONFIG_INVALID', 'Expo app.json or app.config is missing or invalid'); }
+  }
+  const config = value as { expo?: { ios?: { bundleIdentifier?: unknown } }; ios?: { bundleIdentifier?: unknown } };
+  const bundleId = config.expo?.ios?.bundleIdentifier ?? config.ios?.bundleIdentifier;
+  if (typeof bundleId !== 'string' || !bundleId.trim()) throw new CliError('CONFIG_INVALID', 'Expo config needs ios.bundleIdentifier for a development build');
+  return bundleId;
 }
 
 async function choose<T>(label: string, choices: T[], describe: (choice: T) => string, interactive: boolean): Promise<T> {
@@ -66,10 +85,20 @@ export async function setup(root = process.cwd(), interactive = true): Promise<{
   }
   const sources = await findSources(root);
   let reactNative = false;
+  let expo = false;
   try {
     const manifest = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8')) as { dependencies?: Record<string, string>; devDependencies?: Record<string, string> };
     reactNative = Boolean(manifest.dependencies?.['react-native'] || manifest.devDependencies?.['react-native']);
+    expo = Boolean(manifest.dependencies?.expo || manifest.devDependencies?.expo);
   } catch { /* A native project need not have package.json. */ }
+  if (expo) {
+    const expoBundleId = await resolveExpoBundleId(root);
+    const devices = await listDevices();
+    const device = await choose<Device>('simulator', devices, (item) => `${item.name} (${item.runtime}, ${item.state})`, interactive);
+    const config: DebugConfig = { version: 2, platform: 'ios', app: { type: 'expo', root: '.', port: 8081, launchTarget: 'development-build', bundleId: expoBundleId }, simulator: { udid: device.udid } };
+    await writeFile(file, `${JSON.stringify(config, null, 2)}\n`, { flag: 'wx' });
+    return { file, config };
+  }
   const source = await choose('Xcode project or workspace', sources.filter((item) => !item.endsWith('project.xcworkspace')), (item) => item, interactive);
   if (reactNative && !source.startsWith(`ios${path.sep}`)) throw new CliError('CONFIG_INVALID', 'React Native needs an Xcode source under ios/');
   const kind = source.endsWith('.xcworkspace') ? 'workspace' : 'project';

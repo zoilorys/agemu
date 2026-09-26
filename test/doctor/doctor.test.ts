@@ -86,7 +86,7 @@ describe('doctor', () => {
         expect(result.checks).toMatchObject({ config: { ok: true }, reactNative: { ok: false }, ios: { ok: false }, project: { ok: false }, scheme: { ok: true }, simulator: { ok: true } });
         expect(calls.some((args) => args.includes('-showBuildSettings'))).toBe(true);
       } else {
-        expect(result.checks).toMatchObject({ config: { ok: true }, workflow: { ok: false }, simulator: { ok: true } });
+        expect(result.checks).toMatchObject({ config: { ok: true }, expo: { ok: false }, project: { ok: false }, simulator: { ok: true } });
         expect(calls.some((args) => args.includes('-showBuildSettings'))).toBe(false);
       }
     } finally { await rm(root, { recursive: true, force: true }); }

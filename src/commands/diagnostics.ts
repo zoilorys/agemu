@@ -51,6 +51,7 @@ function failure(error: unknown, secrets: string[]): { code: string; message: st
 
 export async function observe(config: LoadedConfig, dependencies: Dependencies = {}) {
   const secrets = config.redactions ?? [];
+  const bundleId = config.app.type === 'expo' ? (config.app.launchTarget === 'development-build' ? config.app.bundleId : config.app.hostBundleId) : config.app.bundleId;
   const { run, now, device } = await runContext(config, dependencies);
   const directory = path.join(run.directory, 'screenshots');
   const screenshot = path.join(directory, 'screen.png');
@@ -61,12 +62,12 @@ export async function observe(config: LoadedConfig, dependencies: Dependencies =
     if (result.exitCode !== 0) throw new CliError('PROCESS_FAILED', result.stderr.trim() || 'Screenshot capture failed');
     const data = {
       run: run.relativeDirectory, screenshot: safeRelative(config.root, screenshot, secrets), capturedAt: now.toISOString(),
-      simulator: redactValue(device, secrets), bundleId: redact(nativeApp(config).bundleId, secrets),
+      simulator: redactValue(device, secrets), bundleId: redact(bundleId, secrets),
     };
     await appendEvent(config.root, { at: now.toISOString(), command: 'observe', status: 'ok', data }, secrets);
     return data;
   } catch (error) {
-    const details = { run: run.relativeDirectory, simulator: redactValue(device, secrets), bundleId: redact(nativeApp(config).bundleId, secrets) };
+    const details = { run: run.relativeDirectory, simulator: redactValue(device, secrets), bundleId: redact(bundleId, secrets) };
     await appendEvent(config.root, { at: now.toISOString(), command: 'observe', status: 'error', error: failure(error, secrets), details }, secrets);
     throw new CliError('PROCESS_FAILED', redact(error instanceof Error ? error.message : String(error), secrets), details);
   }

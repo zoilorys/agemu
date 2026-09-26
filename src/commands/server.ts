@@ -49,10 +49,11 @@ async function ready(port: number): Promise<boolean> {
     request.once('timeout', () => { request.destroy(); resolve(false); });
   });
 }
-async function owned(state: State): Promise<boolean> {
+async function owned(state: State, inspect: typeof processIdentity = processIdentity): Promise<boolean> {
   if (!alive(state.pid)) return false;
-  const identity = await processIdentity(state.pid);
-  return Boolean(identity && identity.startedAt === state.startedAt && identity.command.includes(state.token) && identity.command.includes('server-child'));
+  const identity = await inspect(state.pid);
+  if (!identity) throw new CliError('PROCESS_FAILED', 'Cannot inspect the running server supervisor; check ps permissions and retry');
+  return identity.startedAt === state.startedAt && identity.command.includes(state.token) && identity.command.includes('server-child');
 }
 async function readState(file: string): Promise<State | undefined> {
   try { return JSON.parse(await readFile(file, 'utf8')) as State; }
@@ -62,13 +63,15 @@ async function removeState(file: string, state: State): Promise<void> {
   const current = await readState(file);
   if (current?.token === state.token) await rm(file, { force: true });
 }
-export async function server(config: LoadedConfig, action: Action) {
-  if (config.app.type !== 'react-native') throw new CliError('WORKFLOW_UNSUPPORTED', 'server requires a react-native app');
+export async function server(config: LoadedConfig, action: Action, dependencies: { processIdentity?: typeof processIdentity } = {}) {
+  const inspect = dependencies.processIdentity ?? processIdentity;
+  if (config.app.type !== 'react-native' && !(config.app.type === 'expo' && config.app.launchTarget === 'development-build')) throw new CliError('WORKFLOW_UNSUPPORTED', 'server requires a React Native or Expo development-build app');
   const app = config.app;
   const root = await realpath(app.root).catch(() => { throw new CliError('CONFIG_INVALID', 'React Native app root does not exist'); });
   const file = statePath(config.root);
   let state = await readState(file);
-  if (state && !(await owned(state))) { await removeState(file, state); state = undefined; }
+  if (state && !(await owned(state, inspect))) { await removeState(file, state); state = undefined; }
+  if (state && (state.command.startsWith('expo ') !== (app.type === 'expo'))) throw new CliError('PROCESS_FAILED', 'A different agemu-owned project server is running; stop it before switching workflow');
   if (state && (state.root !== root || state.port !== app.port)) {
     if (action === 'stop' && state.root === root) {
       process.kill(state.pid, 'SIGTERM');
@@ -98,8 +101,8 @@ export async function server(config: LoadedConfig, action: Action) {
     throw new CliError('PROCESS_FAILED', `Port ${app.port} is occupied by a server whose project identity cannot be verified`);
   }
   if (state) throw new CliError('PROCESS_FAILED', `An agemu-owned Metro supervisor is running without a ready listener on port ${app.port}; stop it before starting another`);
-  const cli = path.join(root, 'node_modules', 'react-native', 'cli.js');
-  try { await access(cli); } catch { throw new CliError('TOOL_NOT_FOUND', 'Local React Native CLI is missing; install project dependencies'); }
+  const cli = app.type === 'expo' ? path.join(root, 'node_modules', 'expo', 'bin', 'cli') : path.join(root, 'node_modules', 'react-native', 'cli.js');
+  try { await access(cli); } catch { throw new CliError('TOOL_NOT_FOUND', 'Local project CLI is missing; install project dependencies'); }
   const directory = path.join(config.root, '.agemu');
   await mkdir(directory, { recursive: true });
   const token = randomUUID();
@@ -114,18 +117,18 @@ export async function server(config: LoadedConfig, action: Action) {
   let identity: Awaited<ReturnType<typeof processIdentity>>;
   for (let i = 0; i < 20 && !identity; i++) { await sleep(50); identity = await processIdentity(child.pid); }
   if (!identity || !identity.command.includes(token)) throw new CliError('PROCESS_FAILED', 'Metro supervisor exited during startup');
-  state = { root, port: app.port, pid: child.pid, startedAt: identity.startedAt, token, command: `react-native start --port ${app.port}`, log };
+  state = { root, port: app.port, pid: child.pid, startedAt: identity.startedAt, token, command: app.type === 'expo' ? `expo start --dev-client --port ${app.port}` : `react-native start --port ${app.port}`, log };
   const temporary = `${file}.${token}.tmp`;
   await writeFile(temporary, `${JSON.stringify(state)}\n`, { mode: 0o600 });
   await rename(temporary, file);
   for (let i = 0; i < 300; i++) {
-    if (!(await owned(state))) { await removeState(file, state); throw new CliError('PROCESS_FAILED', 'Metro exited before readiness', { log: path.relative(config.root, log) }); }
+    if (!(await owned(state, inspect))) { await removeState(file, state); throw new CliError('PROCESS_FAILED', 'Metro exited before readiness', { log: path.relative(config.root, log) }); }
     const listener = await occupant(app.port);
     if (listener !== undefined && (listener === state.pid || await childOf(listener, state.pid)) && await ready(app.port)) return { running: true, owned: true, reused: false, port: app.port, pid: state.pid, log: path.relative(config.root, log) };
     if (listener !== undefined && listener !== state.pid && !(await childOf(listener, state.pid))) break;
     await sleep(100);
   }
-  if (await owned(state)) process.kill(state.pid, 'SIGTERM');
+  if (await owned(state, inspect)) process.kill(state.pid, 'SIGTERM');
   await removeState(file, state);
   throw new CliError('PROCESS_FAILED', redact(`Metro did not become ready on port ${app.port}; inspect ${log}`, config.redactions));
 }

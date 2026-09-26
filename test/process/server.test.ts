@@ -39,6 +39,9 @@ describe('Metro server', () => {
       expect((await readdir(path.join(root, '.agemu'))).some(name => name.startsWith('server-redactions-'))).toBe(false);
       expect(await server(config, 'status')).toMatchObject({ running: true, owned: true });
       expect(await server(config, 'start')).toMatchObject({ running: true, owned: true, reused: true });
+      await expect(server(config, 'stop', { processIdentity: async () => undefined })).rejects.toThrow(/Cannot inspect the running server supervisor/);
+      expect(JSON.parse(await readFile(path.join(root, '.agemu', 'server.json'), 'utf8'))).toMatchObject({ pid: started.pid });
+      expect(await server(config, 'status')).toMatchObject({ running: true, owned: true });
       const changed = { ...config, app: { ...config.app, port: await freePort() } } as LoadedConfig;
       await expect(server(changed, 'start')).rejects.toThrow(/stop it before changing/);
       expect(await server(config, 'status')).toMatchObject({ running: true, owned: true });

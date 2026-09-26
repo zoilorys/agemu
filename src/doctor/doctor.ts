@@ -64,10 +64,16 @@ export async function doctor(dependencies: Dependencies = {}): Promise<DoctorRes
   if (!config) {
     for (const name of ['project', 'scheme', 'simulator'] as const) checks[name] = { ok: false, message: 'configuration is unavailable' };
   } else if (config.app.type === 'expo') {
-    const unsupported = `${config.app.type} workflow is not implemented yet`;
-    checks.workflow = { ok: false, message: unsupported };
-    checks.project = { ok: false, message: unsupported };
-    checks.scheme = { ok: false, message: unsupported };
+    const app = config.app;
+    try { await access(path.join(app.root, 'package.json')); checks.project = { ok: true, message: path.relative(root, app.root) || '.' }; }
+    catch { checks.project = { ok: false, message: 'Expo package.json is missing' }; }
+    try { await access(path.join(app.root, 'node_modules', 'expo', 'bin', 'cli')); checks.expo = { ok: true, message: 'local Expo CLI installed' }; }
+    catch { checks.expo = { ok: false, message: 'Install project dependencies: local Expo CLI is missing' }; }
+    if (app.launchTarget === 'development-build') {
+      try { await access(path.join(app.root, 'node_modules', 'expo-dev-client', 'package.json')); checks.devClient = { ok: true, message: 'expo-dev-client installed' }; }
+      catch { checks.devClient = { ok: false, message: 'Install expo-dev-client in the Expo project' }; }
+    }
+    checks.scheme = { ok: true, message: 'Expo CLI chooses the native scheme during build' };
     try {
       selectDevice(await devices(), config.simulator);
       checks.simulator = { ok: true, message: 'resolved' };

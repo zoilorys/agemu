@@ -73,7 +73,7 @@ else if (args.includes('--version')) {
     const controlled = action === 'boot' ? await bootDevice(device) : await shutdownDevice(device);
     data = { action, device: controlled };
   } else if (command === 'observe') {
-    data = await observe(await loadNativeConfig());
+    data = await observe(await loadConfig());
   } else if (command === 'ui') {
     const plan = option('plan');
     const planJson = option('plan-json');
@@ -88,7 +88,7 @@ else if (args.includes('--version')) {
     else if (source) data = await runUiPlan(config, source, { backend: option('backend') as 'auto' | 'idb' | 'xctest' | undefined });
     else throw new CliError('COMMAND_INVALID', 'ui requires build-runner or run with --plan or --plan-json');
   } else if (command === 'build') {
-    const config = await loadNativeConfig();
+    const config = await loadConfig();
     data = await buildApp(config);
   } else if (command === 'server') {
     const config = await loadConfig();
@@ -96,7 +96,7 @@ else if (args.includes('--version')) {
     if (!action) throw new CliError('COMMAND_INVALID', 'server requires start, status, or stop');
     data = await server(config, action);
   } else if (command === 'app') {
-    const config = await loadNativeConfig();
+    const config = await loadConfig();
     const action = (['install', 'launch', 'terminate', 'restart', 'open-url'] as AppAction[]).find((name) => args.includes(name));
     if (!action) throw new Error('app requires install, launch, terminate, or restart');
     data = await controlApp(config, action, {

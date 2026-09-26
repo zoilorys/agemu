@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -17,6 +17,31 @@ function config(root: string): LoadedConfig {
 }
 
 describe('build command', () => {
+  it('publishes an Expo product only after matching the built app bundle ID', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-expo-build-'));
+    const cli = path.join(root, 'node_modules/expo/bin/cli');
+    const appPath = path.join(root, 'DerivedData/Build/Products/Debug-iphonesimulator/Expo.app');
+    const expo: LoadedConfig = { version: 2, platform: 'ios', app: { type: 'expo', root, port: 8081, launchTarget: 'development-build', bundleId: 'com.example.expo' }, simulator: { udid: 'PHONE' }, root };
+    const calls: string[] = [];
+    try {
+      await mkdir(path.dirname(cli), { recursive: true });
+      await writeFile(cli, '');
+      await mkdir(path.join(root, 'node_modules/expo-dev-client'), { recursive: true });
+      await writeFile(path.join(root, 'node_modules/expo-dev-client/package.json'), '{}');
+      await mkdir(appPath, { recursive: true });
+      await writeFile(path.join(appPath, 'Info.plist'), 'fixture');
+      const run = async (executable: string, args: string[]) => {
+        calls.push(executable);
+        if (executable === 'plutil') return processResult(args[1] === 'CFBundleIdentifier' ? 'com.example.expo' : 'Expo');
+        return processResult(`CONFIGURATION_BUILD_DIR = ${path.dirname(appPath)}\nUNLOCALIZED_RESOURCES_FOLDER_PATH = Expo.app\n`);
+      };
+      await buildApp(expo, { run, resolveUdid: async () => 'PHONE' });
+      expect(JSON.parse(await readFile(path.join(root, '.agemu/state.json'), 'utf8'))).toMatchObject({ appPath, bundleId: 'com.example.expo' });
+      await expect(buildApp(expo, { run: async (executable, args) => executable === 'plutil' ? processResult(args[1] === 'CFBundleIdentifier' ? 'com.wrong.app' : 'Expo') : processResult(`CONFIGURATION_BUILD_DIR = ${path.dirname(appPath)}\nUNLOCALIZED_RESOURCES_FOLDER_PATH = Expo.app\n`), resolveUdid: async () => 'PHONE' })).rejects.toMatchObject({ code: 'BUILD_FAILED' });
+      expect(JSON.parse(await readFile(path.join(root, '.agemu/state.json'), 'utf8'))).toMatchObject({ appPath, bundleId: 'com.example.expo' });
+      expect(calls[0]).toBe(process.execPath);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
   it('retains redacted logs and atomically publishes discovered product state', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'agemu-build-'));
     const calls: string[][] = [];

@@ -24,7 +24,7 @@ const append = (chunk: Buffer) => {
   const safe = redact(raw, secrets).slice(0, -(longestSecret - 1) || undefined);
   writeFileSync(log, safe.slice(-limit), { mode: 0o600 });
 };
-const child = spawn(process.execPath, [cli, 'start', '--port', port], { cwd: root, stdio: ['ignore', 'pipe', 'pipe'] });
+const child = spawn(process.execPath, [cli, 'start', ...(cli.includes('/expo/') ? ['--dev-client'] : []), '--port', port], { cwd: root, stdio: ['ignore', 'pipe', 'pipe'] });
 child.stdout.on('data', append);
 child.stderr.on('data', append);
 child.on('error', error => { append(Buffer.from(error.message)); process.exitCode = 1; });

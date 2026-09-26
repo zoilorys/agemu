@@ -5,7 +5,7 @@ const common = `Global options:
   --debug      Include error details in failed JSON responses.`;
 
 const commands: Record<string, string> = {
-  server: `agemu server start\n  Start Metro for the configured React Native project.\n\nagemu server status\n  Report server readiness and ownership.\n\nagemu server stop\n  Stop only a server started by agemu for this project.`,
+  server: `agemu server start\n  Start Metro or Expo for the configured project. Expo development builds use --dev-client.\n\nagemu server status\n  Report server readiness and ownership.\n\nagemu server stop\n  Stop only a server started by agemu for this project.`,
   setup: `agemu setup\n  Find an Xcode project or workspace, scheme, bundle ID, and simulator.\n  Prompt when there are multiple choices, then write .agemu.json.`,
   config: `agemu config show
   Show the resolved .agemu.json configuration, excluding internal paths and redaction values.`,
@@ -17,8 +17,9 @@ agemu simulator shutdown [--udid=ID | --name=NAME [--runtime=RUNTIME]]
   Boot or shut down a simulator. A configured UDID takes precedence over --name;
   --udid overrides the configured selection.`,
   build: `agemu build
-  Build the configured scheme for the selected simulator and cache the app product
-  in .agemu/. Run before "app install".`,
+  Build the configured app for the selected simulator and cache its product in .agemu/.
+  Expo development builds run expo run:ios, which may generate or modify ios/ files.
+  Run before "app install".`,
   app: `agemu app install
   Install the previously built app on the selected simulator.
 

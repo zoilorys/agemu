@@ -101,6 +101,21 @@ describe('agemu CLI', () => {
     }
   });
 
+  it('routes Expo build and install through their workflow handlers', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-expo-cli-'));
+    await writeFile(path.join(root, '.agemu.json'), JSON.stringify({
+      version: 2, platform: 'ios', app: { type: 'expo', root: '.', port: 8081, launchTarget: 'development-build', bundleId: 'com.example.expo' }, simulator: { udid: 'fixture' },
+    }));
+    try {
+      await expect(run(process.execPath, [cli, 'build'], { cwd: root })).rejects.toMatchObject({
+        code: 1, stdout: expect.stringContaining('Local Expo CLI is missing'),
+      });
+      await expect(run(process.execPath, [cli, 'app', 'install'], { cwd: root })).rejects.toMatchObject({
+        code: 1, stdout: expect.stringContaining('APP_NOT_BUILT'),
+      });
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
   it('envelopes a failing fixture process from a command', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'agemu-cli-test-'));
     const executable = path.join(root, 'xcodebuild');

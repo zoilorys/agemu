@@ -20,6 +20,21 @@ function fake(responses: ProcessResult[] = []) {
 }
 
 describe('app command', () => {
+  it('opens only the configured Expo development project URL', async () => {
+    const expo = { ...config, app: { type: 'expo' as const, root: '/repo', port: 8081, launchTarget: 'development-build' as const, bundleId: 'com.example.app' } };
+    const fixture = fake();
+    const dependencies = { ...fixture.dependencies, serverStatus: async () => ({ running: true }), resolveExpoUrl: async () => 'exp+example://expo-development-client/?url=http%3A%2F%2F127.0.0.1%3A8081' };
+    await controlApp(expo, 'launch', {}, dependencies);
+    expect(fixture.calls.map(call => call.args)).toEqual([
+      ['launch', 'PHONE', 'com.example.app'],
+      ['openurl', 'PHONE', 'exp+example://expo-development-client/?url=http%3A%2F%2F127.0.0.1%3A8081'],
+    ]);
+    fixture.calls.length = 0;
+    await expect(controlApp(expo, 'launch', {}, { ...dependencies, resolveExpoUrl: async () => 'exp+example://expo-development-client/?url=http%3A%2F%2F127.0.0.1%3A9999' })).rejects.toMatchObject({ code: 'PROCESS_FAILED' });
+    expect(fixture.calls).toEqual([]);
+    await expect(controlApp(expo, 'restart', {}, { ...dependencies, resolveExpoUrl: async () => 'exp+example://expo-development-client/?url=http%3A%2F%2Fevil.example%3A8081' })).rejects.toMatchObject({ code: 'PROCESS_FAILED' });
+    expect(fixture.calls).toEqual([]);
+  });
   it('passes launch arguments and environment values unchanged', async () => {
     const fixture = fake();
     await controlApp(config, 'launch', { arguments: ['space value', '--literal=$HOME'], environment: ['TOKEN=top-secret', 'EMPTY='] }, fixture.dependencies);
