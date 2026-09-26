@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -39,6 +39,88 @@ describe('XCTest run manifest', () => {
 });
 
 describe('UI backend selection', () => {
+  it('keeps each recording active through its actions and supports multiple videos', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-videos-'));
+    const events: string[] = [];
+    const config = { version: 2 as const, platform: 'ios' as const, app: { type: 'native' as const, project: path.join(root, 'App.xcodeproj'), scheme: 'App', configuration: 'Debug',
+      bundleId: 'com.example.app' }, simulator: { udid: 'PHONE' }, root };
+    try {
+      const plan = { version: 1, actions: [
+        { startVideoRecording: { name: 'first' } }, { tap: { x: 10, y: 20 } }, { wait: { duration: 0 } },
+        { tap: { x: 30, y: 40 } }, { stopVideoRecording: {} },
+        { startVideoRecording: { name: 'second' } }, { tap: { x: 50, y: 60 } }, { stopVideoRecording: {} },
+      ] };
+      const output = await runUiPlan(config, { json: JSON.stringify(plan) }, {
+        backend: 'idb',
+        startRecording: async (_udid, file) => {
+          events.push(`start:${path.basename(file)}`);
+          return { stop: async () => { events.push('stop'); } };
+        },
+        run: async (executable, args) => {
+          if (executable === 'idb' && args[1] === 'describe-all') return result('[]');
+          if (executable === 'idb' && args[1] === 'tap') events.push(`tap:${args[2]}`);
+          return result();
+        },
+      });
+      expect(events).toEqual(['start:1-first.mp4', 'tap:10', 'tap:30', 'stop', 'start:2-second.mp4', 'tap:50', 'stop']);
+      expect(output.recordings).toHaveLength(2);
+      expect(output.segments).toHaveLength(2);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('stops a recording when an action fails', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-video-failure-'));
+    let stopped = false;
+    const config = { version: 2 as const, platform: 'ios' as const, app: { type: 'native' as const, project: path.join(root, 'App.xcodeproj'), scheme: 'App', configuration: 'Debug',
+      bundleId: 'com.example.app' }, simulator: { udid: 'PHONE' }, root };
+    try {
+      await expect(runUiPlan(config, { json: JSON.stringify({ version: 1, actions: [
+        { startVideoRecording: {} }, { assertVisible: { label: 'Missing' } }, { stopVideoRecording: {} },
+      ] }) }, {
+        backend: 'idb',
+        startRecording: async () => ({ stop: async () => { stopped = true; } }),
+        run: async (executable, args) => executable === 'idb' && args[1] === 'describe-all' ? result('[]') : result(),
+      })).rejects.toMatchObject({ code: 'UI_DELIVERY_FAILED' });
+      expect(stopped).toBe(true);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('keeps one XCTest session across recording boundaries', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-xctest-video-'));
+    const manifest = path.join(root, '.agemu', 'RunnerDerivedData', 'Build', 'Runner.xctestrun');
+    await mkdir(path.dirname(manifest), { recursive: true });
+    await writeFile(manifest, 'fixture');
+    const events: string[] = [];
+    const config = { version: 2 as const, platform: 'ios' as const, app: { type: 'native' as const, project: path.join(root, 'App.xcodeproj'), scheme: 'App', configuration: 'Debug',
+      bundleId: 'com.example.app' }, simulator: { udid: 'PHONE' }, root };
+    try {
+      const output = await runUiPlan(config, { json: JSON.stringify({ version: 1, actions: [
+        { launch: {} }, { startVideoRecording: { name: 'flow' } }, { tap: { label: 'Save' } },
+        { stopVideoRecording: {} }, { assertVisible: { label: 'Saved' } },
+      ] }) }, {
+        backend: 'xctest',
+        startRecording: async () => { events.push('start'); return { stop: async () => { events.push('stop'); } }; },
+        run: async (executable, args) => {
+          if (executable === 'plutil' && args[1] === 'json') return result(JSON.stringify({ AgentRunner: { TestBundlePath: 'Runner.xctest' } }));
+          if (executable === 'xcodebuild' && args[0] === 'test-without-building') {
+            const runManifest = JSON.parse(await readFile(args[args.indexOf('-xctestrun') + 1], 'utf8'));
+            const environment = runManifest.AgentRunner.EnvironmentVariables;
+            const plan = JSON.parse(Buffer.from(environment.AGEMU_PLAN_BASE64, 'base64').toString());
+            expect(plan.actions).toHaveLength(5);
+            const url = `http://127.0.0.1:${environment.AGEMU_VIDEO_PORT}`;
+            expect((await fetch(`${url}/start?name=flow`, { method: 'POST' })).status).toBe(200);
+            events.push('tap');
+            expect((await fetch(`${url}/stop`, { method: 'POST' })).status).toBe(200);
+            return result(`AGEMU_RESULT:${Buffer.from(JSON.stringify({ completed: 5, trees: [] })).toString('base64')}\n`);
+          }
+          return result();
+        },
+      });
+      expect(events).toEqual(['start', 'tap', 'stop']);
+      expect(output).toMatchObject({ backend: 'xctest', recordings: [expect.stringContaining('1-flow.mp4')] });
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
   it('scrolls a target and holds a point through idb', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'agemu-gestures-'));
     const commands: string[][] = [];

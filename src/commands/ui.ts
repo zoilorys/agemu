@@ -6,7 +6,8 @@ import { CliError } from '../core/errors.js';
 import { redact } from '../core/redact.js';
 import { listDevices, resolveDevice } from '../native/simctl.js';
 import { runProcess, type ProcessResult, type RunOptions } from '../process/run-process.js';
-import { tryRunIdbPlan } from './idb-ui.js';
+import { idbCompatible, tryRunIdbPlan } from './idb-ui.js';
+import { createRecordingBridge, startVideoRecording, type Recording } from './video-recording.js';
 
 export type UiPlan = { version: 1; actions: unknown[] };
 export type Point = { x: number; y: number };
@@ -18,6 +19,7 @@ type Dependencies = {
   runnerProject?: string;
   now?: () => Date;
   backend?: 'auto' | 'idb' | 'xctest';
+  startRecording?: (udid: string, file: string) => Promise<Recording>;
 };
 
 const bundledRunner = fileURLToPath(new URL('../../runner/AgentRunner.xcodeproj', import.meta.url));
@@ -30,8 +32,24 @@ function validatePlan(value: unknown): UiPlan {
   }
   const object = (item: unknown): item is Record<string, unknown> => typeof item === 'object' && item !== null && !Array.isArray(item);
   const point = (item: unknown): item is Point => object(item) && Number.isFinite(item.x) && Number.isFinite(item.y);
+  let recording = false;
   for (const [index, raw] of plan.actions.entries()) {
     if (!object(raw)) continue;
+    if ('startVideoRecording' in raw || 'stopVideoRecording' in raw) {
+      const keys = Object.keys(raw);
+      if (keys.length !== 1 || !object(raw[keys[0]])) throw new CliError('UI_VALIDATION_FAILED', `Action ${index}: recording action must contain one object`);
+      const value = raw[keys[0]] as Record<string, unknown>;
+      if (keys[0] === 'startVideoRecording') {
+        if (recording || Object.keys(value).some(key => key !== 'name') || (value.name !== undefined && (typeof value.name !== 'string' || !value.name.trim()))) {
+          throw new CliError('UI_VALIDATION_FAILED', `Action ${index}: invalid or nested startVideoRecording`);
+        }
+        recording = true;
+      } else {
+        if (!recording || Object.keys(value).length !== 0) throw new CliError('UI_VALIDATION_FAILED', `Action ${index}: stopVideoRecording has no active recording`);
+        recording = false;
+      }
+      continue;
+    }
     if ('swipe' in raw) {
       const swipe = raw.swipe;
       const directional = object(swipe) && ['up', 'down', 'left', 'right'].includes(String(swipe.direction))
@@ -64,6 +82,7 @@ function validatePlan(value: unknown): UiPlan {
       }
     }
   }
+  if (recording) throw new CliError('UI_VALIDATION_FAILED', 'Every startVideoRecording needs a matching stopVideoRecording');
   return value as UiPlan;
 }
 
@@ -140,16 +159,77 @@ export async function runUiPlan(config: LoadedConfig, source: { file: string } |
   await mkdir(directory, { recursive: true });
   const udid = await (dependencies.resolveUdid?.(config)
     ?? (config.simulator.udid || listDevices().then(devices => resolveDevice(devices, config.simulator).udid)));
+  if (plan.actions.some(action => typeof action === 'object' && action !== null && 'startVideoRecording' in action)) {
+    const segments: Array<{ actions: unknown[]; recording?: 'start' | 'stop'; name?: string }> = [];
+    let actions: unknown[] = [];
+    for (const raw of plan.actions) {
+      const action = raw as Record<string, Record<string, unknown>>;
+      if ('startVideoRecording' in action || 'stopVideoRecording' in action) {
+        if (actions.length) segments.push({ actions });
+        actions = [];
+        segments.push('startVideoRecording' in action
+          ? { actions: [], recording: 'start', name: action.startVideoRecording.name as string | undefined }
+          : { actions: [], recording: 'stop' });
+      } else actions.push(raw);
+    }
+    if (actions.length) segments.push({ actions });
+    const actionSegments = segments.filter(segment => !segment.recording);
+    const supportsIdb = actionSegments.every(segment => idbCompatible({ version: 1, actions: segment.actions }));
+    let useIdb = false;
+    if (backend !== 'xctest' && supportsIdb) {
+      try {
+        const probe = await run('idb', ['ui', 'describe-all', '--api', 'axbridge', '--udid', udid], { timeoutMs: 8_000 });
+        useIdb = probe.exitCode === 0 && Array.isArray(JSON.parse(probe.stdout));
+      } catch { /* XCTest can run the complete plan. */ }
+    }
+    if (!useIdb) {
+      if (backend === 'idb') throw new CliError('UI_DELIVERY_FAILED', 'idb is unavailable or the UI plan is incompatible with idb');
+      const bridge = await createRecordingBridge(udid, directory, config.root, dependencies.startRecording ?? startVideoRecording);
+      try {
+        const result = await runUiSegment(config, plan, udid, directory, run, 'xctest', dependencies, bridge.port);
+        return { ...result, durationMs: Date.now() - runStarted, recordings: bridge.recordings };
+      } finally { await bridge.close(); }
+    }
+    const outputs: Array<Record<string, unknown>> = [];
+    const recordings: string[] = [];
+    let active: Recording | undefined;
+    try {
+      for (const [index, segment] of segments.entries()) {
+        if (segment.recording === 'start') {
+          const name = segment.name?.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 80) || 'video';
+          const file = path.join(directory, `${recordings.length + 1}-${name}.mp4`);
+          active = await (dependencies.startRecording ?? startVideoRecording)(udid, file);
+          recordings.push(path.relative(config.root, file));
+        } else if (segment.recording === 'stop') {
+          const recording = active!;
+          active = undefined;
+          await recording.stop();
+        } else {
+          const location = path.join(directory, `segment-${index}`);
+          await mkdir(location, { recursive: true });
+          outputs.push(await runUiSegment(config, { version: 1, actions: segment.actions }, udid, location, run, 'idb', dependencies));
+        }
+      }
+    } finally {
+      if (active) await active.stop();
+    }
+    return { run: path.relative(config.root, directory), udid, actions: plan.actions.length, durationMs: Date.now() - runStarted, recordings, segments: outputs };
+  }
+  return { ...await runUiSegment(config, plan, udid, directory, run, backend, dependencies), durationMs: Date.now() - runStarted };
+}
+
+async function runUiSegment(config: LoadedConfig, plan: UiPlan, udid: string, directory: string,
+  run: NonNullable<Dependencies['run']>, backend: 'auto' | 'idb' | 'xctest', dependencies: Dependencies, videoPort?: number) {
   if (backend !== 'xctest') {
     const fast = await tryRunIdbPlan(config, plan, udid, directory, run);
-    if (fast) return { ...fast, durationMs: Date.now() - runStarted };
+    if (fast) return fast;
     if (backend === 'idb') throw new CliError('UI_DELIVERY_FAILED', 'idb is unavailable or the UI plan is incompatible with idb');
   }
   const built = await buildUiRunner(config, { ...dependencies, resolveUdid: async () => udid });
   const json = await checked(run, 'plutil', ['-convert', 'json', '-o', '-', built.manifest], 'Unable to read the XCTest run manifest');
   const manifestValue = JSON.parse(json.stdout) as unknown;
   const encodedPlan = Buffer.from(JSON.stringify({ ...plan, bundleId: targetBundleId(config) }), 'utf8').toString('base64');
-  if (injectEnvironment(manifestValue, { AGEMU_PLAN_BASE64: encodedPlan }) === 0) {
+  if (injectEnvironment(manifestValue, { AGEMU_PLAN_BASE64: encodedPlan, ...(videoPort === undefined ? {} : { AGEMU_VIDEO_PORT: String(videoPort) }) }) === 0) {
     throw new CliError('BUILD_FAILED', 'The XCTest run manifest contains no test target');
   }
   const manifest = path.join(path.dirname(built.manifest), `AgentRunner-${process.pid}-${Date.now()}.xctestrun`);
@@ -171,7 +251,7 @@ export async function runUiPlan(config: LoadedConfig, source: { file: string } |
   const runnerResult = marker ? JSON.parse(Buffer.from(marker.slice(marker.indexOf('AGEMU_RESULT:') + 13), 'base64').toString('utf8')) : undefined;
   return {
     run: path.relative(config.root, directory), udid: built.udid, bundleId: redact(targetBundleId(config), config.redactions ?? []),
-    backend: 'xctest', runnerCached: built.cached, durationMs: Date.now() - runStarted,
+    backend: 'xctest', runnerCached: built.cached,
     actions: plan.actions.length, runnerResult, resultBundle: path.relative(config.root, resultBundle), transcript: path.relative(config.root, transcript),
   };
 }

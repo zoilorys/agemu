@@ -15,7 +15,7 @@ function record(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function compatible(plan: UiPlan): boolean {
+export function idbCompatible(plan: UiPlan): boolean {
   return plan.actions.every((action) => {
     if (!record(action)) return false;
     const keys = Object.keys(action);
@@ -79,7 +79,7 @@ function swipePoints(frame: NonNullable<Element['frame']>, direction: string): [
 }
 
 export async function tryRunIdbPlan(config: LoadedConfig, plan: UiPlan, udid: string, directory: string, run: Run) {
-  if (!compatible(plan)) return undefined;
+  if (!idbCompatible(plan)) return undefined;
   const idb = (args: string[]) => run('idb', [...args, '--udid', udid], { timeoutMs: 8_000 });
   try {
     const probe = await idb(['ui', 'describe-all', '--api', 'axbridge']);

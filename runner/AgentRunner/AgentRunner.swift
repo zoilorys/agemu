@@ -13,6 +13,8 @@ final class AgentRunner: XCTestCase {
         let assertValue: ValueAssertion?
         let screenshot: Screenshot?
         let inspect: Empty?
+        let startVideoRecording: VideoRecording?
+        let stopVideoRecording: Empty?
     }
     private struct Launch: Decodable { let arguments: [String]?; let environment: [String: String]? }
     private struct Target: Decodable { let identifier: String?; let label: String?; let x: Double?; let y: Double? }
@@ -24,6 +26,7 @@ final class AgentRunner: XCTestCase {
     private struct ValueAssertion: Decodable { let identifier: String?; let label: String?; let value: String }
     private struct Screenshot: Decodable { let name: String? }
     private struct Empty: Decodable {}
+    private struct VideoRecording: Decodable { let name: String? }
     private struct Result: Encodable { let completed: Int; let bundleId: String; let trees: [String] }
 
     @MainActor
@@ -68,6 +71,10 @@ final class AgentRunner: XCTestCase {
                 add(attachment)
             } else if action.inspect != nil {
                 trees.append(app.debugDescription)
+            } else if let video = action.startVideoRecording {
+                try recordingRequest("/start?name=\((video.name ?? "video").addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? "video")")
+            } else if action.stopVideoRecording != nil {
+                try recordingRequest("/stop")
             } else {
                 XCTFail("Action \(index) has no supported operation")
             }
@@ -75,6 +82,29 @@ final class AgentRunner: XCTestCase {
 
         let output = try JSONEncoder().encode(Result(completed: plan.actions.count, bundleId: plan.bundleId, trees: trees))
         print("AGEMU_RESULT:\(output.base64EncodedString())")
+    }
+
+    private func recordingRequest(_ path: String) throws {
+        guard let port = ProcessInfo.processInfo.environment["AGEMU_VIDEO_PORT"],
+              let url = URL(string: "http://127.0.0.1:\(port)\(path)") else {
+            throw NSError(domain: "AgentRunner", code: 3, userInfo: [NSLocalizedDescriptionKey: "Recording bridge is unavailable"])
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 30
+        let semaphore = DispatchSemaphore(value: 0)
+        var responseError: Error?
+        URLSession.shared.dataTask(with: request) { data, response, error in
+            if let error { responseError = error }
+            else if (response as? HTTPURLResponse)?.statusCode != 200 {
+                responseError = NSError(domain: "AgentRunner", code: 4, userInfo: [NSLocalizedDescriptionKey: String(data: data ?? Data(), encoding: .utf8) ?? "Recording request failed"])
+            }
+            semaphore.signal()
+        }.resume()
+        if semaphore.wait(timeout: .now() + 30) == .timedOut {
+            throw NSError(domain: "AgentRunner", code: 5, userInfo: [NSLocalizedDescriptionKey: "Recording request timed out"])
+        }
+        if let responseError { throw responseError }
     }
 
     @MainActor

@@ -54,7 +54,8 @@ agemu ui run (--plan=FILE | --plan-json=JSON) [--backend=auto|idb|xctest]
   auto uses idb when its companion supports the plan, then falls back to XCTest.
   Use xctest to keep an .xcresult bundle; idb saves a transcript and screenshots.
   Build and install the app first, except Expo Go, which uses an installed host. Swipe accepts duration in seconds; wait accepts a target with timeout or a duration-only pause. Actions include launch, wait, type, tap, swipe, longPress,
-  assertVisible, screenshot, and inspect.`,
+  assertVisible, screenshot, inspect, startVideoRecording, and stopVideoRecording.
+  Pair each recording start with a stop. Repeated pairs create separate MP4 files.`,
   doctor: `agemu doctor
   Check Node.js, Xcode, configuration, Simulator, app prerequisites, and write access. Does not install dependencies or generate native files.`,
 };

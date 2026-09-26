@@ -190,8 +190,10 @@ Build and install native, bare React Native, or Expo development apps first. For
     { "swipe": { "direction": "up", "identifier": "resultsList", "duration": 0.3 } },
     { "wait": { "duration": 0.5 } },
     { "longPress": { "label": "More options", "duration": 1.5 } },
+    { "startVideoRecording": { "name": "save-flow" } },
     { "tap": { "identifier": "save" } },
     { "assertVisible": { "label": "Saved" } },
+    { "stopVideoRecording": {} },
     { "screenshot": { "name": "saved" } }
   ]
 }
@@ -204,6 +206,8 @@ agemu ui run --plan=ui-plan.json
 ```
 
 `ui run` uses `idb` when an installed companion supports the plan. Otherwise it uses the bundled XCTest runner. [Install idb](https://fbidb.io/docs/idb/installation/) to enable this path. Use `--backend=xctest` when you need an `.xcresult` bundle, or `--backend=idb` to require `idb`. An `idb` run returns `backend`, `transcript`, and `screenshots` paths. An XCTest run returns `backend`, `runnerCached`, `resultBundle`, and `transcript`.
+
+`startVideoRecording` begins capturing the selected Simulator to an MP4 in the run directory. `stopVideoRecording` finishes that file. Each start needs one stop, and starts cannot overlap. Put every action you want in one video between the pair; repeat the pair for separate videos in the same plan. The optional `name` labels the file. Plans with recordings return `recordings` paths. idb also returns `segments` results for the actions between recording boundaries. If an action fails, agemu stops the active recording before returning the error.
 
 For a short plan, pass JSON directly:
 

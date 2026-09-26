@@ -109,6 +109,26 @@ test.skipIf(!enabled)('proves the public native workflow', async (context) => {
     })]), 'ui run gestures');
     expect(gestures).toMatchObject({ backend: 'xctest', runnerResult: { completed: 9 } });
 
+    const videos = data(await run(root, ['ui', 'run', '--backend=xctest', '--plan-json=' + JSON.stringify({
+      version: 1, actions: [
+        { launch: {} },
+        { startVideoRecording: { name: 'scroll' } },
+        { swipe: { identifier: 'resultsList', direction: 'up' } },
+        { assertValue: { identifier: 'gestureStatus', value: 'scrolled' } },
+        { wait: { duration: 1 } },
+        { stopVideoRecording: {} },
+        { startVideoRecording: { name: 'press' } },
+        { longPress: { identifier: 'pressTarget', duration: 1 } },
+        { assertValue: { identifier: 'gestureStatus', value: 'pressed' } },
+        { wait: { duration: 1 } },
+        { stopVideoRecording: {} },
+      ],
+    })]), 'ui run videos');
+    expect(videos).toMatchObject({ backend: 'xctest', runnerResult: { completed: 11 } });
+    const recordings = videos.recordings as string[];
+    expect(recordings).toHaveLength(2);
+    for (const file of recordings) expect((await stat(path.join(root, file))).size).toBeGreaterThan(0);
+
     data(await run(root, ['app', 'terminate']), 'app terminate');
     launched = false;
     if (bootedByTest) {
