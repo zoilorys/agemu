@@ -1,4 +1,4 @@
-import { readdir, writeFile, access } from 'node:fs/promises';
+import { readdir, writeFile, access, readFile } from 'node:fs/promises';
 import { createInterface } from 'node:readline/promises';
 import path from 'node:path';
 import { CliError } from '../core/errors.js';
@@ -65,7 +65,13 @@ export async function setup(root = process.cwd(), interactive = true): Promise<{
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
   }
   const sources = await findSources(root);
+  let reactNative = false;
+  try {
+    const manifest = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8')) as { dependencies?: Record<string, string>; devDependencies?: Record<string, string> };
+    reactNative = Boolean(manifest.dependencies?.['react-native'] || manifest.devDependencies?.['react-native']);
+  } catch { /* A native project need not have package.json. */ }
   const source = await choose('Xcode project or workspace', sources.filter((item) => !item.endsWith('project.xcworkspace')), (item) => item, interactive);
+  if (reactNative && !source.startsWith(`ios${path.sep}`)) throw new CliError('CONFIG_INVALID', 'React Native needs an Xcode source under ios/');
   const kind = source.endsWith('.xcworkspace') ? 'workspace' : 'project';
   const sourceArgs = [`-${kind}`, path.join(root, source)];
   const scheme = await choose('scheme', schemes(await checked([...sourceArgs, '-list', '-json']), kind), (item) => item, interactive);
@@ -75,8 +81,8 @@ export async function setup(root = process.cwd(), interactive = true): Promise<{
   const bundleIds = [...new Set([...settings.matchAll(/^\s*PRODUCT_BUNDLE_IDENTIFIER\s*=\s*(\S+)\s*$/gm)].map((match) => match[1]).filter((id) => !id.includes('$') && !id.endsWith('.tests') && !id.endsWith('.Tests')))];
   const bundleId = await choose('bundle ID', bundleIds, (item) => item, interactive);
   const app: DebugConfig['app'] = kind === 'project'
-    ? { type: 'native', project: source, scheme, configuration: 'Debug', bundleId }
-    : { type: 'native', workspace: source, scheme, configuration: 'Debug', bundleId };
+    ? { type: reactNative ? 'react-native' : 'native', ...(reactNative ? { root: '.', port: 8081 } : {}), project: source, scheme, configuration: 'Debug', bundleId } as DebugConfig['app']
+    : { type: reactNative ? 'react-native' : 'native', ...(reactNative ? { root: '.', port: 8081 } : {}), workspace: source, scheme, configuration: 'Debug', bundleId } as DebugConfig['app'];
   const config: DebugConfig = { version: 2, platform: 'ios', app, simulator: { udid: device.udid } };
   await writeFile(file, `${JSON.stringify(config, null, 2)}\n`, { flag: 'wx' });
   return { file, config };

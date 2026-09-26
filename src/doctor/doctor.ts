@@ -63,7 +63,7 @@ export async function doctor(dependencies: Dependencies = {}): Promise<DoctorRes
 
   if (!config) {
     for (const name of ['project', 'scheme', 'simulator'] as const) checks[name] = { ok: false, message: 'configuration is unavailable' };
-  } else if (config.app.type !== 'native') {
+  } else if (config.app.type === 'expo') {
     const unsupported = `${config.app.type} workflow is not implemented yet`;
     checks.workflow = { ok: false, message: unsupported };
     checks.project = { ok: false, message: unsupported };
@@ -74,6 +74,12 @@ export async function doctor(dependencies: Dependencies = {}): Promise<DoctorRes
     } catch (error) { checks.simulator = { ok: false, message: message(error) }; }
   } else {
     const app = nativeApp(config);
+    if (app.type === 'react-native') {
+      try { await access(path.join(app.root, 'node_modules', 'react-native', 'package.json')); checks.reactNative = { ok: true, message: 'local React Native installed' }; }
+      catch { checks.reactNative = { ok: false, message: 'Install project dependencies: node_modules/react-native is missing' }; }
+      try { await access(path.join(app.root, 'ios')); checks.ios = { ok: true, message: 'ios/ exists' }; }
+      catch { checks.ios = { ok: false, message: 'React Native ios/ directory is missing' }; }
+    }
     const source = app.project ?? app.workspace!;
     try {
       await access(source, constants.F_OK);

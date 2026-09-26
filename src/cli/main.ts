@@ -12,6 +12,7 @@ import { diagnose, observe, showLogs } from '../commands/diagnostics.js';
 import { buildUiRunner, runUiPlan } from '../commands/ui.js';
 import { helpFor } from './help.js';
 import { setup } from '../commands/setup.js';
+import { server } from '../commands/server.js';
 
 const args = process.argv.slice(2);
 const packageVersion = (JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8')) as { version: string }).version;
@@ -89,6 +90,11 @@ else if (args.includes('--version')) {
   } else if (command === 'build') {
     const config = await loadNativeConfig();
     data = await buildApp(config);
+  } else if (command === 'server') {
+    const config = await loadConfig();
+    const action = (['start', 'status', 'stop'] as const).find((name) => args.includes(name));
+    if (!action) throw new CliError('COMMAND_INVALID', 'server requires start, status, or stop');
+    data = await server(config, action);
   } else if (command === 'app') {
     const config = await loadNativeConfig();
     const action = (['install', 'launch', 'terminate', 'restart', 'open-url'] as AppAction[]).find((name) => args.includes(name));

@@ -5,6 +5,7 @@ const common = `Global options:
   --debug      Include error details in failed JSON responses.`;
 
 const commands: Record<string, string> = {
+  server: `agemu server start\n  Start Metro for the configured React Native project.\n\nagemu server status\n  Report server readiness and ownership.\n\nagemu server stop\n  Stop only a server started by agemu for this project.`,
   setup: `agemu setup\n  Find an Xcode project or workspace, scheme, bundle ID, and simulator.\n  Prompt when there are multiple choices, then write .agemu.json.`,
   config: `agemu config show
   Show the resolved .agemu.json configuration, excluding internal paths and redaction values.`,
@@ -69,6 +70,9 @@ Commands:
   simulator boot       Boot the selected simulator.
   simulator shutdown   Shut down the selected simulator.
   build                Build the configured iOS app.
+  server start         Start the React Native Metro server.
+  server status        Inspect Metro readiness and ownership.
+  server stop          Stop an agemu-owned Metro server.
   app install          Install the built app.
   app launch           Launch the configured app.
   app terminate        Stop the configured app.

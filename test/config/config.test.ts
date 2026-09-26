@@ -58,7 +58,7 @@ describe('config', () => {
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 
-  it('loads React Native paths but blocks native execution', async () => {
+  it('loads React Native paths for native execution', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'agemu-config-'));
     try {
       await writeFile(path.join(root, '.agemu.json'), JSON.stringify({
@@ -67,7 +67,7 @@ describe('config', () => {
       }));
       const config = await loadConfig(root);
       expect(config.app).toMatchObject({ root: path.join(root, 'mobile'), project: path.join(root, 'App/App.xcodeproj') });
-      expect(() => nativeApp(config)).toThrowError(expect.objectContaining({ code: 'WORKFLOW_UNSUPPORTED' }));
+      expect(nativeApp(config).type).toBe('react-native');
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 

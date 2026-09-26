@@ -63,8 +63,8 @@ function validate(value: unknown): Issue[] {
   if (value.redactions !== undefined && (!Array.isArray(value.redactions) || value.redactions.some(item => typeof item !== 'string'))) issues.push({ path: 'redactions', message: 'must be an array of strings' });
   return issues;
 }
-export function nativeApp(config: LoadedConfig): NativeApp {
-  if (config.app.type !== 'native') throw new CliError('WORKFLOW_UNSUPPORTED', `${config.app.type} workflow is not implemented yet`);
+export function nativeApp(config: LoadedConfig): NativeApp | ReactNativeApp {
+  if (config.app.type !== 'native' && config.app.type !== 'react-native') throw new CliError('WORKFLOW_UNSUPPORTED', `${config.app.type} workflow is not implemented yet`);
   return config.app;
 }
 export async function loadConfig(root = process.cwd()): Promise<LoadedConfig> {

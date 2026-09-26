@@ -66,7 +66,7 @@ describe('doctor', () => {
     }
   });
 
-  it.each(['react-native', 'expo'] as const)('reports pending %s workflow without probing an Xcode scheme', async (type) => {
+  it.each(['react-native', 'expo'] as const)('reports %s prerequisites', async (type) => {
     const root = await mkdtemp(path.join(tmpdir(), 'agemu-doctor-'));
     const calls: string[][] = [];
     try {
@@ -82,14 +82,13 @@ describe('doctor', () => {
       });
 
       expect(result.ready).toBe(false);
-      expect(result.checks).toMatchObject({
-        config: { ok: true },
-        workflow: { ok: false, message: expect.stringContaining(`${type} workflow is not implemented`) },
-        project: { ok: false, message: expect.stringContaining(`${type} workflow is not implemented`) },
-        scheme: { ok: false, message: expect.stringContaining(`${type} workflow is not implemented`) },
-        simulator: { ok: true },
-      });
-      expect(calls.some((args) => args.includes('-showBuildSettings'))).toBe(false);
+      if (type === 'react-native') {
+        expect(result.checks).toMatchObject({ config: { ok: true }, reactNative: { ok: false }, ios: { ok: false }, project: { ok: false }, scheme: { ok: true }, simulator: { ok: true } });
+        expect(calls.some((args) => args.includes('-showBuildSettings'))).toBe(true);
+      } else {
+        expect(result.checks).toMatchObject({ config: { ok: true }, workflow: { ok: false }, simulator: { ok: true } });
+        expect(calls.some((args) => args.includes('-showBuildSettings'))).toBe(false);
+      }
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 
