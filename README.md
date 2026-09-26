@@ -50,7 +50,7 @@ claude plugin install agemu@agemu
 
 ## Configure an app
 
-Run `agemu setup` from the app root. It detects native iOS, bare React Native, or Expo, selects a Simulator, and writes `.agemu.json` without replacing an existing file. Use `--udid=ID` to choose a Simulator. Noninteractive setup selects the sole booted Simulator when several are installed. Interactive Expo setup asks for the launch target; noninteractive setup selects a development build. Use `agemu setup --expo-go` to select Expo Go explicitly. Expo Go must already be installed on the selected Simulator. Setup and `doctor` do not install dependencies or generate native files.
+Run `agemu setup` from the app root. It detects native iOS, bare React Native, or Expo, selects a Simulator, and writes `.agemu.json` without replacing an existing file. Use `--udid=ID` to choose a Simulator. When several are installed, noninteractive setup selects the sole booted Simulator. If none or several are booted, pass `--udid=ID`. Interactive Expo setup asks for the launch target; noninteractive setup selects a development build. Use `agemu setup --expo-go` to select Expo Go explicitly. Expo Go must already be installed on the selected Simulator. Setup and `doctor` do not install dependencies or generate native files.
 
 You can also add `.agemu.json` manually:
 
@@ -184,17 +184,17 @@ Build and install native, bare React Native, or Expo development apps first. For
 {
   "version": 1,
   "actions": [
+    { "startVideoRecording": { "name": "save-flow" } },
     { "launch": { "arguments": ["--ui-testing"], "environment": { "RUN_ID": "example" } } },
     { "wait": { "identifier": "email", "timeout": 5 } },
     { "type": { "identifier": "email", "text": "agent@example.com" } },
     { "swipe": { "direction": "up", "identifier": "resultsList", "duration": 0.3 } },
     { "wait": { "duration": 0.5 } },
     { "longPress": { "label": "More options", "duration": 1.5 } },
-    { "startVideoRecording": { "name": "save-flow" } },
     { "tap": { "identifier": "save" } },
     { "assertVisible": { "label": "Saved" } },
-    { "stopVideoRecording": {} },
-    { "screenshot": { "name": "saved" } }
+    { "screenshot": { "name": "saved" } },
+    { "stopVideoRecording": {} }
   ]
 }
 ```
@@ -207,7 +207,7 @@ agemu ui run --plan=ui-plan.json
 
 `ui run` uses `idb` when an installed companion supports the plan. Otherwise it uses the bundled XCTest runner. [Install idb](https://fbidb.io/docs/idb/installation/) to enable this path. Use `--backend=xctest` when you need an `.xcresult` bundle, or `--backend=idb` to require `idb`. An `idb` run returns `backend`, `transcript`, and `screenshots` paths. An XCTest run returns `backend`, `runnerCached`, `resultBundle`, and `transcript`.
 
-`startVideoRecording` begins capturing the selected Simulator to an MP4 in the run directory. `stopVideoRecording` finishes that file. Each start needs one stop, and starts cannot overlap. Put every action you want in one video between the pair; repeat the pair for separate videos in the same plan. The optional `name` labels the file. Plans with recordings return `recordings` paths. idb also returns `segments` results for the actions between recording boundaries. If an action fails, agemu stops the active recording before returning the error.
+`startVideoRecording` begins capturing the selected Simulator to an MP4 in the run directory. `stopVideoRecording` finishes that file. Put the pair around the entire sequence you want to show, including waits and screenshots. Keep it open until the last action; use another pair only when you want a separate clip. Starts cannot overlap, and every start needs a stop. The optional `name` labels the file. Plans with recordings return `recordings` paths. idb also returns `segments` results for actions between recording boundaries. If an action fails, agemu stops the active recording before returning the error.
 
 For a short plan, pass JSON directly:
 
