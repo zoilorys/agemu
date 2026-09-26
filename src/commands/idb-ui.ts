@@ -1,6 +1,6 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { nativeApp, type LoadedConfig } from '../config/config.js';
+import { targetBundleId, type LoadedConfig } from '../config/config.js';
 import { CliError } from '../core/errors.js';
 import { redact } from '../core/redact.js';
 import type { ProcessResult, RunOptions } from '../process/run-process.js';
@@ -109,13 +109,13 @@ export async function tryRunIdbPlan(config: LoadedConfig, plan: UiPlan, udid: st
       const [kind] = Object.keys(action);
       const value = action[kind];
       if (kind === 'launch') {
-        const stopped = await run('xcrun', ['simctl', 'terminate', udid, nativeApp(config).bundleId]);
+        const stopped = await run('xcrun', ['simctl', 'terminate', udid, targetBundleId(config)]);
         if (stopped.exitCode !== 0 && !/not running|no such process|found nothing to terminate/i.test(stopped.stderr)) {
           throw new Error(stopped.stderr.trim() || 'Unable to terminate the app');
         }
         const environment = { ...process.env };
         for (const [key, entry] of Object.entries(value.environment ?? {})) environment[`SIMCTL_CHILD_${key}`] = String(entry);
-        await execute('xcrun', ['simctl', 'launch', udid, nativeApp(config).bundleId, ...((value.arguments as string[] | undefined) ?? [])], { env: environment });
+        await execute('xcrun', ['simctl', 'launch', udid, targetBundleId(config), ...((value.arguments as string[] | undefined) ?? [])], { env: environment });
       } else if (kind === 'wait') {
         const timeout = (value.timeout as number | undefined) ?? 5;
         const deadline = Date.now() + timeout * 1000;
@@ -155,8 +155,8 @@ export async function tryRunIdbPlan(config: LoadedConfig, plan: UiPlan, udid: st
       }
     }
     return {
-      run: path.relative(config.root, directory), udid, bundleId: redact(nativeApp(config).bundleId, config.redactions ?? []),
-      backend: 'idb', actions: plan.actions.length, runnerResult: { completed: plan.actions.length, bundleId: nativeApp(config).bundleId, trees },
+      run: path.relative(config.root, directory), udid, bundleId: redact(targetBundleId(config), config.redactions ?? []),
+      backend: 'idb', actions: plan.actions.length, runnerResult: { completed: plan.actions.length, bundleId: targetBundleId(config), trees },
       screenshots, transcript: path.relative(config.root, transcript),
     };
   } catch (error) {

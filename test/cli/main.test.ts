@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { chmod, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -59,6 +59,49 @@ describe('agemu CLI', () => {
     } finally {
       await rm(root, { recursive: true, force: true });
     }
+  });
+
+  it('routes Expo Go UI launch to its installed host', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-expo-ui-'));
+    const calls = path.join(root, 'calls.txt');
+    await writeFile(path.join(root, '.agemu.json'), JSON.stringify({
+      version: 2, platform: 'ios', app: { type: 'expo', root: '.', port: 8081, launchTarget: 'expo-go', hostBundleId: 'host.exp.Exponent' }, simulator: { udid: 'PHONE' },
+    }));
+    await writeFile(path.join(root, 'idb'), `#!/bin/sh\necho "idb $*" >> "${calls}"\nif [ "$1" = "ui" ] && [ "$2" = "describe-all" ]; then echo '[]'; fi\n`);
+    await writeFile(path.join(root, 'xcrun'), `#!/bin/sh\necho "xcrun $*" >> "${calls}"\n`);
+    await chmod(path.join(root, 'idb'), 0o755);
+    await chmod(path.join(root, 'xcrun'), 0o755);
+    try {
+      const { stdout } = await run(process.execPath, [cli, 'ui', 'run', '--backend=idb', '--plan-json={"version":1,"actions":[{"launch":{}}]}'], { cwd: root, env: { ...process.env, PATH: `${root}:${process.env.PATH ?? ''}` } });
+      expect(JSON.parse(stdout).data.backend).toBe('idb');
+      const invoked = await readFile(calls, 'utf8');
+      expect(invoked).toContain('xcrun simctl launch PHONE host.exp.Exponent');
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+
+  it('routes Expo Go logs and diagnose through host-aware handlers', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-expo-diagnostics-'));
+    await writeFile(path.join(root, '.agemu.json'), JSON.stringify({
+      version: 2, platform: 'ios', app: { type: 'expo', root: '.', port: 8081, launchTarget: 'expo-go', hostBundleId: 'host.exp.Exponent' }, simulator: { udid: 'PHONE' },
+    }));
+    await writeFile(path.join(root, 'xcrun'), `#!/bin/sh
+if [ "$1" = "simctl" ] && [ "$2" = "list" ]; then
+  echo '{"devices":{"com.apple.CoreSimulator.SimRuntime.iOS-18-0":[{"udid":"PHONE","name":"iPhone","state":"Booted","isAvailable":true}]}}'
+elif [ "$1" = "simctl" ] && [ "$2" = "listapps" ]; then
+  echo '{ "host.exp.Exponent" = { CFBundleIdentifier = "host.exp.Exponent"; CFBundleExecutable = Exponent; }; }'
+elif [ "$1" = "simctl" ] && [ "$2" = "spawn" ]; then
+  echo 'Expo host log'
+fi
+`);
+    await chmod(path.join(root, 'xcrun'), 0o755);
+    const env = { ...process.env, PATH: `${root}:${process.env.PATH ?? ''}` };
+    try {
+      const logs = JSON.parse((await run(process.execPath, [cli, 'logs', 'show'], { cwd: root, env })).stdout);
+      expect(logs.data).toMatchObject({ bundleId: 'host.exp.Exponent', logs: ['Expo host log'] });
+      const diagnosis = JSON.parse((await run(process.execPath, [cli, 'diagnose'], { cwd: root, env })).stdout);
+      expect(diagnosis.data).toMatchObject({ bundleId: 'host.exp.Exponent', evidence: { host: { bundleId: 'host.exp.Exponent' } } });
+    } finally { await rm(root, { recursive: true, force: true }); }
   });
 
   it('shows normalized config without its internal root', async () => {

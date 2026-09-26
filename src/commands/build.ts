@@ -41,6 +41,7 @@ async function writeLog(file: string, log: BuildLog): Promise<void> {
 }
 
 export async function buildApp(config: LoadedConfig, dependencies: Dependencies = {}) {
+  if (config.app.type === 'expo' && config.app.launchTarget === 'expo-go') throw new CliError('WORKFLOW_UNSUPPORTED', 'Expo Go uses an existing installed host; no native build is needed');
   const run = dependencies.run ?? runProcess;
   const now = dependencies.now?.() ?? new Date();
   const udid = await (dependencies.resolveUdid

@@ -65,13 +65,13 @@ async function removeState(file: string, state: State): Promise<void> {
 }
 export async function server(config: LoadedConfig, action: Action, dependencies: { processIdentity?: typeof processIdentity } = {}) {
   const inspect = dependencies.processIdentity ?? processIdentity;
-  if (config.app.type !== 'react-native' && !(config.app.type === 'expo' && config.app.launchTarget === 'development-build')) throw new CliError('WORKFLOW_UNSUPPORTED', 'server requires a React Native or Expo development-build app');
+  if (config.app.type !== 'react-native' && config.app.type !== 'expo') throw new CliError('WORKFLOW_UNSUPPORTED', 'server requires a React Native or Expo app');
   const app = config.app;
   const root = await realpath(app.root).catch(() => { throw new CliError('CONFIG_INVALID', 'React Native app root does not exist'); });
   const file = statePath(config.root);
   let state = await readState(file);
   if (state && !(await owned(state, inspect))) { await removeState(file, state); state = undefined; }
-  if (state && (state.command.startsWith('expo ') !== (app.type === 'expo'))) throw new CliError('PROCESS_FAILED', 'A different agemu-owned project server is running; stop it before switching workflow');
+  if (state && action !== 'stop' && (state.command.startsWith('expo ') !== (app.type === 'expo') || (app.type === 'expo' && state.command.includes('--go') !== (app.launchTarget === 'expo-go')))) throw new CliError('PROCESS_FAILED', 'A different agemu-owned project server is running; stop it before switching workflow');
   if (state && (state.root !== root || state.port !== app.port)) {
     if (action === 'stop' && state.root === root) {
       process.kill(state.pid, 'SIGTERM');
@@ -111,13 +111,13 @@ export async function server(config: LoadedConfig, action: Action, dependencies:
   await writeFile(secretsFile, JSON.stringify(config.redactions ?? []), { mode: 0o600, flag: 'wx' });
   let supervisor = new URL('../process/server-child.js', import.meta.url).pathname;
   try { await access(supervisor); } catch { supervisor = path.resolve(path.dirname(supervisor), '../../dist/process/server-child.js'); }
-  const child = spawn(process.execPath, [supervisor, token, root, String(app.port), cli, log, secretsFile], { cwd: root, detached: true, stdio: 'ignore' });
+  const child = spawn(process.execPath, [supervisor, token, root, String(app.port), cli, log, secretsFile, ...(app.type === 'expo' ? [app.launchTarget === 'expo-go' ? 'go' : 'dev-client'] : [])], { cwd: root, detached: true, stdio: 'ignore' });
   if (!child.pid) throw new CliError('PROCESS_FAILED', 'Unable to spawn Metro');
   child.unref();
   let identity: Awaited<ReturnType<typeof processIdentity>>;
   for (let i = 0; i < 20 && !identity; i++) { await sleep(50); identity = await processIdentity(child.pid); }
   if (!identity || !identity.command.includes(token)) throw new CliError('PROCESS_FAILED', 'Metro supervisor exited during startup');
-  state = { root, port: app.port, pid: child.pid, startedAt: identity.startedAt, token, command: app.type === 'expo' ? `expo start --dev-client --port ${app.port}` : `react-native start --port ${app.port}`, log };
+  state = { root, port: app.port, pid: child.pid, startedAt: identity.startedAt, token, command: app.type === 'expo' ? `expo start --${app.launchTarget === 'expo-go' ? 'go' : 'dev-client'} --port ${app.port}` : `react-native start --port ${app.port}`, log };
   const temporary = `${file}.${token}.tmp`;
   await writeFile(temporary, `${JSON.stringify(state)}\n`, { mode: 0o600 });
   await rename(temporary, file);

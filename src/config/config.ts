@@ -81,3 +81,7 @@ export async function loadConfig(root = process.cwd()): Promise<LoadedConfig> {
   if ('root' in app && app.root) app.root = path.resolve(root, app.root);
   return { ...config, app, root: path.resolve(root) } as LoadedConfig;
 }
+
+export function targetBundleId(config: LoadedConfig): string {
+  return config.app.type === 'expo' && config.app.launchTarget === 'expo-go' ? config.app.hostBundleId : config.app.bundleId;
+}

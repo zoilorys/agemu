@@ -4,6 +4,7 @@ import path from 'node:path';
 import { CliError } from '../core/errors.js';
 import type { DebugConfig } from '../config/config.js';
 import { listDevices, type Device } from '../native/simctl.js';
+import { installedExpoGoHosts } from '../native/expo-go.js';
 import { runProcess, type ProcessResult, type RunOptions } from '../process/run-process.js';
 
 const ignored = new Set(['.git', 'node_modules', '.build', '.agemu', 'Pods', 'DerivedData', 'build']);
@@ -75,7 +76,7 @@ async function choose<T>(label: string, choices: T[], describe: (choice: T) => s
   } finally { prompt.close(); }
 }
 
-export async function setup(root = process.cwd(), interactive = true): Promise<{ file: string; config: DebugConfig }> {
+export async function setup(root = process.cwd(), interactive = true, expoGo = false, dependencies: { listDevices?: typeof listDevices; installedExpoGoHosts?: typeof installedExpoGoHosts } = {}): Promise<{ file: string; config: DebugConfig }> {
   const file = path.join(root, '.agemu.json');
   try {
     await access(file);
@@ -92,10 +93,17 @@ export async function setup(root = process.cwd(), interactive = true): Promise<{
     expo = Boolean(manifest.dependencies?.expo || manifest.devDependencies?.expo);
   } catch { /* A native project need not have package.json. */ }
   if (expo) {
-    const expoBundleId = await resolveExpoBundleId(root);
-    const devices = await listDevices();
+    const devices = await (dependencies.listDevices ?? listDevices)();
     const device = await choose<Device>('simulator', devices, (item) => `${item.name} (${item.runtime}, ${item.state})`, interactive);
-    const config: DebugConfig = { version: 2, platform: 'ios', app: { type: 'expo', root: '.', port: 8081, launchTarget: 'development-build', bundleId: expoBundleId }, simulator: { udid: device.udid } };
+    const target = expoGo ? 'expo-go' : interactive && process.stdin.isTTY && process.stderr.isTTY
+      ? await choose('Expo launch target', ['development-build', 'expo-go'] as const, item => item, interactive)
+      : 'development-build';
+    const hosts = target === 'expo-go' ? await (dependencies.installedExpoGoHosts ?? installedExpoGoHosts)(device.udid) : [];
+    if (target === 'expo-go' && hosts.length === 0) throw new CliError('CONFIG_INVALID', `Expo Go is not installed on Simulator ${device.udid}; install it, then run agemu setup again`);
+    const app: DebugConfig['app'] = target === 'expo-go'
+      ? { type: 'expo', root: '.', port: 8081, launchTarget: 'expo-go', hostBundleId: await choose('Expo Go host', hosts, item => item, interactive) }
+      : { type: 'expo', root: '.', port: 8081, launchTarget: 'development-build', bundleId: await resolveExpoBundleId(root) };
+    const config: DebugConfig = { version: 2, platform: 'ios', app, simulator: { udid: device.udid } };
     await writeFile(file, `${JSON.stringify(config, null, 2)}\n`, { flag: 'wx' });
     return { file, config };
   }

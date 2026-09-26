@@ -6,7 +6,7 @@ const common = `Global options:
 
 const commands: Record<string, string> = {
   server: `agemu server start\n  Start Metro or Expo for the configured project. Expo development builds use --dev-client.\n\nagemu server status\n  Report server readiness and ownership.\n\nagemu server stop\n  Stop only a server started by agemu for this project.`,
-  setup: `agemu setup\n  Find an Xcode project or workspace, scheme, bundle ID, and simulator.\n  Prompt when there are multiple choices, then write .agemu.json.`,
+  setup: `agemu setup [--expo-go]\n  Find an Xcode project or workspace, scheme, bundle ID, and simulator.\n  Prompt when there are multiple choices, then write .agemu.json.\n  --expo-go requires an installed Expo Go host on the selected Simulator.`,
   config: `agemu config show
   Show the resolved .agemu.json configuration, excluding internal paths and redaction values.`,
   simulator: `agemu simulator list

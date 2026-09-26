@@ -3,6 +3,7 @@ import { constants } from 'node:fs';
 import path from 'node:path';
 import { loadConfig, nativeApp, type LoadedConfig } from '../config/config.js';
 import { listDevices, resolveDevice, type Device } from '../native/simctl.js';
+import { requireExpoGoHost } from '../native/expo-go.js';
 import { runProcess, type ProcessResult } from '../process/run-process.js';
 
 export type Check = { ok: boolean; message: string };
@@ -75,8 +76,12 @@ export async function doctor(dependencies: Dependencies = {}): Promise<DoctorRes
     }
     checks.scheme = { ok: true, message: 'Expo CLI chooses the native scheme during build' };
     try {
-      selectDevice(await devices(), config.simulator);
+      const device = selectDevice(await devices(), config.simulator);
       checks.simulator = { ok: true, message: 'resolved' };
+      if (app.launchTarget === 'expo-go') {
+        try { await requireExpoGoHost(device.udid, app.hostBundleId); checks.expoGo = { ok: true, message: 'installed' }; }
+        catch (error) { checks.expoGo = { ok: false, message: message(error) }; }
+      }
     } catch (error) { checks.simulator = { ok: false, message: message(error) }; }
   } else {
     const app = nativeApp(config);

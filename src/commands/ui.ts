@@ -1,7 +1,7 @@
 import { mkdir, readFile, readdir, stat, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { nativeApp, type LoadedConfig } from '../config/config.js';
+import { targetBundleId, type LoadedConfig } from '../config/config.js';
 import { CliError } from '../core/errors.js';
 import { redact } from '../core/redact.js';
 import { listDevices, resolveDevice } from '../native/simctl.js';
@@ -136,7 +136,7 @@ export async function runUiPlan(config: LoadedConfig, source: { file: string } |
   const built = await buildUiRunner(config, { ...dependencies, resolveUdid: async () => udid });
   const json = await checked(run, 'plutil', ['-convert', 'json', '-o', '-', built.manifest], 'Unable to read the XCTest run manifest');
   const manifestValue = JSON.parse(json.stdout) as unknown;
-  const encodedPlan = Buffer.from(JSON.stringify({ ...plan, bundleId: nativeApp(config).bundleId }), 'utf8').toString('base64');
+  const encodedPlan = Buffer.from(JSON.stringify({ ...plan, bundleId: targetBundleId(config) }), 'utf8').toString('base64');
   if (injectEnvironment(manifestValue, { AGEMU_PLAN_BASE64: encodedPlan }) === 0) {
     throw new CliError('BUILD_FAILED', 'The XCTest run manifest contains no test target');
   }
@@ -158,7 +158,7 @@ export async function runUiPlan(config: LoadedConfig, source: { file: string } |
   const marker = result.stdout.split(/\r?\n/).find(line => line.includes('AGEMU_RESULT:'));
   const runnerResult = marker ? JSON.parse(Buffer.from(marker.slice(marker.indexOf('AGEMU_RESULT:') + 13), 'base64').toString('utf8')) : undefined;
   return {
-    run: path.relative(config.root, directory), udid: built.udid, bundleId: redact(nativeApp(config).bundleId, config.redactions ?? []),
+    run: path.relative(config.root, directory), udid: built.udid, bundleId: redact(targetBundleId(config), config.redactions ?? []),
     backend: 'xctest', runnerCached: built.cached, durationMs: Date.now() - runStarted,
     actions: plan.actions.length, runnerResult, resultBundle: path.relative(config.root, resultBundle), transcript: path.relative(config.root, transcript),
   };

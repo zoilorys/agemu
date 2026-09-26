@@ -2,9 +2,10 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { appendEvent, createRun, redactValue, type Run } from '../artifacts/runs.js';
 import type { AppState } from './build.js';
-import { nativeApp, type LoadedConfig } from '../config/config.js';
+import { nativeApp, targetBundleId, type LoadedConfig } from '../config/config.js';
 import { CliError } from '../core/errors.js';
 import { redact } from '../core/redact.js';
+import { installedExpoGoHost } from '../native/expo-go.js';
 import { listDevices, resolveDevice, simctl, type Device, type SimctlRunner } from '../native/simctl.js';
 
 type Dependencies = {
@@ -73,13 +74,13 @@ export async function observe(config: LoadedConfig, dependencies: Dependencies =
   }
 }
 
-function predicate(app: AppState): string {
+function predicate(app: Pick<AppState, 'executableName'>): string {
   if (!app.executableName) throw new CliError('APP_NOT_BUILT', 'Cached app state does not contain an executable name; rebuild the app');
   const processName = app.executableName.replaceAll('\\', '\\\\').replaceAll('"', '\\"');
   return `process == "${processName}"`;
 }
 
-function logArguments(level: string, app: AppState): string[] {
+function logArguments(level: string, app: Pick<AppState, 'executableName'>): string[] {
   const processPredicate = predicate(app);
   if (level === 'info') return ['--info', '--predicate', processPredicate];
   if (level === 'debug') return ['--debug', '--predicate', processPredicate];
@@ -97,8 +98,10 @@ export async function showLogs(config: LoadedConfig, options: LogOptions = {}, d
   if (!allowedLevels.has(level)) throw new CliError('COMMAND_INVALID', '--level must be default, info, debug, error, or fault');
   if (!Number.isSafeInteger(limit) || limit < 0 || limit > 10_000) throw new CliError('COMMAND_INVALID', '--limit must be an integer from 0 to 10000');
   const { run, now, device } = await runContext(config, dependencies);
-  const app = await state(config, dependencies);
-  if (app.bundleId !== nativeApp(config).bundleId || app.udid !== device.udid) throw new CliError('APP_NOT_BUILT', 'Cached app state does not match the configured app and simulator');
+  const app = config.app.type === 'expo' && config.app.launchTarget === 'expo-go'
+    ? await installedExpoGoHost(device.udid, config.app.hostBundleId, dependencies.runner ?? simctl)
+    : await state(config, dependencies);
+  if (app.bundleId !== targetBundleId(config) || ('udid' in app && app.udid !== device.udid)) throw new CliError('APP_NOT_BUILT', 'Cached app state does not match the configured app and simulator');
   const artifact = path.join(run.directory, 'logs.txt');
   const args = ['spawn', device.udid, 'log', 'show', '--last', last, ...logArguments(level, app), '--style', 'compact'];
   let result;
@@ -123,7 +126,7 @@ export async function showLogs(config: LoadedConfig, options: LogOptions = {}, d
   }
   const lines = full.split(/\r?\n/).filter((line, index, all) => line || index < all.length - 1);
   const data = {
-    run: run.relativeDirectory, udid: redact(device.udid, secrets), bundleId: redact(nativeApp(config).bundleId, secrets), last, level,
+    run: run.relativeDirectory, udid: redact(device.udid, secrets), bundleId: redact(targetBundleId(config), secrets), last, level,
     logs: limit === 0 ? [] : lines.slice(-limit), truncated: lines.length > limit,
     artifact: safeRelative(config.root, artifact, secrets), capturedAt: now.toISOString(),
   };
@@ -138,7 +141,8 @@ export async function diagnose(config: LoadedConfig, options: LogOptions = {}, d
   const failures: Record<string, unknown> = {};
   try { evidence.simulator = redactValue(await (dependencies.resolveDevice ? dependencies.resolveDevice(config) : configuredDevice(config)), secrets); }
   catch (error) { failures.simulator = failure(error, secrets); }
-  try { evidence.build = redactValue(await state(config, dependencies), secrets); }
+  if (config.app.type === 'expo' && config.app.launchTarget === 'expo-go') evidence.host = { bundleId: redact(config.app.hostBundleId, secrets) };
+  else try { evidence.build = redactValue(await state(config, dependencies), secrets); }
   catch (error) { failures.build = failure(error, secrets); }
   try { evidence.observation = await observe(config, { ...dependencies, now: () => now }); }
   catch (error) { failures.observation = failure(error, secrets); }
@@ -150,7 +154,7 @@ export async function diagnose(config: LoadedConfig, options: LogOptions = {}, d
     evidence.recentErrors = redactValue(String(contents).split('\n').filter(Boolean).map((line) => JSON.parse(line) as Record<string, unknown>)
       .filter((event) => event.status === 'error').slice(-10), secrets);
   } catch { evidence.recentErrors = []; }
-  const data = { generatedAt: now.toISOString(), bundleId: redact(nativeApp(config).bundleId, secrets), partial: Object.keys(failures).length > 0, evidence, failures };
+  const data = { generatedAt: now.toISOString(), bundleId: redact(targetBundleId(config), secrets), partial: Object.keys(failures).length > 0, evidence, failures };
   await appendEvent(config.root, { at: now.toISOString(), command: 'diagnose', status: data.partial ? 'partial' : 'ok', data }, secrets);
   return data;
 }

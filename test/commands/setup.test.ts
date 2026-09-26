@@ -2,12 +2,25 @@ import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promise
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { resolveExpoBundleId } from '../../src/commands/setup.js';
+import { resolveExpoBundleId, setup } from '../../src/commands/setup.js';
 import type { ProcessResult } from '../../src/process/run-process.js';
 
 const result = (stdout: string): ProcessResult => ({ stdout, stderr: '', exitCode: 0, signal: null, startedAt: '', durationMs: 1 });
 
 describe('Expo setup discovery', () => {
+  it('sets up a development build without querying installed Expo Go hosts', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-expo-dev-'));
+    try {
+      await writeFile(path.join(root, 'package.json'), JSON.stringify({ dependencies: { expo: '*' } }));
+      await writeFile(path.join(root, 'app.json'), JSON.stringify({ expo: { ios: { bundleIdentifier: 'com.example.dev' } } }));
+      const output = await setup(root, false, false, {
+        listDevices: async () => [{ udid: 'PHONE', name: 'iPhone', runtime: 'iOS-18-0', state: 'Shutdown', isAvailable: true }],
+        installedExpoGoHosts: async () => { throw new Error('host lookup must not run'); },
+      });
+      expect(output.config.app).toMatchObject({ launchTarget: 'development-build', bundleId: 'com.example.dev' });
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
   it('resolves dynamic Expo config through the local CLI without generating native files', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'agemu-expo-setup-'));
     try {

@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { errorResult, writeResult } from '../core/output.js';
 import { CliError } from '../core/errors.js';
-import { loadConfig, nativeApp } from '../config/config.js';
+import { loadConfig } from '../config/config.js';
 import { doctor } from '../doctor/doctor.js';
 import { bootDevice, listDevices, resolveDevice, shutdownDevice } from '../native/simctl.js';
 import { buildApp } from '../commands/build.js';
@@ -33,11 +33,6 @@ const requiredString = (name: string): string => {
   }
   return value;
 };
-const loadNativeConfig = async () => {
-  const config = await loadConfig();
-  nativeApp(config);
-  return config;
-};
 if (args.includes('--help')) {
   writeResult({ ok: true, data: { help: helpFor(command) } }, pretty);
 }
@@ -49,7 +44,7 @@ else if (args.includes('--version')) {
 } else try {
   let data: unknown;
   if (command === 'setup') {
-    data = await setup();
+    data = await setup(process.cwd(), true, args.includes('--expo-go'));
   } else if (command === 'config' && args.includes('show')) {
     const config = await loadConfig();
     const { root: _, redactions: __, ...safe } = config;
@@ -83,7 +78,7 @@ else if (args.includes('--version')) {
     const source = args.includes('run')
       ? planJson !== undefined ? { json: requiredString('plan-json') } : { file: path.resolve(requiredString('plan')) }
       : undefined;
-    const config = await loadNativeConfig();
+    const config = await loadConfig();
     if (args.includes('build-runner')) data = await buildUiRunner(config, {}, true);
     else if (source) data = await runUiPlan(config, source, { backend: option('backend') as 'auto' | 'idb' | 'xctest' | undefined });
     else throw new CliError('COMMAND_INVALID', 'ui requires build-runner or run with --plan or --plan-json');
@@ -105,13 +100,13 @@ else if (args.includes('--version')) {
       url: args.find((arg) => arg.startsWith('--url='))?.slice('--url='.length),
     });
   } else if (command === 'logs') {
-    const config = await loadNativeConfig();
+    const config = await loadConfig();
     if (!args.includes('show')) throw new CliError('COMMAND_INVALID', 'logs requires show');
     data = await showLogs(config, {
       last: option('last'), level: option('level'), limit: option('limit') === undefined ? undefined : Number(option('limit')),
     });
   } else if (command === 'diagnose') {
-    const config = await loadNativeConfig();
+    const config = await loadConfig();
     data = await diagnose(config, {
       last: option('last'), level: option('level'), limit: option('limit') === undefined ? undefined : Number(option('limit')),
     });

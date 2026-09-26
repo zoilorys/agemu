@@ -13,6 +13,24 @@ const config = (root: string): LoadedConfig => ({ version: 2 as const, platform:
 const state: AppState = { appPath: '/products/MyApp.app', bundleId: 'com.example.app', executableName: 'RealExecutable', udid: 'PHONE', configuration: 'Debug', updatedAt: '' };
 
 describe('logs show command', () => {
+  it('queries the installed Expo Go executable without native build state', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-go-logs-'));
+    const calls: string[][] = [];
+    const go: LoadedConfig = { ...config(root), app: { type: 'expo', root, port: 8081, launchTarget: 'expo-go', hostBundleId: 'host.exp.Exponent' } };
+    try {
+      const result = await showLogs(go, {}, {
+        resolveDevice: async () => device,
+        readState: async () => { throw new Error('no native build'); },
+        runner: async (args) => {
+          calls.push(args);
+          return { stdout: args[0] === 'listapps' ? '{ "host.exp.Exponent" = { CFBundleIdentifier = "host.exp.Exponent"; CFBundleExecutable = Exponent; }; }' : 'Expo host log\n', stderr: '', exitCode: 0, signal: null, startedAt: '', durationMs: 1 };
+        },
+      });
+      expect(result).toMatchObject({ bundleId: 'host.exp.Exponent', logs: ['Expo host log'] });
+      expect(calls).toContainEqual(['spawn', 'PHONE', 'log', 'show', '--last', '30s', '--predicate', 'process == "Exponent"', '--style', 'compact']);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
   it('returns a bounded tail and retains the complete redacted log artifact', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'agemu-logs-'));
     const calls: string[][] = [];
