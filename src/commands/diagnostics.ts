@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, open, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { appendEvent, createRun, redactValue, type Run } from '../artifacts/runs.js';
 import type { AppState } from './build.js';
@@ -6,6 +6,7 @@ import { nativeApp, targetBundleId, type LoadedConfig } from '../config/config.j
 import { CliError } from '../core/errors.js';
 import { redact } from '../core/redact.js';
 import { installedExpoGoHost } from '../native/expo-go.js';
+import { server } from './server.js';
 import { listDevices, resolveDevice, simctl, type Device, type SimctlRunner } from '../native/simctl.js';
 
 type Dependencies = {
@@ -14,6 +15,8 @@ type Dependencies = {
   now?: () => Date;
   readState?: (file: string) => Promise<AppState>;
   readEvents?: (file: string) => Promise<string>;
+  serverStatus?: typeof server;
+  readServerOutput?: (file: string) => Promise<string>;
 };
 export type LogOptions = { last?: string; level?: string; limit?: number };
 
@@ -48,6 +51,20 @@ async function runContext(config: LoadedConfig, dependencies: Dependencies): Pro
 function failure(error: unknown, secrets: string[]): { code: string; message: string } {
   const normalized = error instanceof CliError ? error : new CliError('PROCESS_FAILED', error instanceof Error ? error.message : String(error));
   return { code: normalized.code, message: redact(normalized.message, secrets) };
+}
+
+async function tail(file: string): Promise<string> {
+  const handle = await open(file, 'r');
+  try {
+    const size = (await handle.stat()).size;
+    const buffer = Buffer.alloc(Math.min(size, 64 * 1024));
+    await handle.read(buffer, 0, buffer.length, size - buffer.length);
+    return buffer.toString('utf8');
+  } finally { await handle.close(); }
+}
+
+function bundlingErrors(output: string): string[] {
+  return output.split(/\r?\n/).filter(line => /(?:error:|error \[|bundling failed|unable to resolve module|syntaxerror|transformerror)/i.test(line)).slice(-20);
 }
 
 export async function observe(config: LoadedConfig, dependencies: Dependencies = {}) {
@@ -146,8 +163,28 @@ export async function diagnose(config: LoadedConfig, options: LogOptions = {}, d
   catch (error) { failures.build = failure(error, secrets); }
   try { evidence.observation = await observe(config, { ...dependencies, now: () => now }); }
   catch (error) { failures.observation = failure(error, secrets); }
-  try { evidence.logs = await showLogs(config, options, { ...dependencies, now: () => now }); }
+  try { evidence.logs = { source: 'Simulator unified log', ...(await showLogs(config, options, { ...dependencies, now: () => now })) }; }
   catch (error) { failures.logs = failure(error, secrets); }
+  if (config.app.type !== 'native') {
+    const serverEvidence: Record<string, unknown> = { source: 'Metro/Expo server', consoleCoverage: 'Server output and bundling errors only; in-app JavaScript console and React Native DevTools are not captured' };
+    evidence.server = serverEvidence;
+    try {
+      const status = await (dependencies.serverStatus ?? server)(config, 'status');
+      serverEvidence.status = redactValue(status, secrets);
+      if (!status.running) failures.server = { code: 'PROCESS_FAILED', message: 'Metro/Expo server is not ready' };
+    } catch (error) { failures.server = failure(error, secrets); }
+    try {
+      const file = path.join(config.root, '.agemu', 'metro.log');
+      const output = redact(await (dependencies.readServerOutput ?? tail)(file), secrets);
+      const lines = output.split(/\r?\n/).filter(Boolean);
+      serverEvidence.output = lines.slice(-100);
+      serverEvidence.bundlingErrors = bundlingErrors(output);
+      serverEvidence.outputSource = redact(path.relative(config.root, file), secrets);
+      serverEvidence.outputRelation = 'saved log; current server association unverified';
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') failures.serverOutput = failure(error, secrets);
+    }
+  }
   try {
     const eventsFile = path.join(config.root, '.agemu', 'events.jsonl');
     const contents = dependencies.readEvents ? await dependencies.readEvents(eventsFile) : await readFile(eventsFile, 'utf8');
