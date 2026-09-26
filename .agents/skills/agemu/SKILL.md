@@ -1,34 +1,17 @@
 ---
 name: agemu
-description: Build, verify, and debug iOS app features in Simulator while coding. Use for iOS app repositories even when .agemu.json is missing.
+description: Build, verify, and debug native iOS, bare React Native, and Expo apps in Simulator. Use in iOS app repositories, including those without .agemu.json.
 ---
 
 # iOS Simulator development
 
-Use the repository's built `agemu` CLI.
+Use the installed `agemu` CLI from the app root.
 
-1. Check for `.agemu.json` at the app repository root. If absent, inspect its Xcode project or workspace, schemes, build settings, and `agemu simulator list` output. Resolve the project or workspace, scheme, Debug configuration, and bundle ID from the repository. Ask only for choices the project cannot settle.
-2. If the config is missing, recommend the best available simulator for the app's deployment target and device needs. Prefer a relevant already booted or recently used device when that can be determined. Offer a few other suitable installed devices and let the user specify another. Create `.agemu.json` with the selected simulator UDID. Use `agemu setup` when its prompts are usable; otherwise write the config yourself.
-3. Choose one run ID. Keep it unchanged in launch arguments, environment, and notes. Run `doctor` and resolve any reported setup issue before proceeding.
-4. Boot the configured simulator if it is shut down. Use the CLI as part of the coding loop: build and install the current app, launch it, interact with the feature, inspect the result, edit the code, and repeat until the feature works. Use the same loop to verify completed changes or investigate bugs.
-5. For UI interaction, use a bounded JSON plan. Prefer accessibility identifiers, then exact labels, then coordinates. Pass short plans with `ui run --plan-json=JSON`; use `--plan=FILE` for longer plans. Group related actions to reduce startup cost. Use `tap`, `swipe`, and `longPress` as the feature needs: swipe with a direction and optional target, or distinct `from`/`to` points; long press a target or `x`/`y` point with an optional positive `duration` in seconds. A direction-only screen swipe uses XCTest.
-6. Let `ui run` select `idb` when available and compatible. Use `--backend=xctest` when you need an `.xcresult`, or `--backend=idb` when the plan must run with `idb`. Inspect the returned `backend` before reading artifacts. For `idb`, inspect `screenshots`, `runnerResult`, and `transcript`. For XCTest, inspect `resultBundle`, `runnerResult`, and `transcript`; `runnerCached` reports whether its build was reused. Use `observe` and bounded `logs show` calls as needed. On failure, run `diagnose` with a bounded log window and inspect its evidence before proposing a cause.
-7. After the turn's work, terminate only the app started for this investigation and shut down the selected simulator, including when an earlier step failed. Preserve evidence unless the task requests cleanup.
+1. Inspect `.agemu.json`. If absent, identify the app type and an available Simulator with `agemu simulator list`. Use `agemu setup`, or `agemu setup --expo-go` for Expo Go. If setup cannot run interactively, write a version 2 config using the [config examples](../../../README.md#configure-an-app). Set the selected Simulator UDID. Ask only for choices the repository cannot settle.
+2. Run `agemu doctor`. Resolve reported prerequisites before the run. Install project dependencies through the project's own instructions. Expo development builds need `expo-dev-client`; Expo Go needs an installed host on the selected Simulator.
+3. Boot the selected Simulator. For native iOS, run `agemu build`, `agemu app install`, then `agemu app launch`. For bare React Native, build and install, then run `agemu server start` and `agemu app launch`. For Expo development builds, run build, install, server start, and app launch in that order. `agemu build` invokes `expo run:ios` and may generate or modify `ios/`; inspect the diff. For Expo Go, run only `agemu server start` and `agemu app launch`; its installed host needs no agemu build or install.
+4. Verify the feature with `agemu observe` and a bounded `agemu ui run` plan. Prefer accessibility identifiers, then exact labels, then coordinates. Use `--backend=xctest` for an `.xcresult`, or let the CLI select `idb` when suitable. Inspect the returned backend and artifacts.
+5. On failure, run `agemu diagnose --last=1m --level=info --limit=200`. Inspect `partial`, `failures`, the screenshot, logs, and server evidence. For React Native and Expo, server output shows bundling errors but does not capture all in-app JavaScript console messages or DevTools. Saved server output may belong to an earlier run.
+6. Terminate the app used for this run. For React Native or Expo, run `agemu server stop`; it stops only agemu-owned servers. Shut down the selected Simulator. Preserve `.agemu/` evidence unless the task calls for removal.
 
-Core commands:
-
-```sh
-agemu doctor
-agemu simulator list --pretty
-agemu simulator boot
-agemu build
-agemu app install
-agemu app launch --env=AGEMU_RUN_ID="$run_id"
-agemu observe
-agemu ui run --plan-json='{"version":1,"actions":[{"screenshot":{"name":"current"}}]}'
-agemu ui run --plan=ui-plan.json
-agemu logs show --last=1m --level=info --limit=200
-agemu diagnose --last=1m --level=info --limit=200
-agemu app terminate
-agemu simulator shutdown
-```
+Keep one run ID in launch arguments, environment, and notes when a task needs correlation. `agemu server status` reports readiness and ownership; resolve any port collision before launch. For Expo, `app launch` requires a running project server and opens its URL in the configured development build or Expo Go host.

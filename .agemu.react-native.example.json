@@ -2,8 +2,10 @@
   "version": 2,
   "platform": "ios",
   "app": {
-    "type": "native",
-    "project": "App.xcodeproj",
+    "type": "react-native",
+    "root": ".",
+    "port": 8081,
+    "workspace": "ios/App.xcworkspace",
     "scheme": "App",
     "configuration": "Debug",
     "bundleId": "com.example.app"

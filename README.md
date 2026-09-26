@@ -50,25 +50,46 @@ claude plugin install agemu@agemu
 
 ## Configure an app
 
-Run `agemu setup` from the root of the iOS app repository. It finds the Xcode project or workspace, schemes, bundle IDs, and available simulators, and asks you to choose when needed. It writes `.agemu.json` without replacing an existing file.
+Run `agemu setup` from the app root. It detects native iOS, bare React Native, or Expo, selects a Simulator, and writes `.agemu.json` without replacing an existing file. Interactive Expo setup asks for the launch target; noninteractive setup selects a development build. Use `agemu setup --expo-go` to select Expo Go explicitly. Expo Go must already be installed on the selected Simulator. Setup and `doctor` do not install dependencies or generate native files.
 
 You can also add `.agemu.json` manually:
 
 ```json
 {
-  "version": 1,
-  "project": "App.xcodeproj",
-  "scheme": "App",
-  "configuration": "Debug",
-  "bundleId": "com.example.App",
-  "simulator": {
-    "name": "iPhone 17",
-    "runtime": "iOS-26-0"
-  }
+  "version": 2,
+  "platform": "ios",
+  "app": {
+    "type": "native",
+    "project": "App.xcodeproj",
+    "scheme": "App",
+    "configuration": "Debug",
+    "bundleId": "com.example.App"
+  },
+  "simulator": { "udid": "SIMULATOR_UDID" }
 }
 ```
 
-Use `workspace` instead of `project` for an `.xcworkspace`. Select a simulator by `udid`, or by `name` with an optional `runtime`.
+The checked-in examples are [native](.agemu.example.json), [bare React Native](.agemu.react-native.example.json), [Expo development build](.agemu.expo-development.example.json), and [Expo Go](.agemu.expo-go.example.json).
+
+Use exactly one of `project` or `workspace` for native and bare React Native. Paths are relative to `.agemu.json`. Select a Simulator by `udid`, or by `name` with an optional `runtime`. Version 1 configs are unsupported.
+
+For bare React Native, replace `app` with:
+
+```json
+{ "type": "react-native", "root": ".", "port": 8081, "workspace": "ios/App.xcworkspace", "scheme": "App", "configuration": "Debug", "bundleId": "com.example.app" }
+```
+
+For Expo, use one of these `app` values:
+
+```json
+{ "type": "expo", "root": ".", "port": 8081, "launchTarget": "development-build", "bundleId": "com.example.app" }
+```
+
+```json
+{ "type": "expo", "root": ".", "port": 8081, "launchTarget": "expo-go", "hostBundleId": "EXPO_GO_HOST_BUNDLE_ID" }
+```
+
+`root` points to the JavaScript project. `port` is the local Metro or Expo port. `hostBundleId` identifies the installed Expo Go app, not the Expo project's bundle ID. `redactions` optionally lists strings to mask in output and saved evidence.
 
 Check the configuration and native tools:
 
@@ -76,7 +97,7 @@ Check the configuration and native tools:
 agemu doctor --pretty
 ```
 
-## Build and run an app
+## Build and run a native app
 
 ```sh
 agemu simulator list --pretty
@@ -91,13 +112,73 @@ agemu app terminate
 agemu simulator shutdown
 ```
 
-`app launch`, `app restart`, and `app terminate` target the configured bundle ID. Only `app install` requires a prior build.
+`app launch`, `app restart`, and `app terminate` target the configured bundle ID. `app install` requires a prior build.
+
+## Run bare React Native
+
+Install the project's dependencies and native iOS dependencies first. Then run:
+
+```sh
+agemu doctor --pretty
+agemu simulator boot
+agemu build
+agemu app install
+agemu server start
+agemu app launch
+agemu observe
+agemu diagnose --last=1m --limit=200
+agemu app terminate
+agemu server stop
+agemu simulator shutdown
+```
+
+`agemu build` uses the configured Xcode project or workspace. `server status` reports readiness and ownership. `server stop` stops only a server started by agemu; a matching external server can be reused, but agemu leaves it running. A port used by an unverified project fails rather than being reused.
+
+## Run an Expo development build
+
+Install the project's dependencies, including `expo-dev-client`, first. Set `app.bundleId` to the Expo iOS bundle identifier. Then run:
+
+```sh
+agemu doctor --pretty
+agemu simulator boot
+agemu build
+agemu app install
+agemu server start
+agemu app launch
+agemu observe
+agemu diagnose --last=1m --limit=200
+agemu app terminate
+agemu server stop
+agemu simulator shutdown
+```
+
+`agemu build` runs `expo run:ios --device <udid> --no-bundler`. It can generate or modify `ios/` files. Review those files after the build. `app launch` opens the running project's development URL in the installed development build.
+
+## Run Expo Go
+
+Install the project's dependencies and Expo Go on the selected Simulator first. Set `hostBundleId` to that installed Expo Go app. Then run:
+
+```sh
+agemu doctor --pretty
+agemu simulator boot
+agemu server start
+agemu app launch
+agemu observe
+agemu diagnose --last=1m --limit=200
+agemu app terminate
+agemu server stop
+agemu simulator shutdown
+```
+
+Expo Go uses its installed host: `agemu build` and `agemu app install` do not apply. `app launch` opens the running project's Expo URL in the host.
+
+For React Native and Expo, `diagnose` includes server status, the last server output, detected bundling errors, a screenshot, and Simulator logs. The saved server log may be from an earlier run. JavaScript console messages inside the app and React Native DevTools output are not captured. `logs show` reads Simulator unified logs for the built app or Expo Go host. Inspect `partial` and `failures` when evidence collection fails.
 
 `agemu` writes build state, logs, screenshots, and test results to `.agemu/`. Add that directory to the app repository's `.gitignore`.
 
 ## Run a UI plan
 
-Build and install the app first. Then create `ui-plan.json`:
+Build and install native, bare React Native, or Expo development apps first. For Expo Go, use its installed host. Then create `ui-plan.json`:
 
 ```json
 {
@@ -147,6 +228,8 @@ AGEMU_NATIVE_SIMULATOR_UDID=<udid> pnpm test:integration:native
 ```
 
 The native test keeps its Xcode DerivedData under `.agemu/native-workflow/<udid>/` so later runs use an incremental build.
+
+As of 2026-09-26, the native Simulator workflow and test suite pass. A bare React Native sample is unavailable. An Expo development sample reached Xcode asset compilation but did not complete its build. An Expo Go live run is unverified because CoreSimulatorService failed during that attempt.
 
 ## Contribute
 
