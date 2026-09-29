@@ -1,5 +1,6 @@
-import { access, mkdir, rename, writeFile } from 'node:fs/promises';
+import { access, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { createRun } from '../artifacts/runs.js';
 import { nativeApp, type LoadedConfig } from '../config/config.js';
 import { CliError } from '../core/errors.js';
 import { redact } from '../core/redact.js';
@@ -15,10 +16,6 @@ type Dependencies = {
 };
 
 type BuildLog = { stdout: string; stderr: string; executionError?: string };
-
-function runId(date: Date): string {
-  return date.toISOString().replaceAll(':', '-');
-}
 
 async function writeAtomic(file: string, state: AppState): Promise<void> {
   const temporary = `${file}.${process.pid}.${Math.random().toString(16).slice(2)}.tmp`;
@@ -48,8 +45,8 @@ export async function buildApp(config: LoadedConfig, dependencies: Dependencies 
     ? dependencies.resolveUdid(config)
     : config.simulator.udid ?? listDevices().then((devices) => resolveDevice(devices, config.simulator).udid));
   const stateDirectory = path.join(config.root, '.agemu');
-  const runDirectory = path.join(stateDirectory, 'runs', runId(now));
-  await mkdir(runDirectory, { recursive: true });
+  const createdRun = await createRun(config.root, now);
+  const runDirectory = createdRun.directory;
   const secrets = config.redactions ?? [];
 
   if (config.app.type === 'expo') {
@@ -90,7 +87,7 @@ export async function buildApp(config: LoadedConfig, dependencies: Dependencies 
     const product = matches[0];
     const state: AppState = { ...product, bundleId: app.bundleId, udid, configuration: 'Debug', updatedAt: now.toISOString() };
     await writeAtomic(path.join(stateDirectory, 'state.json'), state);
-    return { appPath: redact(product.appPath, secrets), bundleId: redact(app.bundleId, secrets), executableName: redact(product.executableName, secrets), udid, configuration: 'Debug', logs: { build: path.relative(config.root, buildLog) } };
+    return { appPath: redact(product.appPath, secrets), bundleId: redact(app.bundleId, secrets), executableName: redact(product.executableName, secrets), udid, configuration: 'Debug', run: createdRun.relativeDirectory, logs: { build: path.relative(config.root, buildLog) } };
   }
 
   const buildLog = path.join(runDirectory, 'xcodebuild.log');
@@ -152,6 +149,7 @@ export async function buildApp(config: LoadedConfig, dependencies: Dependencies 
     udid: redact(udid, secrets),
     configuration: redact(nativeApp(config).configuration, secrets),
     derivedData: redact(path.join(stateDirectory, 'DerivedData'), secrets),
+    run: createdRun.relativeDirectory,
     logs: { build: redact(path.relative(config.root, buildLog), secrets), settings: redact(path.relative(config.root, settingsLog), secrets) },
   };
 }

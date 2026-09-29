@@ -121,6 +121,24 @@ describe('UI backend selection', () => {
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 
+  it('keeps concurrent UI plans with identical timestamps in separate run directories', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-ui-runs-'));
+    const config = { version: 2 as const, platform: 'ios' as const, app: { type: 'native' as const, project: path.join(root, 'App.xcodeproj'), scheme: 'App', configuration: 'Debug',
+      bundleId: 'com.example.app' }, simulator: { udid: 'PHONE' }, root };
+    const start = () => runUiPlan(config, { json: JSON.stringify({ version: 1, actions: [{ inspect: {} }] }) }, {
+      backend: 'idb', now: () => new Date('2026-09-25T12:00:00.000Z'),
+      run: async (executable, args) => executable === 'idb' && args[1] === 'describe-all' ? result('[]') : result(),
+    });
+    try {
+      const [first, second] = await Promise.all([start(), start()]);
+      expect(first.run).not.toBe(second.run);
+      for (const output of [first, second]) {
+        expect(output.run.startsWith('.agemu/runs/2026-09-25T12-00-00.000Z-')).toBe(true);
+        await expect(readFile(path.join(root, (output as { transcript: string }).transcript), 'utf8')).resolves.toBeTypeOf('string');
+      }
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
   it('scrolls a target and holds a point through idb', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'agemu-gestures-'));
     const commands: string[][] = [];

@@ -65,11 +65,14 @@ describe('build command', () => {
   it('returns BUILD_FAILED metadata while preserving the complete redacted output', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'agemu-build-'));
     try {
-      await expect(buildApp(config(root), {
+      const error = await buildApp(config(root), {
         resolveUdid: async () => 'PHONE', now: () => new Date('2026-09-21T12:00:00.000Z'),
         run: async () => processResult('many lines secret-token', 'compiler failed secret-token', 65),
-      })).rejects.toMatchObject({ code: 'BUILD_FAILED', details: { exitCode: 65, log: expect.stringContaining('xcodebuild.log') } });
-      const log = JSON.parse(await readFile(path.join(root, '.agemu/runs/2026-09-21T12-00-00.000Z/xcodebuild.log'), 'utf8'));
+      }).catch((caught: unknown) => caught as CliError);
+      expect(error).toMatchObject({ code: 'BUILD_FAILED', details: { exitCode: 65, log: expect.stringContaining('xcodebuild.log') } });
+      const logPath = error.details?.log as string;
+      expect(logPath.startsWith('.agemu/runs/2026-09-21T12-00-00.000Z-')).toBe(true);
+      const log = JSON.parse(await readFile(path.join(root, logPath), 'utf8'));
       expect(log).toEqual({ stdout: 'many lines [REDACTED]', stderr: 'compiler failed [REDACTED]' });
     } finally { await rm(root, { recursive: true, force: true }); }
   });
@@ -81,7 +84,7 @@ describe('build command', () => {
     const root = await mkdtemp(path.join(tmpdir(), 'agemu-build-'));
     let call = 0;
     try {
-      await expect(buildApp(config(root), {
+      const error = await buildApp(config(root), {
         resolveUdid: async () => 'PHONE', now: () => new Date('2026-09-21T12:00:00.000Z'),
         run: async () => {
           call += 1;
@@ -90,11 +93,28 @@ describe('build command', () => {
           });
           return processResult('build completed');
         },
-      })).rejects.toMatchObject({ code: 'BUILD_FAILED', details: { log: expect.stringContaining(log) } });
-      const artifact = JSON.parse(await readFile(path.join(root, '.agemu/runs/2026-09-21T12-00-00.000Z', log), 'utf8'));
+      }).catch((caught: unknown) => caught as CliError);
+      expect(error).toMatchObject({ code: 'BUILD_FAILED', details: { log: expect.stringContaining(log) } });
+      const artifact = JSON.parse(await readFile(path.join(root, error.details?.log as string), 'utf8'));
       expect(artifact).toMatchObject({
         stdout: 'partial [REDACTED]', stderr: 'failure [REDACTED]', executionError: 'spawn rejected [REDACTED]',
       });
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('keeps concurrent builds with identical timestamps in separate run directories', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-build-'));
+    const now = () => new Date('2026-09-21T12:00:00.000Z');
+    const start = (label: string) => {
+      const responses = [processResult(`stdout-${label}`), processResult(settings)];
+      return buildApp(config(root), { resolveUdid: async () => 'PHONE', now, run: async () => responses.shift()! });
+    };
+    try {
+      const [first, second] = await Promise.all([start('one'), start('two')]);
+      expect(first.run).not.toBe(second.run);
+      expect(first.run.startsWith('.agemu/runs/2026-09-21T12-00-00.000Z-')).toBe(true);
+      expect(JSON.parse(await readFile(path.join(root, first.logs.build), 'utf8')).stdout).toBe('stdout-one');
+      expect(JSON.parse(await readFile(path.join(root, second.logs.build), 'utf8')).stdout).toBe('stdout-two');
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 

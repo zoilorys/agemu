@@ -2,6 +2,7 @@ import { mkdir, readFile, readdir, stat, unlink, writeFile } from 'node:fs/promi
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { targetBundleId, type LoadedConfig } from '../config/config.js';
+import { createRun } from '../artifacts/runs.js';
 import { CliError } from '../core/errors.js';
 import { redact } from '../core/redact.js';
 import { listDevices, resolveDevice } from '../native/simctl.js';
@@ -155,8 +156,7 @@ export async function runUiPlan(config: LoadedConfig, source: { file: string } |
   if (!['auto', 'idb', 'xctest'].includes(backend)) throw new CliError('UI_VALIDATION_FAILED', 'UI backend must be auto, idb, or xctest');
   const runStarted = Date.now();
   const now = dependencies.now?.() ?? new Date();
-  const directory = path.join(config.root, '.agemu', 'runs', now.toISOString().replaceAll(':', '-'));
-  await mkdir(directory, { recursive: true });
+  const { directory } = await createRun(config.root, now);
   const udid = await (dependencies.resolveUdid?.(config)
     ?? (config.simulator.udid || listDevices().then(devices => resolveDevice(devices, config.simulator).udid)));
   if (plan.actions.some(action => typeof action === 'object' && action !== null && 'startVideoRecording' in action)) {
