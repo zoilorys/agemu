@@ -50,7 +50,7 @@ claude plugin install agemu@agemu
 
 ## Configure an app
 
-Run `agemu setup` from the app root. It detects native iOS, bare React Native, or Expo, selects a Simulator, and writes `.agemu.json` without replacing an existing file. Use `--udid=ID` to choose a Simulator. When several are installed, noninteractive setup selects the sole booted Simulator. If none or several are booted, pass `--udid=ID`. Interactive Expo setup asks for the launch target; noninteractive setup selects a development build. Use `agemu setup --expo-go` to select Expo Go explicitly. Expo Go must already be installed on the selected Simulator. Setup and `doctor` do not install dependencies or generate native files.
+Run `agemu setup` from the app root. It detects native iOS, bare React Native, or Expo, selects a Simulator, and writes `.agemu.json` without replacing an existing file. Use `--udid=ID` to choose a Simulator. When several are installed, noninteractive setup selects the sole booted Simulator. If none or several are booted, pass `--udid=ID`. Interactive Expo setup asks for the launch target; noninteractive setup selects a development build. Use `agemu setup --expo-go` to select Expo Go explicitly. Expo Go must already be installed on the selected Simulator. For React Native and Expo, `--port=PORT` sets the server port (default 8081); native projects reject it. Setup offers only iOS application targets as bundle IDs, skipping test, widget, and extension targets. Setup and `doctor` do not install dependencies or generate native files.
 
 You can also add `.agemu.json` manually:
 

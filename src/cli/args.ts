@@ -20,7 +20,7 @@ const logOptions = { last: single, level: single, limit: single };
 const launchOptions = { arg: repeat, env: repeat };
 
 export const commandSpecs: Record<string, CommandSpec> = {
-  setup: { flags: { 'expo-go': boolean, udid: single } },
+  setup: { flags: { 'expo-go': boolean, udid: single, port: single } },
   config: { subcommands: { show: {} } },
   simulator: { subcommands: { list: {}, boot: selector, shutdown: selector } },
   build: { flags: { timeout: single } },

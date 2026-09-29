@@ -483,6 +483,9 @@ if (process.argv[3] === 'list') process.stdout.write(${JSON.stringify(JSON.strin
     [['logs', 'show', '--limit=abc'], 'COMMAND_INVALID'],
     [['simulator', 'shutdown', '--runtime=iOS-18-0'], 'COMMAND_INVALID'],
     [['setup', '--udid='], 'COMMAND_INVALID'],
+    [['setup', '--port=0'], 'COMMAND_INVALID'],
+    [['setup', '--port=65536'], 'COMMAND_INVALID'],
+    [['setup', '--port=abc'], 'COMMAND_INVALID'],
     [['ui', 'run', '--plan-json={}', '--backend=bogus'], 'UI_VALIDATION_FAILED'],
   ])('rejects invalid option values for %j', async (argv, code) => {
     const root = await mkdtemp(path.join(tmpdir(), 'agemu-cli-test-'));

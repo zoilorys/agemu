@@ -117,7 +117,12 @@ try {
   } else {
     let data: unknown;
     if (command === 'setup') {
-      data = await setup(process.cwd(), true, parsed.flags.has('expo-go'), { udid: nonEmpty(parsed, 'udid', 'COMMAND_INVALID') });
+      const portText = value(parsed, 'port');
+      if (portText !== undefined && (!/^\d+$/.test(portText) || Number(portText) < 1 || Number(portText) > 65_535)) {
+        throw new CliError('COMMAND_INVALID', '--port must be an integer from 1 to 65535');
+      }
+      const port = portText === undefined ? undefined : Number(portText);
+      data = await setup(process.cwd(), true, parsed.flags.has('expo-go'), { udid: nonEmpty(parsed, 'udid', 'COMMAND_INVALID'), port });
     } else if (command === 'config') {
       const config = await configured();
       const { root: _, redactions: __, ...safe } = config;

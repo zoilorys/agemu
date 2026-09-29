@@ -8,7 +8,7 @@ A value starting with -- requires the --name=value form (for example, --arg=--ve
 
 const commands: Record<string, string> = {
   server: `agemu server start\n  Start or reuse this project's Metro or Expo server. Expo development builds use --dev-client.\n\nagemu server status\n  Report server readiness and ownership; an unverified port occupant is a collision.\n\nagemu server stop\n  Stop only a server started by agemu for this project.`,
-  setup: `agemu setup [--expo-go] [--udid=ID]\n  Detect native iOS, bare React Native, or Expo and write version 2 .agemu.json.\n  --udid selects a Simulator; noninteractive setup otherwise uses the sole booted Simulator.\n  Interactive Expo setup asks for the launch target; noninteractive setup selects a development build. Setup does not install dependencies or generate native files.\n  --expo-go requires an installed Expo Go host on the selected Simulator.`,
+  setup: `agemu setup [--expo-go] [--udid=ID] [--port=PORT]\n  Detect native iOS, bare React Native, or Expo and write version 2 .agemu.json.\n  Only iOS application targets are offered as bundle IDs; test, widget, and extension targets are skipped.\n  --port sets the Metro or Expo server port (default 8081, 1 to 65535); native projects reject it.\n  --udid selects a Simulator; noninteractive setup otherwise uses the sole booted Simulator.\n  Interactive Expo setup asks for the launch target; noninteractive setup selects a development build. Setup does not install dependencies or generate native files.\n  --expo-go requires an installed Expo Go host on the selected Simulator.`,
   config: `agemu config show
   Show the resolved .agemu.json configuration, excluding internal paths and redaction values.`,
   simulator: `agemu simulator list
