@@ -2,7 +2,7 @@ import { mkdir, readFile, readdir, stat, unlink, writeFile } from 'node:fs/promi
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { targetBundleId, type LoadedConfig } from '../config/config.js';
-import { createRun } from '../artifacts/runs.js';
+import { createRun, redactValue } from '../artifacts/runs.js';
 import { CliError } from '../core/errors.js';
 import { redact } from '../core/redact.js';
 import { listDevices, resolveDevice } from '../native/simctl.js';
@@ -115,9 +115,13 @@ export function injectEnvironment(value: unknown, environment: Record<string, st
   return count;
 }
 
-async function checked(run: NonNullable<Dependencies['run']>, executable: string, args: string[], message: string): Promise<ProcessResult> {
+const stderrLimit = 4_000;
+
+async function checked(run: NonNullable<Dependencies['run']>, executable: string, args: string[], message: string, secrets: string[]): Promise<ProcessResult> {
   const result = await run(executable, args);
-  if (result.exitCode !== 0) throw new CliError('UI_DELIVERY_FAILED', message, { exitCode: result.exitCode, stderr: result.stderr });
+  if (result.exitCode !== 0) {
+    throw new CliError('UI_DELIVERY_FAILED', message, { exitCode: result.exitCode, stderr: redact(result.stderr, secrets).slice(-stderrLimit) });
+  }
   return result;
 }
 
@@ -139,7 +143,7 @@ export async function buildUiRunner(config: LoadedConfig, dependencies: Dependen
     await checked(run, 'xcodebuild', [
       '-project', project, '-scheme', 'AgentRunner', '-configuration', 'Debug',
       '-destination', `platform=iOS Simulator,id=${udid}`, '-derivedDataPath', derivedData, 'build-for-testing',
-    ], 'Unable to build the XCTest UI runner');
+    ], 'Unable to build the XCTest UI runner', config.redactions ?? []);
     manifest = await findXctestrun(derivedData);
   }
   if (!manifest) throw new CliError('BUILD_FAILED', 'xcodebuild did not produce an .xctestrun file');
@@ -213,7 +217,9 @@ export async function runUiPlan(config: LoadedConfig, source: { file: string } |
     } finally {
       if (active) await active.stop();
     }
-    return { run: path.relative(config.root, directory), udid, actions: plan.actions.length, durationMs: Date.now() - runStarted, recordings, segments: outputs };
+    return redactValue({
+      run: path.relative(config.root, directory), udid, actions: plan.actions.length, durationMs: Date.now() - runStarted, recordings, segments: outputs,
+    }, config.redactions ?? []);
   }
   return { ...await runUiSegment(config, plan, udid, directory, run, backend, dependencies), durationMs: Date.now() - runStarted };
 }
@@ -226,7 +232,7 @@ async function runUiSegment(config: LoadedConfig, plan: UiPlan, udid: string, di
     if (backend === 'idb') throw new CliError('UI_DELIVERY_FAILED', 'idb is unavailable or the UI plan is incompatible with idb');
   }
   const built = await buildUiRunner(config, { ...dependencies, resolveUdid: async () => udid });
-  const json = await checked(run, 'plutil', ['-convert', 'json', '-o', '-', built.manifest], 'Unable to read the XCTest run manifest');
+  const json = await checked(run, 'plutil', ['-convert', 'json', '-o', '-', built.manifest], 'Unable to read the XCTest run manifest', config.redactions ?? []);
   const manifestValue = JSON.parse(json.stdout) as unknown;
   const encodedPlan = Buffer.from(JSON.stringify({ ...plan, bundleId: targetBundleId(config) }), 'utf8').toString('base64');
   if (injectEnvironment(manifestValue, { AGEMU_PLAN_BASE64: encodedPlan, ...(videoPort === undefined ? {} : { AGEMU_VIDEO_PORT: String(videoPort) }) }) === 0) {
@@ -234,7 +240,7 @@ async function runUiSegment(config: LoadedConfig, plan: UiPlan, udid: string, di
   }
   const manifest = path.join(path.dirname(built.manifest), `AgentRunner-${process.pid}-${Date.now()}.xctestrun`);
   await writeFile(manifest, JSON.stringify(manifestValue), { mode: 0o600 });
-  await checked(run, 'plutil', ['-convert', 'xml1', manifest], 'Unable to write the XCTest run manifest');
+  await checked(run, 'plutil', ['-convert', 'xml1', manifest], 'Unable to write the XCTest run manifest', config.redactions ?? []);
   const resultBundle = path.join(directory, 'AgentRunner.xcresult');
   const result = await run('xcodebuild', [
     'test-without-building', '-xctestrun', manifest, '-destination', `platform=iOS Simulator,id=${built.udid}`,
@@ -249,9 +255,9 @@ async function runUiSegment(config: LoadedConfig, plan: UiPlan, udid: string, di
   }
   const marker = result.stdout.split(/\r?\n/).find(line => line.includes('AGEMU_RESULT:'));
   const runnerResult = marker ? JSON.parse(Buffer.from(marker.slice(marker.indexOf('AGEMU_RESULT:') + 13), 'base64').toString('utf8')) : undefined;
-  return {
-    run: path.relative(config.root, directory), udid: built.udid, bundleId: redact(targetBundleId(config), config.redactions ?? []),
+  return redactValue({
+    run: path.relative(config.root, directory), udid: built.udid, bundleId: targetBundleId(config),
     backend: 'xctest', runnerCached: built.cached,
     actions: plan.actions.length, runnerResult, resultBundle: path.relative(config.root, resultBundle), transcript: path.relative(config.root, transcript),
-  };
+  }, config.redactions ?? []);
 }

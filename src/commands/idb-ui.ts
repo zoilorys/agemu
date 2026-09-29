@@ -3,6 +3,7 @@ import path from 'node:path';
 import { targetBundleId, type LoadedConfig } from '../config/config.js';
 import { CliError } from '../core/errors.js';
 import { redact } from '../core/redact.js';
+import { redactValue } from '../artifacts/runs.js';
 import type { ProcessResult, RunOptions } from '../process/run-process.js';
 import type { LongPress, Point, Swipe, UiPlan } from './ui.js';
 
@@ -166,16 +167,15 @@ export async function tryRunIdbPlan(config: LoadedConfig, plan: UiPlan, udid: st
         trees.push(JSON.stringify(await elements()));
       }
     }
-    return {
-      run: path.relative(config.root, directory), udid, bundleId: redact(targetBundleId(config), config.redactions ?? []),
+    return redactValue({
+      run: path.relative(config.root, directory), udid, bundleId: targetBundleId(config),
       backend: 'idb', actions: plan.actions.length, runnerResult: { completed: plan.actions.length, bundleId: targetBundleId(config), trees },
       screenshots, transcript: path.relative(config.root, transcript),
-    };
+    }, config.redactions ?? []);
   } catch (error) {
     lines.push(`error: ${error instanceof Error ? error.message : String(error)}`);
-    throw new CliError('UI_DELIVERY_FAILED', `The idb UI plan failed: ${redact(error instanceof Error ? error.message : String(error), config.redactions ?? [])}`, {
-      transcript: path.relative(config.root, transcript),
-    });
+    throw new CliError('UI_DELIVERY_FAILED', `The idb UI plan failed: ${redact(error instanceof Error ? error.message : String(error), config.redactions ?? [])}`,
+      redactValue({ transcript: path.relative(config.root, transcript) }, config.redactions ?? []));
   } finally {
     await writeFile(transcript, `${redact(lines.join('\n'), config.redactions ?? [])}\n`, { mode: 0o600 });
   }

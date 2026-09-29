@@ -207,6 +207,63 @@ describe('UI backend selection', () => {
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 
+  const secretConfig = (root: string) => ({ version: 2 as const, platform: 'ios' as const, app: { type: 'native' as const,
+    project: path.join(root, 'App.xcodeproj'), scheme: 'App', configuration: 'Debug', bundleId: 'com.secret-app.x' },
+  simulator: { udid: 'PHONE' }, root, redactions: ['secret-app'] });
+
+  it('redacts configured secrets from idb runner results and trees', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-idb-redact-'));
+    try {
+      const output = await runUiPlan(secretConfig(root), { json: JSON.stringify({ version: 1, actions: [{ inspect: {} }] }) }, {
+        backend: 'idb',
+        run: async (executable, args) => executable === 'idb' && args[1] === 'describe-all'
+          ? result(JSON.stringify([{ AXLabel: 'Welcome to secret-app' }])) : result(),
+      });
+      const json = JSON.stringify(output);
+      expect(json).not.toContain('secret-app');
+      expect(json).toContain('com.[REDACTED].x');
+      expect(json).toContain('Welcome to [REDACTED]');
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('redacts configured secrets from the decoded XCTest runner result', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-xctest-redact-'));
+    const manifest = path.join(root, '.agemu', 'RunnerDerivedData', 'Build', 'Runner.xctestrun');
+    await mkdir(path.dirname(manifest), { recursive: true });
+    await writeFile(manifest, 'fixture');
+    try {
+      const output = await runUiPlan(secretConfig(root), { json: JSON.stringify({ version: 1, actions: [{ inspect: {} }] }) }, {
+        backend: 'xctest',
+        run: async (executable, args) => {
+          if (executable === 'plutil' && args[1] === 'json') return result(JSON.stringify({ AgentRunner: { TestBundlePath: 'Runner.xctest' } }));
+          if (executable === 'xcodebuild' && args[0] === 'test-without-building') {
+            const payload = { completed: 1, bundleId: 'com.secret-app.x', trees: ['Application com.secret-app.x'] };
+            return result(`AGEMU_RESULT:${Buffer.from(JSON.stringify(payload)).toString('base64')}\n`);
+          }
+          return result();
+        },
+      });
+      const json = JSON.stringify(output);
+      expect(json).not.toContain('secret-app');
+      expect(output.runnerResult).toEqual({ completed: 1, bundleId: 'com.[REDACTED].x', trees: ['Application com.[REDACTED].x'] });
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('rejects a failed runner build with redacted stderr capped to its last 4000 characters', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-build-redact-'));
+    const stderr = `${'x'.repeat(5_000)}\nerror: cannot sign secret-app`;
+    try {
+      const failure = await buildUiRunner(secretConfig(root), {
+        run: async (executable) => executable === 'xcodebuild' ? result('', stderr, 65) : result(),
+      }).catch((error: unknown) => error);
+      expect(failure).toMatchObject({ code: 'UI_DELIVERY_FAILED', details: { exitCode: 65 } });
+      const captured = (failure as { details: { stderr: string } }).details.stderr;
+      expect(captured).toHaveLength(4_000);
+      expect(captured.endsWith('error: cannot sign [REDACTED]')).toBe(true);
+      expect(captured).not.toContain('secret-app');
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
   it('uses the cached XCTest runner when idb cannot start', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'agemu-idb-fallback-'));
     const manifest = path.join(root, '.agemu', 'RunnerDerivedData', 'Build', 'Runner.xctestrun');

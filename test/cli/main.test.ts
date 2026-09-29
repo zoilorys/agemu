@@ -231,6 +231,58 @@ if (process.argv[3] === 'list') process.stdout.write(${JSON.stringify(JSON.strin
     }
   });
 
+  it('redacts configured secrets from success and --debug failure envelopes', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-cli-test-'));
+    const failFlag = path.join(root, 'fail');
+    await writeFile(path.join(root, '.agemu.json'), JSON.stringify({
+      version: 2, platform: 'ios', app: { type: 'native', project: 'App.xcodeproj', scheme: 'App', configuration: 'Debug', bundleId: 'com.secret-app.x' },
+      simulator: { udid: 'PHONE' }, redactions: ['secret-app'],
+    }));
+    await writeFile(path.join(root, 'xcrun'), `#!${process.execPath}
+if (process.argv[3] === 'launch') {
+  process.stderr.write('launch denied for secret-app');
+  if (require('node:fs').existsSync(${JSON.stringify(failFlag)})) process.exit(1);
+}
+`);
+    await chmod(path.join(root, 'xcrun'), 0o755);
+    try {
+      const success = await run(process.execPath, [cli, 'app', 'launch'], { cwd: root, env: { PATH: root } });
+      expect(success.stdout).not.toContain('secret-app');
+      expect(JSON.parse(success.stdout)).toEqual({ ok: true, data: { action: 'launch', udid: 'PHONE', bundleId: 'com.[REDACTED].x' } });
+      await writeFile(failFlag, '');
+      const failure = await run(process.execPath, [cli, 'app', 'launch', '--debug'], { cwd: root, env: { PATH: root } })
+        .then(() => undefined, (error: { code: number; stdout: string }) => error);
+      expect(failure?.code).toBe(1);
+      const envelope = JSON.parse(failure!.stdout);
+      expect(envelope.error.stack).toEqual(expect.any(String));
+      expect(failure!.stdout).not.toContain('secret-app');
+      expect(failure!.stdout).toContain('[REDACTED]');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('redacts an unredacted handler error message and its --debug stack', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-cli-test-'));
+    await writeFile(path.join(root, '.agemu.json'), JSON.stringify({
+      version: 2, platform: 'ios', app: { type: 'native', project: 'App.xcodeproj', scheme: 'App', configuration: 'Debug', bundleId: 'com.example.app' },
+      simulator: { udid: 'PHONE' }, redactions: ['secret-app'],
+    }));
+    try {
+      const failure = await run(process.execPath, [cli, 'ui', 'run', `--plan=${path.join(root, 'secret-app-plan.json')}`, '--debug'], { cwd: root, env: { PATH: root } })
+        .then(() => undefined, (error: { code: number; stdout: string }) => error);
+      expect(failure?.code).toBe(1);
+      const { error } = JSON.parse(failure!.stdout);
+      expect(error.code).toBe('UI_VALIDATION_FAILED');
+      expect(error.stack).toEqual(expect.any(String));
+      expect(failure!.stdout).not.toContain('secret-app');
+      expect(error.message).toContain('[REDACTED]');
+      expect(error.stack).toContain('[REDACTED]');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('keeps a successful command successful when its event cannot be recorded', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'agemu-cli-test-'));
     await writeFile(path.join(root, '.agemu.json'), JSON.stringify({

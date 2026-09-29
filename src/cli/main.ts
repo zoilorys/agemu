@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
-import { errorResult, writeResult } from '../core/output.js';
+import { errorResult, writeResult, type Result } from '../core/output.js';
+import { redact } from '../core/redact.js';
 import { CliError } from '../core/errors.js';
 import { loadConfig, type LoadedConfig } from '../config/config.js';
-import { appendEvent } from '../artifacts/runs.js';
+import { appendEvent, redactValue } from '../artifacts/runs.js';
 import { doctor } from '../doctor/doctor.js';
 import { bootDevice, listDevices, resolveDevice, shutdownDevice } from '../native/simctl.js';
 import { buildApp } from '../commands/build.js';
@@ -48,12 +49,31 @@ const summarize = (result: unknown): Record<string, unknown> => {
   return Object.fromEntries(summaryKeys.filter((key) => source[key] !== undefined).map((key) => [key, source[key]]));
 };
 
+// Redactions of the loaded config; the envelope writer applies them as a safety net.
+let secrets: string[] = [];
+const configured = async (): Promise<LoadedConfig> => {
+  const config = await loadConfig();
+  secrets = config.redactions ?? [];
+  return config;
+};
+const emit = (result: Result<unknown>): void => {
+  if (!secrets.length) return writeResult(result, pretty);
+  if (result.ok) return writeResult({ ok: true, data: redactValue(result.data, secrets) }, pretty);
+  const { code, message, details, stack } = result.error;
+  writeResult({ ok: false, error: {
+    code,
+    message: redact(message, secrets),
+    ...(details ? { details: redactValue(details, secrets) } : {}),
+    ...(stack ? { stack: redact(stack, secrets) } : {}),
+  } }, pretty);
+};
+
 const safeAppend = async (config: LoadedConfig, event: Record<string, unknown>): Promise<void> => {
   try { await appendEvent(config.root, event, config.redactions ?? []); } catch { /* Recording never alters the command outcome. */ }
 };
 
 const withConfig = async (key: string, handler: (config: LoadedConfig) => Promise<unknown>): Promise<unknown> => {
-  const config = await loadConfig();
+  const config = await configured();
   if (!recorded.has(key)) return handler(config);
   const startedAt = new Date();
   const at = startedAt.toISOString();
@@ -90,7 +110,7 @@ try {
     if (command === 'setup') {
       data = await setup(process.cwd(), true, parsed.flags.has('expo-go'), { udid: nonEmpty(parsed, 'udid', 'COMMAND_INVALID') });
     } else if (command === 'config') {
-      const config = await loadConfig();
+      const config = await configured();
       const { root: _, redactions: __, ...safe } = config;
       data = safe;
     } else if (command === 'simulator' && subcommand === 'list') {
@@ -140,13 +160,13 @@ try {
       }));
     } else if (command === 'logs') {
       const options = { last: value(parsed, 'last'), level: value(parsed, 'level'), limit: limitOption(parsed) };
-      data = await showLogs(await loadConfig(), options);
+      data = await showLogs(await configured(), options);
     } else if (command === 'diagnose') {
       const options = { last: value(parsed, 'last'), level: value(parsed, 'level'), limit: limitOption(parsed) };
-      data = await diagnose(await loadConfig(), options);
+      data = await diagnose(await configured(), options);
     } else if (command === 'doctor') {
       data = await doctor();
     } else throw new CliError('COMMAND_INVALID', `Unknown command: ${command}`);
-    writeResult({ ok: true, data }, pretty);
+    emit({ ok: true, data });
   }
-} catch (error) { writeResult(errorResult(error, debug), pretty); process.exitCode = 1; }
+} catch (error) { emit(errorResult(error, debug)); process.exitCode = 1; }
