@@ -31,6 +31,7 @@ export const commandSpecs: Record<string, CommandSpec> = {
   diagnose: { flags: logOptions },
   ui: { subcommands: { 'build-runner': { timeout: single }, run: { plan: single, 'plan-json': single, backend: single, timeout: single } } },
   doctor: { flags: {} },
+  clean: { flags: { runs: boolean, 'derived-data': boolean, 'older-than': single, 'dry-run': boolean } },
 };
 
 const globalNames = ['pretty', 'debug', 'help', 'version'] as const;

@@ -55,6 +55,15 @@ describe('agemu CLI', () => {
     expect(ui).toContain('including a runner build (default 900 s');
   });
 
+  it.each([
+    [['clean'], 'clean requires --runs, --derived-data, or both'],
+    [['clean', '--derived-data', '--older-than=1d'], '--older-than requires --runs'],
+    [['clean', '--runs', '--older-than=1w'], '--older-than must be a number followed by s, m, h, or d'],
+  ])('rejects %j before loading configuration', async (argv, message) => {
+    await expect(run(process.execPath, [cli, ...argv]))
+      .rejects.toMatchObject({ code: 1, stdout: expect.stringContaining(`"code":"COMMAND_INVALID","message":"${message}`) });
+  });
+
   it('requires a plan source for UI runs', async () => {
     await expect(run(process.execPath, [cli, 'ui', 'run']))
       .rejects.toMatchObject({

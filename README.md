@@ -174,7 +174,7 @@ Expo Go uses its installed host: `agemu build` and `agemu app install` do not ap
 
 For React Native and Expo, `diagnose` includes server status, the last server output, detected bundling errors, a screenshot, and Simulator logs. The saved server log may be from an earlier run. JavaScript console messages inside the app and React Native DevTools output are not captured. `logs show` reads Simulator unified logs for the built app or Expo Go host. Inspect `partial` and `failures` when evidence collection fails.
 
-`agemu` writes build state, logs, screenshots, and test results to `.agemu/`. Add that directory to the app repository's `.gitignore`. Each `build`, `app`, `server`, `simulator boot|shutdown`, `ui`, `observe`, `logs show`, and `diagnose` run appends one redacted event to `.agemu/events.jsonl`; `diagnose` reports recent failures from it. The file is append-only and is never trimmed.
+`agemu` writes build state, logs, screenshots, and test results to `.agemu/`. Add that directory to the app repository's `.gitignore`. Each `build`, `app`, `server`, `simulator boot|shutdown`, `ui`, `observe`, `logs show`, `diagnose`, and `clean` run appends one redacted event to `.agemu/events.jsonl`; `diagnose` reports recent failures from it. The file is append-only and is never trimmed.
 
 ## Run a UI plan
 
@@ -222,6 +222,18 @@ Targets accept an accessibility `identifier` or an exact `label`. The `tap` and 
 Assertions take a target with exactly one of `identifier` or `label`. `assertVisible` passes only when the element is on screen and hittable; `assertExists` passes when the element is in the accessibility tree, even off screen; `assertNotVisible` passes when the element is absent or not on screen; `assertValue` compares the element's accessibility value with `value`. Plans are validated completely before any Simulator interaction: unknown actions, unknown fields, and missing targets or text fail with `UI_VALIDATION_FAILED`.
 
 The bundled XCTest runner needs no macOS Accessibility or Screen Recording permission. XCTest runs save an `.xcresult` bundle and `xcodebuild.log` under `.agemu/runs/`. Its build is reused until runner sources change; `runnerCached` reports whether the run used that build. `idb` runs save `idb.log` and any requested screenshots there.
+
+## Clean up
+
+`.agemu/` is never trimmed automatically. Delete its artifacts explicitly:
+
+```sh
+agemu clean --runs --older-than=7d --dry-run
+agemu clean --runs --older-than=7d
+agemu clean --derived-data
+```
+
+`--runs` deletes directories under `.agemu/runs/`; add `--older-than=<n><s|m|h|d>` to keep recent runs, including one in progress. `--derived-data` deletes `.agemu/DerivedData` and `.agemu/RunnerDerivedData`, and `state.json` when it points into `DerivedData` (run `agemu build` again afterwards). `--dry-run` lists what would be deleted. The result reports `removed` paths and `freedBytes`. `events.jsonl`, server state, and logs are kept; symlinks are never followed.
 
 ## Develop
 

@@ -12,6 +12,7 @@ import { buildApp } from '../commands/build.js';
 import { controlApp, type AppAction } from '../commands/app.js';
 import { diagnose, observe, showLogs } from '../commands/diagnostics.js';
 import { buildUiRunner, runUiPlan } from '../commands/ui.js';
+import { clean } from '../commands/clean.js';
 import { helpFor } from './help.js';
 import { setup } from '../commands/setup.js';
 import { server } from '../commands/server.js';
@@ -48,8 +49,9 @@ const nonEmpty =(parsed: ParsedArgs, name: string, code: 'COMMAND_INVALID' | 'UI
 // Commands whose invocations are recorded here; observe, logs show, and diagnose record their own events.
 const recorded = new Set([
   'build', 'app install', 'app launch', 'app terminate', 'app restart', 'app open-url',
-  'server start', 'server status', 'server stop', 'simulator boot', 'simulator shutdown', 'ui build-runner', 'ui run',
+  'server start', 'server status', 'server stop', 'simulator boot', 'simulator shutdown', 'ui build-runner', 'ui run', 'clean',
 ]);
+const durationUnits: Record<string, number> = { s: 1_000, m: 60_000, h: 3_600_000, d: 86_400_000 };
 const summaryKeys = ['run', 'udid', 'bundleId', 'backend', 'action'];
 
 const summarize = (result: unknown): Record<string, unknown> => {
@@ -181,6 +183,19 @@ try {
     } else if (command === 'diagnose') {
       const options = { last: value(parsed, 'last'), level: value(parsed, 'level'), limit: limitOption(parsed) };
       data = await diagnose(await configured(), options);
+    } else if (command === 'clean') {
+      const runs = parsed.flags.has('runs');
+      const derivedData = parsed.flags.has('derived-data');
+      if (!runs && !derivedData) throw new CliError('COMMAND_INVALID', 'clean requires --runs, --derived-data, or both');
+      const olderThan = value(parsed, 'older-than');
+      let olderThanMs: number | undefined;
+      if (olderThan !== undefined) {
+        if (!runs) throw new CliError('COMMAND_INVALID', '--older-than requires --runs');
+        const match = /^(\d+)([smhd])$/.exec(olderThan);
+        if (!match) throw new CliError('COMMAND_INVALID', '--older-than must be a number followed by s, m, h, or d (for example, 7d)');
+        olderThanMs = Number(match[1]) * durationUnits[match[2]];
+      }
+      data = await withConfig(key, (config) => clean(config, { runs, derivedData, olderThanMs, dryRun: parsed.flags.has('dry-run') }));
     } else if (command === 'doctor') {
       data = await doctor();
     } else throw new CliError('COMMAND_INVALID', `Unknown command: ${command}`);

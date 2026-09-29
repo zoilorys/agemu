@@ -64,6 +64,11 @@ agemu ui run (--plan=FILE | --plan-json=JSON) [--backend=auto|idb|xctest] [--tim
   doctor: `agemu doctor
   Check Node.js, Xcode, configuration, Simulator, app prerequisites, and write access. Does not install dependencies or generate native files.
   Advisory checks (advisory: true) report whether the Simulator is booted, idb is usable, and .agemu/ is git-ignored; they do not affect ready.`,
+  clean: `agemu clean (--runs [--older-than=7d] | --derived-data) [--dry-run]
+  Delete .agemu/runs/ directories and/or .agemu/DerivedData and .agemu/RunnerDerivedData, and report removed paths and freed bytes.
+  --older-than keeps runs modified more recently (number followed by s, m, h, or d); without it, a run in progress is also removed.
+  --derived-data also removes state.json when it points into DerivedData. --dry-run lists without deleting. Symlinks are never followed.
+  Keeps events.jsonl, server state, and logs.`,
 };
 
 export function helpFor(command?: string): string {
@@ -93,6 +98,7 @@ Commands:
   ui build-runner      Build the XCTest UI runner.
   ui run               Execute a JSON UI action plan.
   doctor               Check setup and dependencies.
+  clean                Delete agemu runs or derived data.
 
 Run "agemu <command> --help" for command options and examples.
 
