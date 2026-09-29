@@ -1,4 +1,4 @@
-import { mkdir, readFile, readdir, stat, unlink, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rename, rm, stat, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { targetBundleId, type LoadedConfig } from '../config/config.js';
@@ -7,7 +7,7 @@ import { CliError } from '../core/errors.js';
 import { redact } from '../core/redact.js';
 import { listDevices, resolveDevice } from '../native/simctl.js';
 import { runProcess, type ProcessResult, type RunOptions } from '../process/run-process.js';
-import { idbCompatible, tryRunIdbPlan } from './idb-ui.js';
+import { idbCompatible, screenshotName, tryRunIdbPlan } from './idb-ui.js';
 import { createRecordingBridge, startVideoRecording, type Recording } from './video-recording.js';
 
 export type UiPlan = { version: 1; actions: unknown[] };
@@ -291,6 +291,66 @@ function xctestFailedAction(stdout: string, plan: UiPlan): FailedAction | undefi
   };
 }
 
+export type ScreenshotExport = { screenshots: string[]; failureScreenshot?: string; screenshotExportError?: string };
+
+/**
+ * Exports AgentRunner screenshot attachments from the result bundle to `<directory>/screenshots`, using the idb
+ * file naming. Never throws: a failed export yields `screenshotExportError` so it cannot mask the plan outcome.
+ */
+export async function exportXctestScreenshots(run: NonNullable<Dependencies['run']>, resultBundle: string, directory: string,
+  root: string, plan: UiPlan, secrets: string[] = []): Promise<ScreenshotExport> {
+  try { await stat(resultBundle); } catch { return { screenshots: [] }; }
+  const exported = path.join(directory, 'attachments');
+  const target = path.join(directory, 'screenshots');
+  try {
+    const result = await run('xcrun', ['xcresulttool', 'export', 'attachments', '--path', resultBundle, '--output-path', exported], { timeoutMs: 120_000 });
+    if (result.exitCode !== 0) throw new Error(result.stderr.trim() || result.stdout.trim() || `xcresulttool exited with ${result.exitCode}`);
+    let text: string;
+    try { text = await readFile(path.join(exported, 'manifest.json'), 'utf8'); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { screenshots: [] };
+      throw error;
+    }
+    const manifest = JSON.parse(text) as unknown;
+    if (!Array.isArray(manifest)) throw new Error('xcresulttool returned an invalid attachments manifest');
+    const shots: Array<{ index: number; file: string }> = [];
+    let failureScreenshot: string | undefined;
+    for (const test of manifest) {
+      const attachments = (test as { attachments?: unknown })?.attachments;
+      if (!Array.isArray(attachments)) continue;
+      for (const attachment of attachments as Array<Record<string, unknown>>) {
+        const name = attachment?.suggestedHumanReadableName;
+        const file = attachment?.exportedFileName;
+        if (typeof name !== 'string' || typeof file !== 'string' || path.basename(file) !== file) continue;
+        let destination: string | undefined;
+        const match = /^agemu-(\d+)-([A-Za-z0-9_-]+)/.exec(name);
+        if (match) {
+          const index = Number(match[1]);
+          const action = plan.actions[index] as Record<string, Record<string, unknown>> | undefined;
+          if (!action || typeof action !== 'object' || !('screenshot' in action)) continue;
+          // Xcode appends suffixes such as `_0_<UUID>.png`; the plan supplies the exact stem.
+          const stem = screenshotName(action.screenshot?.name);
+          if (!name.startsWith(`agemu-${index}-${stem}`) || shots.some(shot => shot.index === index)) continue;
+          destination = path.join(target, `${index}-${stem}.png`);
+          shots.push({ index, file: path.relative(root, destination) });
+        } else if (/^agemu-failure/.test(name)) {
+          destination = path.join(target, 'failure.png');
+          failureScreenshot = path.relative(root, destination);
+        }
+        if (!destination) continue;
+        await mkdir(target, { recursive: true });
+        await rename(path.join(exported, file), destination);
+      }
+    }
+    shots.sort((left, right) => left.index - right.index);
+    return { screenshots: shots.map(shot => shot.file), ...(failureScreenshot ? { failureScreenshot } : {}) };
+  } catch (error) {
+    return { screenshots: [], screenshotExportError: redact(error instanceof Error ? error.message : String(error), secrets) };
+  } finally {
+    await rm(exported, { recursive: true, force: true }).catch(() => undefined);
+  }
+}
+
 async function runUiSegment(config: LoadedConfig, plan: UiPlan, udid: string, directory: string,
   run: NonNullable<Dependencies['run']>, backend: 'auto' | 'idb' | 'xctest', dependencies: Dependencies, videoPort?: number) {
   if (backend !== 'xctest') {
@@ -315,12 +375,13 @@ async function runUiSegment(config: LoadedConfig, plan: UiPlan, udid: string, di
   ]).finally(() => unlink(manifest).catch(() => undefined));
   const transcript = path.join(directory, 'xcodebuild.log');
   await writeFile(transcript, redact(`${result.stdout}${result.stderr}`, config.redactions ?? []), { mode: 0o600 });
+  const exported = await exportXctestScreenshots(run, resultBundle, directory, config.root, plan, config.redactions ?? []);
   if (result.exitCode !== 0) {
     const secrets = config.redactions ?? [];
     const failedAction = xctestFailedAction(result.stdout, plan);
     const details = {
       exitCode: result.exitCode, resultBundle: path.relative(config.root, resultBundle), transcript: path.relative(config.root, transcript),
-      ...(failedAction ? { failedAction } : {}), completed: failedAction ? failedAction.index : 0,
+      ...(failedAction ? { failedAction } : {}), completed: failedAction ? failedAction.index : 0, ...exported,
     };
     throw new CliError('UI_DELIVERY_FAILED', redact(failedAction ? failureMessage(failedAction) : 'The XCTest UI plan failed', secrets),
       redactValue(details, secrets));
@@ -331,5 +392,6 @@ async function runUiSegment(config: LoadedConfig, plan: UiPlan, udid: string, di
     run: path.relative(config.root, directory), udid: built.udid, bundleId: targetBundleId(config),
     backend: 'xctest', runnerCached: built.cached,
     actions: plan.actions.length, runnerResult, resultBundle: path.relative(config.root, resultBundle), transcript: path.relative(config.root, transcript),
+    screenshots: exported.screenshots, ...(exported.screenshotExportError ? { screenshotExportError: exported.screenshotExportError } : {}),
   }, config.redactions ?? []);
 }

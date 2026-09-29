@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -362,6 +362,111 @@ describe('UI backend selection', () => {
       }).catch((e: unknown) => e);
       expect(error).toMatchObject({ details: { failedAction: { index: 0, kind: 'assertVisible' }, completed: 0 } });
       expect(commands.some(command => command[0] === 'idb' && command[2] === 'tap')).toBe(false);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  const passingXctestWithBundle = (exportAttachments: (output: string) => Promise<ReturnType<typeof result>>) =>
+    async (executable: string, args: string[]) => {
+      if (executable === 'plutil' && args[1] === 'json') return result(JSON.stringify({ AgentRunner: { TestBundlePath: 'Runner.xctest' } }));
+      if (executable === 'xcodebuild' && args[0] === 'test-without-building') {
+        await mkdir(args[args.indexOf('-resultBundlePath') + 1], { recursive: true });
+        return result(`AGEMU_RESULT:${Buffer.from(JSON.stringify({ completed: 4, trees: [] })).toString('base64')}\n`);
+      }
+      if (executable === 'xcrun' && args[0] === 'xcresulttool') return exportAttachments(args[args.indexOf('--output-path') + 1]);
+      return result();
+    };
+  const screenshotPlan = JSON.stringify({ version: 1, actions: [{ launch: {} }, { inspect: {} }, { tap: { label: 'Go' } }, { screenshot: { name: 'done' } }] });
+
+  it('exports only AgentRunner screenshot attachments under the idb file naming', async () => {
+    const root = await cachedRunnerRoot('agemu-xctest-shots-');
+    try {
+      const output = await runUiPlan(nativeConfig(root), { json: screenshotPlan }, {
+        backend: 'xctest',
+        run: passingXctestWithBundle(async (directory) => {
+          await mkdir(directory, { recursive: true });
+          await writeFile(path.join(directory, 'A1.png'), 'png-bytes');
+          await writeFile(path.join(directory, 'B2.txt'), 'log');
+          await writeFile(path.join(directory, 'manifest.json'), JSON.stringify([{ testIdentifier: 'AgentRunner/testPlan()', attachments: [
+            { exportedFileName: 'A1.png', suggestedHumanReadableName: 'agemu-3-done_0_ABC.png', isAssociatedWithFailure: false },
+            { exportedFileName: 'B2.txt', suggestedHumanReadableName: 'Debug description_0_DEF.txt', isAssociatedWithFailure: false },
+          ] }]));
+          return result();
+        }),
+      }) as { run: string; screenshots: string[] };
+      expect(output.screenshots).toEqual([`${output.run}/screenshots/3-done.png`]);
+      expect(output).not.toHaveProperty('screenshotExportError');
+      await expect(readFile(path.join(root, output.run, 'screenshots', '3-done.png'), 'utf8')).resolves.toBe('png-bytes');
+      await expect(stat(path.join(root, output.run, 'attachments'))).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('keeps a passing XCTest plan ok when screenshot export fails', async () => {
+    const root = await cachedRunnerRoot('agemu-xctest-export-fail-');
+    try {
+      const output = await runUiPlan(secretConfig(root), { json: screenshotPlan }, {
+        backend: 'xctest',
+        run: passingXctestWithBundle(async () => result('', 'error: cannot open secret-app bundle', 1)),
+      });
+      expect(output).toMatchObject({ backend: 'xctest', runnerResult: { completed: 4 }, screenshots: [],
+        screenshotExportError: 'error: cannot open [REDACTED] bundle' });
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('treats an export without a manifest as a run with no attachments', async () => {
+    const root = await cachedRunnerRoot('agemu-xctest-no-manifest-');
+    try {
+      const output = await runUiPlan(nativeConfig(root), { json: screenshotPlan }, {
+        backend: 'xctest',
+        run: passingXctestWithBundle(async (directory) => { await mkdir(directory, { recursive: true }); return result(); }),
+      });
+      expect(output).toMatchObject({ backend: 'xctest', screenshots: [] });
+      expect(output).not.toHaveProperty('screenshotExportError');
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('returns the exported failure screenshot for a failing XCTest plan', async () => {
+    const root = await cachedRunnerRoot('agemu-xctest-failure-shot-');
+    const failure = Buffer.from(JSON.stringify({ index: 1, kind: 'tap', message: 'missing' })).toString('base64');
+    try {
+      const error = await runUiPlan(nativeConfig(root), { json: JSON.stringify({ version: 1, actions: [{ launch: {} }, { tap: { label: 'Go' } }] }) }, {
+        backend: 'xctest',
+        run: async (executable, args) => {
+          if (executable === 'plutil' && args[1] === 'json') return result(JSON.stringify({ AgentRunner: { TestBundlePath: 'Runner.xctest' } }));
+          if (executable === 'xcodebuild' && args[0] === 'test-without-building') {
+            await mkdir(args[args.indexOf('-resultBundlePath') + 1], { recursive: true });
+            return result(`AGEMU_ACTION:1\nAGEMU_FAILURE:${failure}\n`, '', 65);
+          }
+          if (executable === 'xcrun' && args[0] === 'xcresulttool') {
+            const directory = args[args.indexOf('--output-path') + 1];
+            await mkdir(directory, { recursive: true });
+            await writeFile(path.join(directory, 'F.png'), 'failure-png');
+            await writeFile(path.join(directory, 'manifest.json'), JSON.stringify([{ attachments: [
+              { exportedFileName: 'F.png', suggestedHumanReadableName: 'agemu-failure_0_XYZ.png', isAssociatedWithFailure: false },
+            ] }]));
+          }
+          return result();
+        },
+      }).catch((e: unknown) => e) as { details: { failureScreenshot: string; screenshots: string[] } };
+      expect(error.details.screenshots).toEqual([]);
+      await expect(readFile(path.join(root, error.details.failureScreenshot), 'utf8')).resolves.toBe('failure-png');
+      expect(path.basename(error.details.failureScreenshot)).toBe('failure.png');
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('captures a failure screenshot when an idb action fails', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-idb-failure-shot-'));
+    try {
+      const error = await runUiPlan(nativeConfig(root), { json: JSON.stringify({ version: 1, actions: [{ screenshot: { name: 'before' } }, { assertVisible: { identifier: 'missing' } }] }) }, {
+        backend: 'idb',
+        run: async (executable, args) => {
+          if (executable === 'idb' && args[1] === 'describe-all') return result('[]');
+          if (executable === 'idb' && args[0] === 'screenshot') await writeFile(args[1], 'png');
+          return result();
+        },
+      }).catch((e: unknown) => e) as { details: { failureScreenshot: string; screenshots: string[] } };
+      expect(error.details.screenshots.map(file => path.basename(file))).toEqual(['0-before.png']);
+      expect(error.details.failureScreenshot).toMatch(/screenshots\/failure\.png$/);
+      await expect(readFile(path.join(root, error.details.failureScreenshot), 'utf8')).resolves.toBe('png');
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 

@@ -55,6 +55,37 @@ final class AgentRunner: XCTestCase {
         identifier ?? label ?? "<no target>"
     }
 
+    /// Matches the idb backend: UTF-16 units outside [A-Za-z0-9_-] become "_", capped at 80, default "screen".
+    private func sanitizedScreenshotName(_ name: String?) -> String {
+        guard let name else { return "screen" }
+        let underscore = UInt16(UInt8(ascii: "_"))
+        let units = name.utf16.prefix(80).map { unit -> UInt16 in
+            switch unit {
+            case 0x30...0x39, 0x41...0x5A, 0x61...0x7A, 0x2D, 0x5F: return unit
+            default: return underscore
+            }
+        }
+        let sanitized = String(decoding: units, as: UTF16.self)
+        return sanitized.isEmpty ? "screen" : sanitized
+    }
+
+    private var failureScreenshotCaptured = false
+
+    /// Every failure, including XCUITest-internal ones that bypass reportFailure, gets one `agemu-failure` screenshot.
+    override func record(_ issue: XCTIssue) {
+        if !failureScreenshotCaptured && Thread.isMainThread {
+            failureScreenshotCaptured = true
+            MainActor.assumeIsolated {
+                let attachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+                attachment.name = "agemu-failure"
+                attachment.lifetime = .keepAlways
+                add(attachment)
+            }
+        }
+        super.record(issue)
+    }
+
+    /// XCTFail routes through record(_:), which attaches the failure screenshot.
     private func reportFailure(index: Int, kind: String, message: String) {
         if let data = try? JSONEncoder().encode(Failure(index: index, kind: kind, message: message)) {
             print("AGEMU_FAILURE:\(data.base64EncodedString())")
@@ -131,7 +162,7 @@ final class AgentRunner: XCTestCase {
                 }
             } else if let shot = action.screenshot {
                 let attachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
-                attachment.name = shot.name ?? "action-\(index)"
+                attachment.name = "agemu-\(index)-\(sanitizedScreenshotName(shot.name))"
                 attachment.lifetime = .keepAlways
                 add(attachment)
             } else if action.inspect != nil {

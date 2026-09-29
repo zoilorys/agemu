@@ -1,4 +1,4 @@
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { targetBundleId, type LoadedConfig } from '../config/config.js';
 import { CliError } from '../core/errors.js';
@@ -11,6 +11,11 @@ type Run = (executable: string, args: string[], options?: RunOptions) => Promise
 type Target = { identifier?: string; label?: string; x?: number; y?: number };
 type Element = { AXUniqueId?: unknown; AXLabel?: unknown; AXValue?: unknown; frame?: { x?: number; y?: number; width?: number; height?: number } };
 const operations = new Set(['launch', 'wait', 'type', 'tap', 'swipe', 'longPress', 'assertVisible', 'assertValue', 'screenshot', 'inspect']);
+
+/** Screenshot file-name stem shared by both backends; AgentRunner.swift applies the same rule. */
+export function screenshotName(name: unknown): string {
+  return (typeof name === 'string' ? name.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 80) : '') || 'screen';
+}
 
 function record(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -162,7 +167,7 @@ export async function tryRunIdbPlan(config: LoadedConfig, plan: UiPlan, udid: st
         const element = await targetElement(value as Target);
         if (kind === 'assertValue' && element.AXValue !== value.value) throw new Error(`Element value does not match: ${value.identifier ?? value.label}`);
       } else if (kind === 'screenshot') {
-        const name = typeof value.name === 'string' ? value.name.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 80) : 'screen';
+        const name = screenshotName(value.name);
         const file = path.join(directory, 'screenshots', `${index}-${name}.png`);
         await mkdir(path.dirname(file), { recursive: true });
         await execute('idb', ['screenshot', file, '--udid', udid]);
@@ -181,8 +186,17 @@ export async function tryRunIdbPlan(config: LoadedConfig, plan: UiPlan, udid: st
     const message = redact(error instanceof Error ? error.message : String(error), secrets);
     lines.push(`action ${current} (${currentKind}) error: ${message}`);
     const failedAction = { index: current, kind: currentKind, message };
+    let failureScreenshot: string | undefined;
+    try {
+      const file = path.join(directory, 'screenshots', 'failure.png');
+      await mkdir(path.dirname(file), { recursive: true });
+      const shot = await run('idb', ['screenshot', file, '--udid', udid], { timeoutMs: 8_000 });
+      lines.push(`idb screenshot failure: exit ${shot.exitCode}, ${shot.durationMs} ms`);
+      if (shot.exitCode === 0 && (await stat(file)).size > 0) failureScreenshot = path.relative(config.root, file);
+    } catch { /* The failure screenshot is best effort. */ }
     throw new CliError('UI_DELIVERY_FAILED', redact(`UI action ${current} (${currentKind}) failed: ${message}`, secrets),
-      redactValue({ transcript: path.relative(config.root, transcript), failedAction, completed: current }, secrets));
+      redactValue({ transcript: path.relative(config.root, transcript), failedAction, completed: current, screenshots,
+        ...(failureScreenshot ? { failureScreenshot } : {}) }, secrets));
   } finally {
     await writeFile(transcript, `${redact(lines.join('\n'), config.redactions ?? [])}\n`, { mode: 0o600 });
   }
