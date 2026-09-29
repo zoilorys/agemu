@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { chmod, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -178,6 +178,72 @@ fi
           stdout: expect.stringContaining('"code":"BUILD_FAILED"'),
           stderr: '',
         });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('records a failed build as a redacted error event that diagnose reports', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-cli-test-'));
+    await writeFile(path.join(root, '.agemu.json'), JSON.stringify({
+      version: 2, platform: 'ios', app: { type: 'native', project: 'App.xcodeproj', scheme: 'App', configuration: 'Debug', bundleId: 'com.example.app' },
+      simulator: { udid: 'fixture' }, redactions: ['xcodebuild'],
+    }));
+    await writeFile(path.join(root, 'xcodebuild'), `#!${process.execPath}\nprocess.exit(65);\n`);
+    await chmod(path.join(root, 'xcodebuild'), 0o755);
+    try {
+      await expect(run(process.execPath, [cli, 'build'], { cwd: root, env: { PATH: root } }))
+        .rejects.toMatchObject({ code: 1, stdout: expect.stringContaining('"code":"BUILD_FAILED"') });
+      const lines = (await readFile(path.join(root, '.agemu', 'events.jsonl'), 'utf8')).trim().split('\n');
+      expect(lines).toHaveLength(1);
+      const event = JSON.parse(lines[0]);
+      expect(event).toMatchObject({ command: 'build', status: 'error', error: { code: 'BUILD_FAILED', message: '[REDACTED] failed' }, details: { exitCode: 65 } });
+      expect(typeof event.durationMs).toBe('number');
+      expect(lines[0]).not.toContain('xcodebuild');
+      const diagnosis = JSON.parse((await run(process.execPath, [cli, 'diagnose'], { cwd: root, env: { PATH: root } })).stdout);
+      expect(diagnosis.data.evidence.recentErrors).toContainEqual(expect.objectContaining({ command: 'build', error: expect.objectContaining({ code: 'BUILD_FAILED' }) }));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('records a successful app launch once and does not double-record observe', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-cli-test-'));
+    await writeFile(path.join(root, '.agemu.json'), JSON.stringify({
+      version: 2, platform: 'ios', app: { type: 'native', project: 'App.xcodeproj', scheme: 'App', configuration: 'Debug', bundleId: 'com.example.app' },
+      simulator: { udid: 'PHONE' },
+    }));
+    const devices = { devices: { 'com.apple.CoreSimulator.SimRuntime.iOS-18-0': [{ udid: 'PHONE', name: 'Phone', state: 'Booted', isAvailable: true }] } };
+    await writeFile(path.join(root, 'xcrun'), `#!${process.execPath}
+if (process.argv[3] === 'list') process.stdout.write(${JSON.stringify(JSON.stringify(devices))});
+`);
+    await chmod(path.join(root, 'xcrun'), 0o755);
+    const events = async () => (await readFile(path.join(root, '.agemu', 'events.jsonl'), 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
+    try {
+      expect(JSON.parse((await run(process.execPath, [cli, 'app', 'launch'], { cwd: root, env: { PATH: root } })).stdout).ok).toBe(true);
+      expect(await events()).toEqual([expect.objectContaining({ command: 'app launch', status: 'ok', summary: { udid: 'PHONE', bundleId: 'com.example.app', action: 'launch' } })]);
+      expect(JSON.parse((await run(process.execPath, [cli, 'observe'], { cwd: root, env: { PATH: root } })).stdout).ok).toBe(true);
+      const after = await events();
+      expect(after).toHaveLength(2);
+      expect(after[1]).toMatchObject({ command: 'observe', status: 'ok' });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps a successful command successful when its event cannot be recorded', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-cli-test-'));
+    await writeFile(path.join(root, '.agemu.json'), JSON.stringify({
+      version: 2, platform: 'ios', app: { type: 'native', project: 'App.xcodeproj', scheme: 'App', configuration: 'Debug', bundleId: 'com.example.app' },
+      simulator: { udid: 'PHONE' },
+    }));
+    await mkdir(path.join(root, '.agemu', 'events.jsonl'), { recursive: true });
+    await writeFile(path.join(root, 'xcrun'), `#!${process.execPath}\n`);
+    await chmod(path.join(root, 'xcrun'), 0o755);
+    try {
+      const { stdout, stderr } = await run(process.execPath, [cli, 'app', 'terminate'], { cwd: root, env: { PATH: root } });
+      expect(JSON.parse(stdout)).toEqual({ ok: true, data: { action: 'terminate', udid: 'PHONE', bundleId: 'com.example.app' } });
+      expect(stderr).toBe('');
     } finally {
       await rm(root, { recursive: true, force: true });
     }

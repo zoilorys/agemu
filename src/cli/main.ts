@@ -3,7 +3,8 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { errorResult, writeResult } from '../core/output.js';
 import { CliError } from '../core/errors.js';
-import { loadConfig } from '../config/config.js';
+import { loadConfig, type LoadedConfig } from '../config/config.js';
+import { appendEvent } from '../artifacts/runs.js';
 import { doctor } from '../doctor/doctor.js';
 import { bootDevice, listDevices, resolveDevice, shutdownDevice } from '../native/simctl.js';
 import { buildApp } from '../commands/build.js';
@@ -34,10 +35,50 @@ const nonEmpty = (parsed: ParsedArgs, name: string, code: 'COMMAND_INVALID' | 'U
   return given;
 };
 
+// Commands whose invocations are recorded here; observe, logs show, and diagnose record their own events.
+const recorded = new Set([
+  'build', 'app install', 'app launch', 'app terminate', 'app restart', 'app open-url',
+  'server start', 'server status', 'server stop', 'simulator boot', 'simulator shutdown', 'ui build-runner', 'ui run',
+]);
+const summaryKeys = ['run', 'udid', 'bundleId', 'backend', 'action'];
+
+const summarize = (result: unknown): Record<string, unknown> => {
+  if (!result || typeof result !== 'object') return {};
+  const source = result as Record<string, unknown>;
+  return Object.fromEntries(summaryKeys.filter((key) => source[key] !== undefined).map((key) => [key, source[key]]));
+};
+
+const safeAppend = async (config: LoadedConfig, event: Record<string, unknown>): Promise<void> => {
+  try { await appendEvent(config.root, event, config.redactions ?? []); } catch { /* Recording never alters the command outcome. */ }
+};
+
+const withConfig = async (key: string, handler: (config: LoadedConfig) => Promise<unknown>): Promise<unknown> => {
+  const config = await loadConfig();
+  if (!recorded.has(key)) return handler(config);
+  const startedAt = new Date();
+  const at = startedAt.toISOString();
+  let result: unknown;
+  try {
+    result = await handler(config);
+  } catch (error) {
+    const normalized = errorResult(error, false);
+    const { code, message, details } = normalized.ok ? { code: 'PROCESS_FAILED', message: '', details: undefined } : normalized.error;
+    const { result: _, ...kept } = details ?? {};
+    await safeAppend(config, {
+      at, command: key, status: 'error', durationMs: Date.now() - startedAt.getTime(), error: { code, message },
+      ...(details ? { details: kept } : {}),
+    });
+    throw error;
+  }
+  await safeAppend(config, { at, command: key, status: 'ok', durationMs: Date.now() - startedAt.getTime(), summary: summarize(result) });
+  return result;
+};
+
 try {
   const parsed = parseArgs(args);
   ({ pretty, debug } = parsed.globals);
   const { command, subcommand } = parsed;
+  const key = subcommand ? `${command} ${subcommand}` : command ?? '';
   if (parsed.globals.help) {
     writeResult({ ok: true, data: { help: helpFor(command) } }, pretty);
   } else if (parsed.globals.version) {
@@ -59,22 +100,23 @@ try {
       const explicitName = nonEmpty(parsed, 'name', 'COMMAND_INVALID');
       const explicitRuntime = nonEmpty(parsed, 'runtime', 'COMMAND_INVALID');
       if (explicitRuntime !== undefined && explicitName === undefined) throw new CliError('COMMAND_INVALID', '--runtime requires --name');
-      const config = await loadConfig();
-      const selector = explicitUdid
-        ? { udid: explicitUdid }
-        : config.simulator.udid
-          ? { udid: config.simulator.udid }
-          : explicitName
-            ? { name: explicitName, ...(explicitRuntime ? { runtime: explicitRuntime } : {}) }
-            : config.simulator;
-      const device = resolveDevice(await listDevices(), selector);
-      const action = subcommand === 'boot' ? 'boot' : 'shutdown';
-      const controlled = action === 'boot' ? await bootDevice(device) : await shutdownDevice(device);
-      data = { action, device: controlled };
+      data = await withConfig(key, async (config) => {
+        const selector = explicitUdid
+          ? { udid: explicitUdid }
+          : config.simulator.udid
+            ? { udid: config.simulator.udid }
+            : explicitName
+              ? { name: explicitName, ...(explicitRuntime ? { runtime: explicitRuntime } : {}) }
+              : config.simulator;
+        const device = resolveDevice(await listDevices(), selector);
+        const action = subcommand === 'boot' ? 'boot' : 'shutdown';
+        const controlled = action === 'boot' ? await bootDevice(device) : await shutdownDevice(device);
+        return { action, device: controlled };
+      });
     } else if (command === 'observe') {
-      data = await observe(await loadConfig());
+      data = await withConfig(key, (config) => observe(config));
     } else if (command === 'ui' && subcommand === 'build-runner') {
-      data = await buildUiRunner(await loadConfig(), {}, true);
+      data = await withConfig(key, (config) => buildUiRunner(config, {}, true));
     } else if (command === 'ui') {
       const plan = nonEmpty(parsed, 'plan', 'UI_VALIDATION_FAILED');
       const planJson = nonEmpty(parsed, 'plan-json', 'UI_VALIDATION_FAILED');
@@ -85,17 +127,17 @@ try {
         throw new CliError('UI_VALIDATION_FAILED', 'UI backend must be auto, idb, or xctest');
       }
       const source = planJson !== undefined ? { json: planJson } : { file: path.resolve(plan!) };
-      data = await runUiPlan(await loadConfig(), source, { backend: backend as 'auto' | 'idb' | 'xctest' | undefined });
+      data = await withConfig(key, (config) => runUiPlan(config, source, { backend: backend as 'auto' | 'idb' | 'xctest' | undefined }));
     } else if (command === 'build') {
-      data = await buildApp(await loadConfig());
+      data = await withConfig(key, (config) => buildApp(config));
     } else if (command === 'server') {
-      data = await server(await loadConfig(), subcommand as 'start' | 'status' | 'stop');
+      data = await withConfig(key, (config) => server(config, subcommand as 'start' | 'status' | 'stop'));
     } else if (command === 'app') {
-      data = await controlApp(await loadConfig(), subcommand as AppAction, {
+      data = await withConfig(key, (config) => controlApp(config, subcommand as AppAction, {
         arguments: values(parsed, 'arg'),
         environment: values(parsed, 'env'),
         url: value(parsed, 'url'),
-      });
+      }));
     } else if (command === 'logs') {
       const options = { last: value(parsed, 'last'), level: value(parsed, 'level'), limit: limitOption(parsed) };
       data = await showLogs(await loadConfig(), options);
