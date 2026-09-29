@@ -158,8 +158,8 @@ describe('UI backend selection', () => {
         if (executable === 'xcodebuild') throw new Error('XCTest must not start');
         if (executable === 'idb' && args[1] === 'describe-all') return result(JSON.stringify([
           { AXUniqueId: 'results', frame: { x: 20, y: 100, width: 200, height: 400 } },
-          ...(scrolled ? [{ AXLabel: 'Next item' }] : []),
-          ...(menu ? [{ AXLabel: 'Context menu' }] : []),
+          ...(scrolled ? [{ AXLabel: 'Next item', frame: { x: 20, y: 120, width: 200, height: 40 } }] : []),
+          ...(menu ? [{ AXLabel: 'Context menu', frame: { x: 40, y: 90, width: 120, height: 60 } }] : []),
         ]));
         if (executable === 'idb' && args[1] === 'swipe' && args[2] === '120' && args[3] === '420' && args[5] === '180') scrolled = true;
         if (executable === 'idb' && args[1] === 'tap' && args[2] === '42' && args[5] === '1.5') menu = true;
@@ -328,7 +328,7 @@ describe('UI backend selection', () => {
         startRecording: async () => ({ stop: async () => undefined }),
         run: async (executable, args) => executable === 'idb' && args[1] === 'describe-all' ? result('[]') : result(),
       }).catch((e: unknown) => e);
-      expect(error).toMatchObject({ code: 'UI_DELIVERY_FAILED', message: 'UI action 4 (assertVisible) failed: Element not found: missing',
+      expect(error).toMatchObject({ code: 'UI_DELIVERY_FAILED', message: 'UI action 4 (assertVisible) failed: element is not visible: missing',
         details: { failedAction: { index: 4, kind: 'assertVisible' }, completed: 4 } });
     } finally { await rm(root, { recursive: true, force: true }); }
   });
@@ -467,6 +467,85 @@ describe('UI backend selection', () => {
       expect(error.details.screenshots.map(file => path.basename(file))).toEqual(['0-before.png']);
       expect(error.details.failureScreenshot).toMatch(/screenshots\/failure\.png$/);
       await expect(readFile(path.join(root, error.details.failureScreenshot), 'utf8')).resolves.toBe('png');
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it.each([
+    ['unknown kind', { tapp: {} }, 'Action 1: unknown action tapp'],
+    ['two kinds', { tap: { label: 'Go' }, inspect: {} }, 'Action 1: must contain exactly one action'],
+    ['non-object action', 'tap', 'Action 1: must contain exactly one action'],
+    ['tap without target', { tap: {} }, 'Action 1: tap needs exactly one string identifier or label'],
+    ['tap with target and coordinates', { tap: { label: 'Go', x: 1, y: 2 } }, 'Action 1: tap needs one string identifier or label, or finite x and y, not both'],
+    ['assertVisible with both targets', { assertVisible: { identifier: 'a', label: 'b' } }, 'Action 1: assertVisible needs exactly one string identifier or label'],
+    ['type without text', { type: { identifier: 'email' } }, 'Action 1: type needs string text'],
+    ['assertValue without value', { assertValue: { identifier: 'email' } }, 'Action 1: assertValue needs string value'],
+    ['unknown field', { assertExists: { label: 'Go', timeout: 2 } }, 'Action 1: assertExists does not accept timeout'],
+    ['non-empty inspect', { inspect: { depth: 1 } }, 'Action 1: inspect does not accept depth'],
+    ['bad env name', { launch: { environment: { 'BAD-NAME': 'x' } } }, 'Action 1: launch environment must map valid variable names to strings'],
+    ['non-string argument', { launch: { arguments: [1] } }, 'Action 1: launch arguments must be an array of strings'],
+    ['non-string screenshot name', { screenshot: { name: 3 } }, 'Action 1: screenshot name must be a string'],
+  ])('rejects a plan with %s before any process runs', async (_name, action, message) => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-ui-validate-'));
+    const commands: string[] = [];
+    try {
+      const error = await runUiPlan(nativeConfig(root), { json: JSON.stringify({ version: 1, actions: [{ inspect: {} }, action] }) }, {
+        run: async (executable) => { commands.push(executable); return result('[]'); },
+      }).catch((e: unknown) => e);
+      expect(error).toMatchObject({ code: 'UI_VALIDATION_FAILED', message });
+      expect(commands).toEqual([]);
+      await expect(stat(path.join(root, '.agemu'))).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  const offscreenTree = JSON.stringify([
+    { type: 'Application', AXLabel: 'Fixture', frame: { x: 0, y: 0, width: 390, height: 844 } },
+    { type: 'StaticText', AXLabel: 'Item 1', frame: { x: 0, y: 100, width: 390, height: 44 } },
+    { type: 'StaticText', AXLabel: 'Item 24', frame: { x: 0, y: 1440, width: 390, height: 44 } },
+    { type: 'Group', AXLabel: 'Hidden', frame: { x: 0, y: 100, width: 0, height: 0 } },
+  ]);
+  const runIdbAssertion = (root: string, action: Record<string, unknown>) => runUiPlan(nativeConfig(root),
+    { json: JSON.stringify({ version: 1, actions: [action] }) }, {
+      backend: 'idb',
+      run: async (executable, args) => executable === 'idb' && args[1] === 'describe-all' ? result(offscreenTree) : result(),
+    });
+
+  it('applies screen-visibility semantics to idb assertions', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-idb-visibility-'));
+    try {
+      await expect(runIdbAssertion(root, { assertVisible: { label: 'Item 24' } })).rejects.toMatchObject({
+        code: 'UI_DELIVERY_FAILED', details: { failedAction: { index: 0, kind: 'assertVisible', message: 'element is not visible: Item 24 (exists but not hittable)' } },
+      });
+      await expect(runIdbAssertion(root, { assertVisible: { label: 'Hidden' } })).rejects.toMatchObject({ code: 'UI_DELIVERY_FAILED' });
+      await expect(runIdbAssertion(root, { assertExists: { label: 'Item 24' } })).resolves.toMatchObject({ backend: 'idb', runnerResult: { completed: 1 } });
+      await expect(runIdbAssertion(root, { assertNotVisible: { label: 'Item 24' } })).resolves.toMatchObject({ backend: 'idb', runnerResult: { completed: 1 } });
+      await expect(runIdbAssertion(root, { assertNotVisible: { label: 'Missing' } })).resolves.toMatchObject({ backend: 'idb' });
+      await expect(runIdbAssertion(root, { assertVisible: { label: 'Item 1' } })).resolves.toMatchObject({ backend: 'idb' });
+      await expect(runIdbAssertion(root, { assertNotVisible: { label: 'Item 1' } })).rejects.toMatchObject({
+        details: { failedAction: { kind: 'assertNotVisible', message: 'element is visible: Item 1' } },
+      });
+      await expect(runIdbAssertion(root, { assertExists: { label: 'Missing' } })).rejects.toMatchObject({
+        details: { failedAction: { kind: 'assertExists', message: 'element does not exist: Missing' } },
+      });
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('runs the README plan example without a validation error', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-readme-plan-'));
+    const readme = await readFile(new URL('../../README.md', import.meta.url), 'utf8');
+    const section = readme.slice(readme.indexOf('## Run a UI plan'));
+    const block = /```json\n([\s\S]*?)\n```/.exec(section)?.[1];
+    expect(block).toBeDefined();
+    const frame = { x: 10, y: 100, width: 200, height: 40 };
+    try {
+      const output = await runUiPlan(nativeConfig(root), { json: block! }, {
+        backend: 'idb',
+        startRecording: async () => ({ stop: async () => undefined }),
+        run: async (executable, args) => executable === 'idb' && args[1] === 'describe-all' ? result(JSON.stringify([
+          { AXUniqueId: 'email', frame }, { AXUniqueId: 'resultsList', frame }, { AXLabel: 'More options', frame },
+          { AXUniqueId: 'save', frame }, { AXLabel: 'Saved', frame },
+        ])) : result(),
+      });
+      expect(output).toMatchObject({ actions: 11, recordings: [expect.stringContaining('save-flow.mp4')] });
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 

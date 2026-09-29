@@ -9,8 +9,28 @@ import type { LongPress, Point, Swipe, UiPlan } from './ui.js';
 
 type Run = (executable: string, args: string[], options?: RunOptions) => Promise<ProcessResult>;
 type Target = { identifier?: string; label?: string; x?: number; y?: number };
-type Element = { AXUniqueId?: unknown; AXLabel?: unknown; AXValue?: unknown; frame?: { x?: number; y?: number; width?: number; height?: number } };
-const operations = new Set(['launch', 'wait', 'type', 'tap', 'swipe', 'longPress', 'assertVisible', 'assertValue', 'screenshot', 'inspect']);
+type Frame = { x?: number; y?: number; width?: number; height?: number };
+type Element = { AXUniqueId?: unknown; AXLabel?: unknown; AXValue?: unknown; type?: unknown; frame?: Frame };
+const operations = new Set(['launch', 'wait', 'type', 'tap', 'swipe', 'longPress', 'assertVisible', 'assertExists', 'assertNotVisible',
+  'assertValue', 'screenshot', 'inspect']);
+
+function finiteFrame(frame: Frame | undefined): frame is Required<Frame> {
+  return !!frame && [frame.x, frame.y, frame.width, frame.height].every(Number.isFinite);
+}
+
+/**
+ * Mirrors XCTest `exists && isHittable` as closely as the AX tree allows: a positive-size frame that intersects the
+ * screen. The screen is the first `type === 'Application'` element's frame; if idb names that element differently
+ * (the field varies by idb version), the intersection check is skipped.
+ */
+function elementVisible(elements: Element[], element: Element | undefined): boolean {
+  if (!element || !finiteFrame(element.frame) || element.frame.width <= 0 || element.frame.height <= 0) return false;
+  const screen = elements.find(candidate => candidate.type === 'Application')?.frame;
+  if (!finiteFrame(screen)) return true;
+  const frame = element.frame;
+  return frame.x < screen.x + screen.width && frame.x + frame.width > screen.x
+    && frame.y < screen.y + screen.height && frame.y + frame.height > screen.y;
+}
 
 /** Screenshot file-name stem shared by both backends; AgentRunner.swift applies the same rule. */
 export function screenshotName(name: unknown): string {
@@ -106,7 +126,7 @@ export async function tryRunIdbPlan(config: LoadedConfig, plan: UiPlan, udid: st
   const elements = async (): Promise<Element[]> => parseElements((await execute('idb', ['ui', 'describe-all', '--api', 'axbridge', '--udid', udid])).stdout);
   const targetElement = async (target: Target): Promise<Element> => {
     const element = findElement(await elements(), target);
-    if (!element) throw new Error(`Element not found: ${target.identifier ?? target.label}`);
+    if (!element) throw new Error(`element not found: ${target.identifier ?? target.label}`);
     return element;
   };
 
@@ -135,7 +155,7 @@ export async function tryRunIdbPlan(config: LoadedConfig, plan: UiPlan, udid: st
           const deadline = Date.now() + timeout * 1000;
           while (true) {
             if (findElement(await elements(), value as Target)) break;
-            if (Date.now() >= deadline) throw new Error(`Element did not appear: ${value.identifier ?? value.label}`);
+            if (Date.now() >= deadline) throw new Error(`element did not appear: ${value.identifier ?? value.label}`);
             await new Promise(resolve => setTimeout(resolve, 250));
           }
         }
@@ -163,9 +183,20 @@ export async function tryRunIdbPlan(config: LoadedConfig, plan: UiPlan, udid: st
         const [from, to] = 'from' in swipe ? [swipe.from, swipe.to] : swipePoints((await targetElement(swipe)).frame ?? {}, swipe.direction);
         await execute('idb', ['ui', 'swipe', String(Math.round(from.x)), String(Math.round(from.y)),
           String(Math.round(to.x)), String(Math.round(to.y)), ...(swipe.duration === undefined ? [] : ['--duration', String(swipe.duration)]), '--udid', udid]);
-      } else if (kind === 'assertVisible' || kind === 'assertValue') {
+      } else if (kind === 'assertVisible' || kind === 'assertNotVisible') {
+        const tree = await elements();
+        const element = findElement(tree, value as Target);
+        const visible = elementVisible(tree, element);
+        const name = value.identifier ?? value.label;
+        if (kind === 'assertVisible' && !visible) throw new Error(`element is not visible: ${name}${element ? ' (exists but not hittable)' : ''}`);
+        if (kind === 'assertNotVisible' && visible) throw new Error(`element is visible: ${name}`);
+      } else if (kind === 'assertExists') {
+        if (!findElement(await elements(), value as Target)) throw new Error(`element does not exist: ${value.identifier ?? value.label}`);
+      } else if (kind === 'assertValue') {
         const element = await targetElement(value as Target);
-        if (kind === 'assertValue' && element.AXValue !== value.value) throw new Error(`Element value does not match: ${value.identifier ?? value.label}`);
+        if (element.AXValue !== value.value) {
+          throw new Error(`element value does not match: expected ${String(value.value)}, got ${typeof element.AXValue === 'string' ? element.AXValue : 'nil'}`);
+        }
       } else if (kind === 'screenshot') {
         const name = screenshotName(value.name);
         const file = path.join(directory, 'screenshots', `${index}-${name}.png`);

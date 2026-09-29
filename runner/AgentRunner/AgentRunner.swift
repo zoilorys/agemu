@@ -10,6 +10,8 @@ final class AgentRunner: XCTestCase {
         let type: TypeAction?
         let wait: WaitAction?
         let assertVisible: Target?
+        let assertExists: Target?
+        let assertNotVisible: Target?
         let assertValue: ValueAssertion?
         let screenshot: Screenshot?
         let inspect: Empty?
@@ -43,6 +45,8 @@ final class AgentRunner: XCTestCase {
         if action.type != nil { return "type" }
         if action.wait != nil { return "wait" }
         if action.assertVisible != nil { return "assertVisible" }
+        if action.assertExists != nil { return "assertExists" }
+        if action.assertNotVisible != nil { return "assertNotVisible" }
         if action.assertValue != nil { return "assertValue" }
         if action.screenshot != nil { return "screenshot" }
         if action.inspect != nil { return "inspect" }
@@ -151,8 +155,19 @@ final class AgentRunner: XCTestCase {
                     }
                 }
             } else if let target = action.assertVisible {
+                let candidate = try element(target, in: app)
+                let exists = candidate.exists
+                if !(exists && candidate.isHittable) {
+                    return "element is not visible: \(describe(target.identifier, target.label))\(exists ? " (exists but not hittable)" : "")"
+                }
+            } else if let target = action.assertExists {
                 if !(try element(target, in: app).exists) {
-                    return "element is not visible: \(describe(target.identifier, target.label))"
+                    return "element does not exist: \(describe(target.identifier, target.label))"
+                }
+            } else if let target = action.assertNotVisible {
+                let candidate = try element(target, in: app)
+                if candidate.exists && candidate.isHittable {
+                    return "element is visible: \(describe(target.identifier, target.label))"
                 }
             } else if let assertion = action.assertValue {
                 let candidate = try element(Target(identifier: assertion.identifier, label: assertion.label, x: nil, y: nil), in: app)

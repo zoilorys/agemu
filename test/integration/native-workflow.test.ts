@@ -153,6 +153,17 @@ test.skipIf(!enabled)('proves the public native workflow', async (context) => {
     expect(untouched).toMatchObject({ backend: 'xctest', runnerResult: { completed: 1 }, screenshots: [] });
     expect(untouched).not.toHaveProperty('screenshotExportError');
 
+    // Item 24 sits at y=1440 in the 1500-pt scroll view, below the visible area after launch.
+    const offscreen = data(await run(root, ['ui', 'run', '--backend=xctest', '--plan-json=' + JSON.stringify({
+      version: 1, actions: [{ launch: {} }, { assertExists: { label: 'Item 24' } }, { assertNotVisible: { label: 'Item 24' } }],
+    })]), 'ui run off-screen assertions');
+    expect(offscreen).toMatchObject({ backend: 'xctest', runnerResult: { completed: 3 } });
+    const hidden = await run(root, ['ui', 'run', '--backend=xctest', '--plan-json=' + JSON.stringify({
+      version: 1, actions: [{ launch: {} }, { assertVisible: { label: 'Item 24' } }],
+    })]);
+    expect(hidden).toMatchObject({ ok: false, error: { code: 'UI_DELIVERY_FAILED',
+      details: { failedAction: { index: 1, kind: 'assertVisible', message: 'element is not visible: Item 24 (exists but not hittable)' } } } });
+
     data(await run(root, ['app', 'terminate']), 'app terminate');
     launched = false;
     if (bootedByTest) {
@@ -174,4 +185,4 @@ test.skipIf(!enabled)('proves the public native workflow', async (context) => {
     }
     if (retainEvidence || launched || bootedByTest) console.error(`native evidence retained at ${evidence}`);
   }
-}, 480_000);
+}, 900_000);

@@ -25,6 +25,26 @@ type Dependencies = {
 
 const bundledRunner = fileURLToPath(new URL('../../runner/AgentRunner.xcodeproj', import.meta.url));
 
+const targetFields = ['identifier', 'label'];
+/** Accepted fields per action kind; every plan action must use exactly one of these kinds. */
+const actionFields: Record<string, string[] | undefined> = {
+  launch: ['arguments', 'environment'],
+  wait: [...targetFields, 'timeout', 'duration'],
+  type: [...targetFields, 'text'],
+  tap: [...targetFields, 'x', 'y'],
+  swipe: [...targetFields, 'direction', 'from', 'to', 'duration'],
+  longPress: [...targetFields, 'x', 'y', 'duration'],
+  assertVisible: targetFields,
+  assertExists: targetFields,
+  assertNotVisible: targetFields,
+  assertValue: [...targetFields, 'value'],
+  screenshot: ['name'],
+  inspect: [],
+  startVideoRecording: ['name'],
+  stopVideoRecording: [],
+};
+const targetedActions = new Set(['tap', 'type', 'assertVisible', 'assertExists', 'assertNotVisible', 'assertValue']);
+
 function validatePlan(value: unknown): UiPlan {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new CliError('UI_VALIDATION_FAILED', 'The UI plan must be an object');
   const plan = value as Record<string, unknown>;
@@ -35,7 +55,35 @@ function validatePlan(value: unknown): UiPlan {
   const point = (item: unknown): item is Point => object(item) && Number.isFinite(item.x) && Number.isFinite(item.y);
   let recording = false;
   for (const [index, raw] of plan.actions.entries()) {
-    if (!object(raw)) continue;
+    const fail = (message: string): never => { throw new CliError('UI_VALIDATION_FAILED', `Action ${index}: ${message}`); };
+    if (!object(raw) || Object.keys(raw).length !== 1) throw new CliError('UI_VALIDATION_FAILED', `Action ${index}: must contain exactly one action`);
+    const [kind] = Object.keys(raw);
+    const fields = actionFields[kind];
+    if (!fields) throw new CliError('UI_VALIDATION_FAILED', `Action ${index}: unknown action ${kind}`);
+    const input = raw[kind];
+    if (!object(input)) throw new CliError('UI_VALIDATION_FAILED', `Action ${index}: ${kind} must be an object`);
+    for (const field of Object.keys(input)) if (!fields.includes(field)) fail(`${kind} does not accept ${field}`);
+    const optionalString = (field: string) => input[field] === undefined || typeof input[field] === 'string';
+    if (targetedActions.has(kind)) {
+      const targets = ['identifier', 'label'].filter(field => input[field] !== undefined);
+      const targetValid = targets.length === 1 && typeof input[targets[0]] === 'string';
+      const coordinates = input.x !== undefined || input.y !== undefined;
+      if (kind === 'tap' && coordinates) {
+        if (targets.length > 0 || !Number.isFinite(input.x) || !Number.isFinite(input.y)) fail('tap needs one string identifier or label, or finite x and y, not both');
+      } else if (!targetValid) fail(`${kind} needs exactly one string identifier or label`);
+    }
+    if (kind === 'type' && typeof input.text !== 'string') fail('type needs string text');
+    if (kind === 'assertValue' && typeof input.value !== 'string') fail('assertValue needs string value');
+    if (kind === 'screenshot' && !optionalString('name')) fail('screenshot name must be a string');
+    if (kind === 'launch') {
+      if (input.arguments !== undefined && (!Array.isArray(input.arguments) || !input.arguments.every(item => typeof item === 'string'))) {
+        fail('launch arguments must be an array of strings');
+      }
+      if (input.environment !== undefined && (!object(input.environment)
+        || !Object.entries(input.environment).every(([name, entry]) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(name) && typeof entry === 'string'))) {
+        fail('launch environment must map valid variable names to strings');
+      }
+    }
     if ('startVideoRecording' in raw || 'stopVideoRecording' in raw) {
       const keys = Object.keys(raw);
       if (keys.length !== 1 || !object(raw[keys[0]])) throw new CliError('UI_VALIDATION_FAILED', `Action ${index}: recording action must contain one object`);
