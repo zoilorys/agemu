@@ -62,7 +62,8 @@ agemu ui run (--plan=FILE | --plan-json=JSON) [--backend=auto|idb|xctest] [--tim
   assertValue, screenshot, inspect, startVideoRecording, and stopVideoRecording. Unknown actions or fields fail validation.
   Pair each recording start with a stop. Repeated pairs create separate MP4 files.`,
   doctor: `agemu doctor
-  Check Node.js, Xcode, configuration, Simulator, app prerequisites, and write access. Does not install dependencies or generate native files.`,
+  Check Node.js, Xcode, configuration, Simulator, app prerequisites, and write access. Does not install dependencies or generate native files.
+  Advisory checks (advisory: true) report whether the Simulator is booted, idb is usable, and .agemu/ is git-ignored; they do not affect ready.`,
 };
 
 export function helpFor(command?: string): string {
