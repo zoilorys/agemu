@@ -1,5 +1,16 @@
 import { describe, expect, it } from 'vitest';
-import { parseArgs, values } from '../../src/cli/args.js';
+import { commandSpecs, parseArgs, values } from '../../src/cli/args.js';
+import { helpFor } from '../../src/cli/help.js';
+
+describe('helpFor', () => {
+  const cases: [string, string, string][] = Object.entries(commandSpecs).flatMap(([command, spec]) =>
+    [...Object.entries(spec.subcommands ?? {}), ['', spec.flags ?? {}] as [string, Record<string, unknown>]]
+      .flatMap(([sub, flags]) => Object.keys(flags).map((flag): [string, string, string] => [command, sub, flag])));
+
+  it.each(cases)('documents %s %s --%s', (command, _sub, flag) => {
+    expect(helpFor(command)).toMatch(new RegExp(`--${flag}(?![\\w-])`));
+  });
+});
 
 describe('parseArgs', () => {
   it('resolves space and inline option forms identically', () => {

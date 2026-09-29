@@ -5,6 +5,24 @@
 > [!NOTE]
 > `agemu` is under active development. The command and configuration formats may change before 1.0.
 
+## Breaking changes in 0.2.0
+
+- Unknown options and extra positional arguments fail with `COMMAND_INVALID`. Options accept both `--name=value` and `--name value`; a value starting with `--` needs the `=` form.
+- Bare `agemu config` (without `show`) fails with `COMMAND_INVALID`.
+- `simulator boot|shutdown --runtime` without `--name` fails with `COMMAND_INVALID`.
+- `build` returns `run`. Run directory names under `.agemu/runs/` keep the timestamp prefix and gain a `-<pid>-<hex>` suffix.
+- More commands append to `.agemu/events.jsonl`, so `diagnose` `recentErrors` reports more failures.
+- UI plans stop at the first failed action on both backends. `UI_DELIVERY_FAILED` details add `failedAction` (`index`, `kind`, `message`) and `completed`.
+- XCTest runs return `screenshots` PNG paths like idb runs; failed plans on both backends return `failureScreenshot`.
+- `assertVisible` requires the element to be on screen and hittable. New `assertExists` and `assertNotVisible` actions.
+- UI plans are validated completely before running: unknown actions or fields, and actions that were previously skipped silently, fail with `UI_VALIDATION_FAILED`.
+- `build`, `ui build-runner`, and `ui run` accept `--timeout=SECONDS` and fail with `PROCESS_TIMEOUT` when it expires.
+- Build logs are plain text. `BUILD_FAILED` details include parsed compiler `errors`. A failed XCTest runner build returns `BUILD_FAILED` instead of `UI_DELIVERY_FAILED`.
+- `setup` accepts `--port` and offers only application targets as bundle IDs.
+- `doctor` adds advisory checks (booted Simulator, idb, `.agemu/` ignored) that do not affect `ready`.
+- `doctor` now checks the scheme against the selected Simulator with a 60 s timeout, so `ready` can be false where it was true before.
+- New `agemu clean` command.
+
 ## Requirements
 
 - macOS with Xcode and an iOS Simulator runtime
@@ -96,6 +114,8 @@ Check the configuration and native tools:
 ```sh
 agemu doctor --pretty
 ```
+
+Checks marked `advisory: true` (Simulator booted, idb usable, `.agemu/` git-ignored) are informational and do not affect `ready`.
 
 ## Build and run a native app
 
@@ -205,7 +225,9 @@ Run the plan:
 agemu ui run --plan=ui-plan.json
 ```
 
-`ui run` uses `idb` when an installed companion supports the plan. Otherwise it uses the bundled XCTest runner. [Install idb](https://fbidb.io/docs/idb/installation/) to enable this path. Use `--backend=xctest` when you need an `.xcresult` bundle, or `--backend=idb` to require `idb`. An `idb` run returns `backend`, `transcript`, and `screenshots` paths. An XCTest run returns `backend`, `runnerCached`, `resultBundle`, and `transcript`.
+`ui run` uses `idb` when an installed companion supports the plan. Otherwise it uses the bundled XCTest runner. [Install idb](https://fbidb.io/docs/idb/installation/) to enable this path. Use `--backend=xctest` when you need an `.xcresult` bundle, or `--backend=idb` to require `idb`. An `idb` run returns `backend`, `transcript`, and `screenshots` paths. An XCTest run returns `backend`, `runnerCached`, `resultBundle`, `transcript`, and `screenshots` exported from the result bundle. Both backends name screenshots `screenshots/<index>-<name>.png`. If XCTest export fails, the run keeps its outcome and reports `screenshotExportError`.
+
+A plan stops at the first failed action. The `UI_DELIVERY_FAILED` error reports `details.failedAction` when known (`index` in the submitted plan, `kind`, `message`), `details.completed` (actions finished), and `details.failureScreenshot` when a failure screenshot was captured. A failed XCTest runner build returns `BUILD_FAILED`.
 
 `--timeout=SECONDS` (1 to 86400) bounds `build` (default 1800), `ui build-runner` (default 900), and `ui run` (default 900, covering the whole plan including a runner build). A timeout fails with `PROCESS_TIMEOUT`. After an XCTest timeout, agemu terminates the runner and the app and returns `lastStartedAction` when known.
 
@@ -250,7 +272,9 @@ AGEMU_NATIVE_SIMULATOR_UDID=<udid> pnpm test:integration:native
 
 The native test keeps its Xcode DerivedData under `.agemu/native-workflow/<udid>/` so later runs use an incremental build.
 
-As of 2026-09-26, the native Simulator workflow and test suite pass. A bare React Native sample is unavailable. An Expo development sample reached Xcode asset compilation but did not complete its build. An Expo Go live run is unverified because CoreSimulatorService failed during that attempt.
+As of 2026-09-29, the unit test suite passes, and the native Simulator integration test (`pnpm test:integration:native`) passed on iPhone 17 Pro (iOS 26.5, Xcode 26.5). idb paths are covered by unit tests only and were not verified live.
+
+A bare React Native sample is unavailable. An Expo development sample reached Xcode asset compilation but did not complete its build. An Expo Go live run is unverified because CoreSimulatorService failed during that attempt.
 
 ## Contribute
 
