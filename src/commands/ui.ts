@@ -5,6 +5,7 @@ import { targetBundleId, type LoadedConfig } from '../config/config.js';
 import { createRun, redactValue } from '../artifacts/runs.js';
 import { CliError } from '../core/errors.js';
 import { redact } from '../core/redact.js';
+import { buildFailureDetails, writeBuildLog } from '../native/build-errors.js';
 import { listDevices, resolveDevice } from '../native/simctl.js';
 import { deadline, runProcess, type Deadline, type ProcessResult, type RunOptions } from '../process/run-process.js';
 import { idbCompatible, screenshotName, tryRunIdbPlan } from './idb-ui.js';
@@ -209,10 +210,30 @@ export async function buildUiRunner(config: LoadedConfig, dependencies: Dependen
   }
   const cached = Boolean(manifest);
   if (!manifest) {
-    await checked(run, 'xcodebuild', [
-      '-project', project, '-scheme', 'AgentRunner', '-configuration', 'Debug',
-      '-destination', `platform=iOS Simulator,id=${udid}`, '-derivedDataPath', derivedData, 'build-for-testing',
-    ], 'Unable to build the XCTest UI runner', config.redactions ?? [], limit);
+    const secrets = config.redactions ?? [];
+    const { directory } = await createRun(config.root, dependencies.now?.() ?? new Date());
+    const buildLog = path.join(directory, 'runner-build.log');
+    const log = redact(path.relative(config.root, buildLog), secrets);
+    let result: ProcessResult;
+    try {
+      result = await run('xcodebuild', [
+        '-project', project, '-scheme', 'AgentRunner', '-configuration', 'Debug',
+        '-destination', `platform=iOS Simulator,id=${udid}`, '-derivedDataPath', derivedData, 'build-for-testing',
+      ], { timeoutMs: limit.deadline.remaining() });
+    } catch (error) {
+      const partial = (error instanceof CliError ? error.details?.result : undefined) as Partial<ProcessResult> | undefined;
+      const stdout = redact(typeof partial?.stdout === 'string' ? partial.stdout : '', secrets);
+      const stderr = redact(typeof partial?.stderr === 'string' ? partial.stderr : '', secrets);
+      await writeBuildLog(buildLog, { stdout, stderr, executionError: redact(error instanceof Error ? error.message : String(error), secrets) });
+      if (isTimeout(error)) throw limitExceeded(limit, { log });
+      throw new CliError('BUILD_FAILED', 'Unable to build the XCTest UI runner', { log, ...buildFailureDetails(stdout, stderr, secrets) });
+    }
+    await writeBuildLog(buildLog, { stdout: redact(result.stdout, secrets), stderr: redact(result.stderr, secrets) });
+    if (result.exitCode !== 0) {
+      throw new CliError('BUILD_FAILED', 'Unable to build the XCTest UI runner', {
+        exitCode: result.exitCode, log, ...buildFailureDetails(result.stdout, result.stderr, secrets),
+      });
+    }
     manifest = await findXctestrun(derivedData);
   }
   if (!manifest) throw new CliError('BUILD_FAILED', 'xcodebuild did not produce an .xctestrun file');

@@ -53,9 +53,7 @@ describe('build command', () => {
       });
       expect(result).toMatchObject({ appPath: '/products/[REDACTED]/App.app', bundleId: 'com.example.app', target: '[REDACTED]-App', udid: 'PHONE' });
       expect(calls).toHaveLength(2);
-      expect(JSON.parse(await readFile(path.join(root, result.logs.build), 'utf8'))).toEqual({
-        stdout: 'compile [REDACTED]\n', stderr: '',
-      });
+      expect(await readFile(path.join(root, result.logs.build), 'utf8')).toBe('compile [REDACTED]\n--- stderr ---\n');
       expect(JSON.parse(await readFile(path.join(root, '.agemu/state.json'), 'utf8'))).toMatchObject({
         appPath: '/products/secret-token/App.app', bundleId: 'com.example.app', executableName: 'ActualApp', udid: 'PHONE', configuration: 'Debug',
       });
@@ -67,13 +65,32 @@ describe('build command', () => {
     try {
       const error = await buildApp(config(root), {
         resolveUdid: async () => 'PHONE', now: () => new Date('2026-09-21T12:00:00.000Z'),
-        run: async () => processResult('many lines secret-token', 'compiler failed secret-token', 65),
+        run: async () => processResult(
+          'CompileSwift App.swift\n/src/secret-token/App.swift:12:5: error: cannot find \'x\' in scope\n',
+          '/src/secret-token/App.swift:12:5: error: cannot find \'x\' in scope\n** BUILD FAILED **\n', 65),
       }).catch((caught: unknown) => caught as CliError);
       expect(error).toMatchObject({ code: 'BUILD_FAILED', details: { exitCode: 65, log: expect.stringContaining('xcodebuild.log') } });
+      expect(error.details?.errors).toEqual([{ file: '/src/[REDACTED]/App.swift', line: 12, column: 5, message: 'cannot find \'x\' in scope' }]);
+      expect(error.details).not.toHaveProperty('tail');
       const logPath = error.details?.log as string;
       expect(logPath.startsWith('.agemu/runs/2026-09-21T12-00-00.000Z-')).toBe(true);
-      const log = JSON.parse(await readFile(path.join(root, logPath), 'utf8'));
-      expect(log).toEqual({ stdout: 'many lines [REDACTED]', stderr: 'compiler failed [REDACTED]' });
+      const log = await readFile(path.join(root, logPath), 'utf8');
+      expect(log).toBe([
+        'CompileSwift App.swift', '/src/[REDACTED]/App.swift:12:5: error: cannot find \'x\' in scope', '--- stderr ---',
+        '/src/[REDACTED]/App.swift:12:5: error: cannot find \'x\' in scope', '** BUILD FAILED **', '',
+      ].join('\n'));
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('returns the last 20 non-empty output lines as tail when no error line parses', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-build-'));
+    const stdout = Array.from({ length: 30 }, (_, index) => `step ${index} secret-token`).join('\n\n');
+    try {
+      const error = await buildApp(config(root), {
+        resolveUdid: async () => 'PHONE', run: async () => processResult(stdout, 'Killed\n', 65),
+      }).catch((caught: unknown) => caught as CliError);
+      expect(error.details).not.toHaveProperty('errors');
+      expect(error.details?.tail).toEqual([...Array.from({ length: 19 }, (_, index) => `step ${index + 11} [REDACTED]`), 'Killed']);
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 
@@ -95,10 +112,8 @@ describe('build command', () => {
         },
       }).catch((caught: unknown) => caught as CliError);
       expect(error).toMatchObject({ code: 'BUILD_FAILED', details: { log: expect.stringContaining(log) } });
-      const artifact = JSON.parse(await readFile(path.join(root, error.details?.log as string), 'utf8'));
-      expect(artifact).toMatchObject({
-        stdout: 'partial [REDACTED]', stderr: 'failure [REDACTED]', executionError: 'spawn rejected [REDACTED]',
-      });
+      expect(await readFile(path.join(root, error.details?.log as string), 'utf8')).toBe(
+        'partial [REDACTED]\n--- stderr ---\nfailure [REDACTED]\n--- execution error ---\nspawn rejected [REDACTED]\n');
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 
@@ -118,7 +133,7 @@ describe('build command', () => {
         },
       }).catch((caught: unknown) => caught as CliError);
       expect(error).toMatchObject({ code: 'PROCESS_TIMEOUT', message: 'Build exceeded 5 s', details: { timeoutSeconds: 5, log: expect.stringContaining(log) } });
-      expect(JSON.parse(await readFile(path.join(root, error.details?.log as string), 'utf8'))).toMatchObject({ stdout: 'partial [REDACTED]' });
+      expect((await readFile(path.join(root, error.details?.log as string), 'utf8')).startsWith('partial [REDACTED]\n--- stderr ---\n')).toBe(true);
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 
@@ -154,8 +169,8 @@ describe('build command', () => {
       const [first, second] = await Promise.all([start('one'), start('two')]);
       expect(first.run).not.toBe(second.run);
       expect(first.run.startsWith('.agemu/runs/2026-09-21T12-00-00.000Z-')).toBe(true);
-      expect(JSON.parse(await readFile(path.join(root, first.logs.build), 'utf8')).stdout).toBe('stdout-one');
-      expect(JSON.parse(await readFile(path.join(root, second.logs.build), 'utf8')).stdout).toBe('stdout-two');
+      expect(await readFile(path.join(root, first.logs.build), 'utf8')).toBe('stdout-one\n--- stderr ---\n');
+      expect(await readFile(path.join(root, second.logs.build), 'utf8')).toBe('stdout-two\n--- stderr ---\n');
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 

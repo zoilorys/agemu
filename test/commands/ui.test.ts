@@ -250,18 +250,24 @@ describe('UI backend selection', () => {
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 
-  it('rejects a failed runner build with redacted stderr capped to its last 4000 characters', async () => {
+  it('rejects a failed runner build as BUILD_FAILED with a plain-text log and redacted parsed errors', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'agemu-build-redact-'));
     const stderr = `${'x'.repeat(5_000)}\nerror: cannot sign secret-app`;
     try {
       const failure = await buildUiRunner(secretConfig(root), {
-        run: async (executable) => executable === 'xcodebuild' ? result('', stderr, 65) : result(),
-      }).catch((error: unknown) => error);
-      expect(failure).toMatchObject({ code: 'UI_DELIVERY_FAILED', details: { exitCode: 65 } });
-      const captured = (failure as { details: { stderr: string } }).details.stderr;
-      expect(captured).toHaveLength(4_000);
-      expect(captured.endsWith('error: cannot sign [REDACTED]')).toBe(true);
-      expect(captured).not.toContain('secret-app');
+        now: () => new Date('2026-09-25T12:00:00.000Z'),
+        run: async (executable) => executable === 'xcodebuild' ? result('Build started\n', stderr, 65) : result(),
+      }).catch((error: unknown) => error) as CliError;
+      expect(failure).toMatchObject({ code: 'BUILD_FAILED', message: 'Unable to build the XCTest UI runner', details: {
+        exitCode: 65, errors: [{ message: 'cannot sign [REDACTED]' }],
+      } });
+      expect(failure.details).not.toHaveProperty('stderr');
+      const log = failure.details?.log as string;
+      expect(log).toMatch(/^\.agemu\/runs\/2026-09-25T12-00-00\.000Z-.*\/runner-build\.log$/);
+      const text = await readFile(path.join(root, log), 'utf8');
+      expect(text.startsWith('Build started\n--- stderr ---\n')).toBe(true);
+      expect(text).toContain('error: cannot sign [REDACTED]');
+      expect(text).not.toContain('secret-app');
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 

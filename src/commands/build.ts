@@ -4,6 +4,7 @@ import { createRun } from '../artifacts/runs.js';
 import { nativeApp, type LoadedConfig } from '../config/config.js';
 import { CliError } from '../core/errors.js';
 import { redact } from '../core/redact.js';
+import { buildFailureDetails, writeBuildLog, type BuildLog } from '../native/build-errors.js';
 import { buildArguments, selectBuildProduct } from '../native/xcodebuild.js';
 import { listDevices, resolveDevice } from '../native/simctl.js';
 import { deadline, runProcess, type ProcessResult, type RunOptions } from '../process/run-process.js';
@@ -21,8 +22,6 @@ export const defaultBuildTimeoutMs = 1_800_000;
 
 const timedOut = (error: unknown) => error instanceof CliError && error.code === 'PROCESS_TIMEOUT';
 
-type BuildLog = { stdout: string; stderr: string; executionError?: string };
-
 async function writeAtomic(file: string, state: AppState): Promise<void> {
   const temporary = `${file}.${process.pid}.${Math.random().toString(16).slice(2)}.tmp`;
   await writeFile(temporary, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
@@ -39,9 +38,7 @@ function logFromError(error: unknown, secrets: string[]): BuildLog {
   };
 }
 
-async function writeLog(file: string, log: BuildLog): Promise<void> {
-  await writeFile(file, `${JSON.stringify(log, null, 2)}\n`, { mode: 0o600 });
-}
+const writeLog = writeBuildLog;
 
 export async function buildApp(config: LoadedConfig, dependencies: Dependencies = {}) {
   if (config.app.type === 'expo' && config.app.launchTarget === 'expo-go') throw new CliError('WORKFLOW_UNSUPPORTED', 'Expo Go uses an existing installed host; no native build is needed');
@@ -72,12 +69,17 @@ export async function buildApp(config: LoadedConfig, dependencies: Dependencies 
     try {
       build = await run(process.execPath, [cli, 'run:ios', '--device', udid, '--no-bundler'], { cwd: app.root });
     } catch (error) {
-      await writeLog(buildLog, logFromError(error, secrets));
+      const log = logFromError(error, secrets);
+      await writeLog(buildLog, log);
       if (timedOut(error)) throw timeoutError(buildLog);
-      throw new CliError('BUILD_FAILED', 'Unable to execute Expo iOS build; it may have generated or changed ios/ files', { log: path.relative(config.root, buildLog) });
+      throw new CliError('BUILD_FAILED', 'Unable to execute Expo iOS build; it may have generated or changed ios/ files', {
+        log: redact(path.relative(config.root, buildLog), secrets), ...buildFailureDetails(log.stdout, log.stderr, secrets),
+      });
     }
     await writeLog(buildLog, { stdout: redact(build.stdout, secrets), stderr: redact(build.stderr, secrets) });
-    if (build.exitCode !== 0) throw new CliError('BUILD_FAILED', 'Expo iOS build failed; it may have generated or changed ios/ files', { exitCode: build.exitCode, log: path.relative(config.root, buildLog) });
+    if (build.exitCode !== 0) throw new CliError('BUILD_FAILED', 'Expo iOS build failed; it may have generated or changed ios/ files', {
+      exitCode: build.exitCode, log: redact(path.relative(config.root, buildLog), secrets), ...buildFailureDetails(build.stdout, build.stderr, secrets),
+    });
     const candidates: string[] = [];
     for (const match of build.stdout.matchAll(/\/(?:[^\s=]|\\ )+?\.app(?=\s|$)/gm)) candidates.push(match[0].replaceAll('\\ ', ' '));
     const directories = [...build.stdout.matchAll(/CONFIGURATION_BUILD_DIR\s*=\s*(\S+)/g)].map(match => match[1].replaceAll('\\ ', ' '));
@@ -95,7 +97,7 @@ export async function buildApp(config: LoadedConfig, dependencies: Dependencies 
         matches.push({ appPath, executableName: executable.stdout.trim() });
       }
     }
-    if (matches.length !== 1) throw new CliError('BUILD_FAILED', `Expected one simulator .app with bundle ID ${redact(app.bundleId, secrets)} in Expo build output; found ${matches.length}. Inspect ${path.relative(config.root, buildLog)}`, { log: path.relative(config.root, buildLog) });
+    if (matches.length !== 1) throw new CliError('BUILD_FAILED', `Expected one simulator .app with bundle ID ${redact(app.bundleId, secrets)} in Expo build output; found ${matches.length}. Inspect ${path.relative(config.root, buildLog)}`, { log: redact(path.relative(config.root, buildLog), secrets), ...buildFailureDetails(build.stdout, build.stderr, secrets) });
     const product = matches[0];
     const state: AppState = { ...product, bundleId: app.bundleId, udid, configuration: 'Debug', updatedAt: now.toISOString() };
     await writeAtomic(path.join(stateDirectory, 'state.json'), state);
@@ -107,9 +109,12 @@ export async function buildApp(config: LoadedConfig, dependencies: Dependencies 
   try {
     build = await run('xcodebuild', buildArguments(config, udid, 'build'));
   } catch (error) {
-    await writeLog(buildLog, logFromError(error, secrets));
+    const log = logFromError(error, secrets);
+    await writeLog(buildLog, log);
     if (timedOut(error)) throw timeoutError(buildLog);
-    throw new CliError('BUILD_FAILED', 'Unable to execute xcodebuild', { log: redact(path.relative(config.root, buildLog), secrets) });
+    throw new CliError('BUILD_FAILED', 'Unable to execute xcodebuild', {
+      log: redact(path.relative(config.root, buildLog), secrets), ...buildFailureDetails(log.stdout, log.stderr, secrets),
+    });
   }
   await writeLog(buildLog, { stdout: redact(build.stdout, secrets), stderr: redact(build.stderr, secrets) });
   if (build.exitCode !== 0) {
@@ -117,6 +122,7 @@ export async function buildApp(config: LoadedConfig, dependencies: Dependencies 
       exitCode: build.exitCode,
       signal: build.signal,
       log: redact(path.relative(config.root, buildLog), secrets),
+      ...buildFailureDetails(build.stdout, build.stderr, secrets),
     });
   }
 
@@ -125,9 +131,12 @@ export async function buildApp(config: LoadedConfig, dependencies: Dependencies 
   try {
     settings = await run('xcodebuild', buildArguments(config, udid, 'settings'));
   } catch (error) {
-    await writeLog(settingsLog, logFromError(error, secrets));
+    const log = logFromError(error, secrets);
+    await writeLog(settingsLog, log);
     if (timedOut(error)) throw timeoutError(settingsLog);
-    throw new CliError('BUILD_FAILED', 'Unable to execute xcodebuild for build settings', { log: redact(path.relative(config.root, settingsLog), secrets) });
+    throw new CliError('BUILD_FAILED', 'Unable to execute xcodebuild for build settings', {
+      log: redact(path.relative(config.root, settingsLog), secrets), ...buildFailureDetails(log.stdout, log.stderr, secrets),
+    });
   }
   await writeLog(settingsLog, { stdout: redact(settings.stdout, secrets), stderr: redact(settings.stderr, secrets) });
   if (settings.exitCode !== 0) {
@@ -135,6 +144,7 @@ export async function buildApp(config: LoadedConfig, dependencies: Dependencies 
       exitCode: settings.exitCode,
       signal: settings.signal,
       log: redact(path.relative(config.root, settingsLog), secrets),
+      ...buildFailureDetails(settings.stdout, settings.stderr, secrets),
     });
   }
 
@@ -144,6 +154,7 @@ export async function buildApp(config: LoadedConfig, dependencies: Dependencies 
   } catch (error) {
     throw new CliError('BUILD_FAILED', redact(error instanceof Error ? error.message : String(error), secrets), {
       log: redact(path.relative(config.root, settingsLog), secrets),
+      ...buildFailureDetails(settings.stdout, settings.stderr, secrets),
     });
   }
   const state: AppState = {

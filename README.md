@@ -112,7 +112,7 @@ agemu app terminate
 agemu simulator shutdown
 ```
 
-`app launch`, `app restart`, and `app terminate` target the configured bundle ID. `app install` requires a prior build.
+`app launch`, `app restart`, and `app terminate` target the configured bundle ID. `app install` requires a prior build. A failed build returns `BUILD_FAILED` with up to 20 parsed compiler `errors` (or the output `tail` when none parse) and the path of its plain-text `log`.
 
 ## Run bare React Native
 
