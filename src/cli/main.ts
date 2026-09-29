@@ -30,7 +30,16 @@ const limitOption = (parsed: ParsedArgs): number | undefined => {
   return Number(limit);
 };
 
-const nonEmpty = (parsed: ParsedArgs, name: string, code: 'COMMAND_INVALID' | 'UI_VALIDATION_FAILED'): string | undefined => {
+const timeoutOption = (parsed: ParsedArgs): number | undefined => {
+  const seconds = value(parsed, 'timeout');
+  if (seconds === undefined) return undefined;
+  if (!/^\d+$/.test(seconds) || Number(seconds) < 1 || Number(seconds) > 86_400) {
+    throw new CliError('COMMAND_INVALID', '--timeout must be whole seconds from 1 to 86400');
+  }
+  return Number(seconds) * 1000;
+};
+
+const nonEmpty =(parsed: ParsedArgs, name: string, code: 'COMMAND_INVALID' | 'UI_VALIDATION_FAILED'): string | undefined => {
   const given = value(parsed, name);
   if (given !== undefined && given.length === 0) throw new CliError(code, `--${name} requires a non-empty value`);
   return given;
@@ -136,7 +145,8 @@ try {
     } else if (command === 'observe') {
       data = await withConfig(key, (config) => observe(config));
     } else if (command === 'ui' && subcommand === 'build-runner') {
-      data = await withConfig(key, (config) => buildUiRunner(config, {}, true));
+      const timeoutMs = timeoutOption(parsed);
+      data = await withConfig(key, (config) => buildUiRunner(config, { timeoutMs }, true));
     } else if (command === 'ui') {
       const plan = nonEmpty(parsed, 'plan', 'UI_VALIDATION_FAILED');
       const planJson = nonEmpty(parsed, 'plan-json', 'UI_VALIDATION_FAILED');
@@ -146,10 +156,12 @@ try {
       if (backend !== undefined && !['auto', 'idb', 'xctest'].includes(backend)) {
         throw new CliError('UI_VALIDATION_FAILED', 'UI backend must be auto, idb, or xctest');
       }
+      const timeoutMs = timeoutOption(parsed);
       const source = planJson !== undefined ? { json: planJson } : { file: path.resolve(plan!) };
-      data = await withConfig(key, (config) => runUiPlan(config, source, { backend: backend as 'auto' | 'idb' | 'xctest' | undefined }));
+      data = await withConfig(key, (config) => runUiPlan(config, source, { backend: backend as 'auto' | 'idb' | 'xctest' | undefined, timeoutMs }));
     } else if (command === 'build') {
-      data = await withConfig(key, (config) => buildApp(config));
+      const timeoutMs = timeoutOption(parsed);
+      data = await withConfig(key, (config) => buildApp(config, { timeoutMs }));
     } else if (command === 'server') {
       data = await withConfig(key, (config) => server(config, subcommand as 'start' | 'status' | 'stop'));
     } else if (command === 'app') {

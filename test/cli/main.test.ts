@@ -37,6 +37,24 @@ describe('agemu CLI', () => {
     expect(help).toContain('--level accepts default, info, debug, error, or fault');
   });
 
+  it.each([
+    ['build', '--timeout=0'], ['build', '--timeout=-1'], ['build', '--timeout=1.5'], ['build', '--timeout=86401'],
+    ['ui build-runner', '--timeout=abc'], ['ui run', '--timeout=0'],
+  ])('rejects %s %s before loading configuration', async (command, flag) => {
+    await expect(run(process.execPath, [cli, ...command.split(' '), flag, ...(command === 'ui run' ? ['--plan-json={}'] : [])]))
+      .rejects.toMatchObject({
+        code: 1,
+        stdout: expect.stringContaining('"code":"COMMAND_INVALID","message":"--timeout must be whole seconds from 1 to 86400"'),
+      });
+  });
+
+  it('documents timeout defaults in command help', async () => {
+    expect(JSON.parse((await run(process.execPath, [cli, 'build', '--help'])).stdout).data.help).toContain('default 1800 s');
+    const ui = JSON.parse((await run(process.execPath, [cli, 'ui', '--help'])).stdout).data.help as string;
+    expect(ui).toContain('--timeout defaults to 900 s');
+    expect(ui).toContain('including a runner build (default 900 s');
+  });
+
   it('requires a plan source for UI runs', async () => {
     await expect(run(process.execPath, [cli, 'ui', 'run']))
       .rejects.toMatchObject({

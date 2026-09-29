@@ -23,13 +23,13 @@ export const commandSpecs: Record<string, CommandSpec> = {
   setup: { flags: { 'expo-go': boolean, udid: single } },
   config: { subcommands: { show: {} } },
   simulator: { subcommands: { list: {}, boot: selector, shutdown: selector } },
-  build: { flags: {} },
+  build: { flags: { timeout: single } },
   server: { subcommands: { start: {}, status: {}, stop: {} } },
   app: { subcommands: { install: {}, launch: launchOptions, terminate: {}, restart: launchOptions, 'open-url': { url: single } } },
   observe: { flags: {} },
   logs: { subcommands: { show: logOptions } },
   diagnose: { flags: logOptions },
-  ui: { subcommands: { 'build-runner': {}, run: { plan: single, 'plan-json': single, backend: single } } },
+  ui: { subcommands: { 'build-runner': { timeout: single }, run: { plan: single, 'plan-json': single, backend: single, timeout: single } } },
   doctor: { flags: {} },
 };
 

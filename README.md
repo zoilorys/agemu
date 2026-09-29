@@ -207,6 +207,8 @@ agemu ui run --plan=ui-plan.json
 
 `ui run` uses `idb` when an installed companion supports the plan. Otherwise it uses the bundled XCTest runner. [Install idb](https://fbidb.io/docs/idb/installation/) to enable this path. Use `--backend=xctest` when you need an `.xcresult` bundle, or `--backend=idb` to require `idb`. An `idb` run returns `backend`, `transcript`, and `screenshots` paths. An XCTest run returns `backend`, `runnerCached`, `resultBundle`, and `transcript`.
 
+`--timeout=SECONDS` (1 to 86400) bounds `build` (default 1800), `ui build-runner` (default 900), and `ui run` (default 900, covering the whole plan including a runner build). A timeout fails with `PROCESS_TIMEOUT`. After an XCTest timeout, agemu terminates the runner and the app and returns `lastStartedAction` when known.
+
 `startVideoRecording` begins capturing the selected Simulator to an MP4 in the run directory. `stopVideoRecording` finishes that file. Put the pair around the entire sequence you want to show, including waits and screenshots. Keep it open until the last action; use another pair only when you want a separate clip. Starts cannot overlap, and every start needs a stop. The optional `name` labels the file. Plans with recordings return `recordings` paths. idb also returns `segments` results for actions between recording boundaries. If an action fails, agemu stops the active recording before returning the error.
 
 For a short plan, pass JSON directly:

@@ -3,9 +3,10 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { buildUiRunner, injectEnvironment, runUiPlan } from '../../src/commands/ui.js';
+import { CliError } from '../../src/core/errors.js';
 import type { ProcessResult } from '../../src/process/run-process.js';
 
-const result = (stdout = '', stderr = '', exitCode = 0): ProcessResult => ({
+const result = (stdout = '', stderr = '', exitCode: number | null = 0): ProcessResult => ({
   stdout, stderr, exitCode, signal: null, startedAt: '2026-09-25T00:00:00.000Z', durationMs: 1,
 });
 
@@ -365,7 +366,62 @@ describe('UI backend selection', () => {
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 
-  const passingXctestWithBundle = (exportAttachments: (output: string) => Promise<ReturnType<typeof result>>) =>
+  it('cuts an idb wait at the plan deadline and reports PROCESS_TIMEOUT', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-idb-deadline-'));
+    const started = Date.now();
+    try {
+      const error = await runUiPlan(nativeConfig(root), { json: JSON.stringify({ version: 1, actions: [{ wait: { duration: 5 } }, { tap: { x: 1, y: 2 } }] }) }, {
+        backend: 'idb', timeoutMs: 200,
+        run: async (executable, args) => executable === 'idb' && args[1] === 'describe-all' ? result('[]') : result(),
+      }).catch((e: unknown) => e);
+      expect(Date.now() - started).toBeLessThan(1_000);
+      expect(error).toMatchObject({ code: 'PROCESS_TIMEOUT', message: 'UI plan exceeded 0.2 s', details: { failedAction: { index: 0, kind: 'wait' }, completed: 0 } });
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('terminates the runner and app after an XCTest timeout and reports the last started action', async () => {
+    const root = await cachedRunnerRoot('agemu-xctest-timeout-');
+    const commands: string[][] = [];
+    try {
+      const error = await runUiPlan(nativeConfig(root), { json: JSON.stringify({ version: 1, actions: [
+        { launch: {} }, { inspect: {} }, { tap: { label: 'Go' } }, { wait: { duration: 60 } },
+      ] }) }, {
+        backend: 'xctest', timeoutMs: 5_000,
+        run: async (executable, args, options) => {
+          commands.push([executable, ...args]);
+          if (executable === 'plutil' && args[1] === 'json') return result(JSON.stringify({ AgentRunner: { TestBundlePath: 'Runner.xctest' } }));
+          if (executable === 'xcodebuild' && args[0] === 'test-without-building') {
+            expect(options?.timeoutMs).toBeGreaterThan(0);
+            expect(options?.timeoutMs).toBeLessThanOrEqual(5_000);
+            throw new CliError('PROCESS_TIMEOUT', 'Process timed out', { result: result('AGEMU_ACTION:0\nAGEMU_ACTION:3\n', 'partial err', null) });
+          }
+          return result();
+        },
+      }).catch((e: unknown) => e) as CliError;
+      expect(error).toMatchObject({ code: 'PROCESS_TIMEOUT', message: 'UI plan exceeded 5 s',
+        details: { lastStartedAction: 3, resultBundle: expect.stringContaining('AgentRunner.xcresult') } });
+      expect(commands).toContainEqual(['xcrun', 'simctl', 'terminate', 'PHONE', 'dev.agemu.agemu-agent-runner.xctrunner']);
+      expect(commands).toContainEqual(['xcrun', 'simctl', 'terminate', 'PHONE', 'com.example.app']);
+      expect(commands.some(command => command[1] === 'xcresulttool')).toBe(false);
+      await expect(readFile(path.join(root, error.details?.transcript as string), 'utf8')).resolves.toContain('AGEMU_ACTION:3');
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('reports a runner build timeout inside ui run against the plan deadline', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-runner-timeout-'));
+    try {
+      const error = await runUiPlan(nativeConfig(root), { json: JSON.stringify({ version: 1, actions: [{ inspect: {} }] }) }, {
+        backend: 'xctest', timeoutMs: 3_000,
+        run: async (executable, args) => {
+          if (executable === 'xcodebuild' && args.includes('build-for-testing')) throw new CliError('PROCESS_TIMEOUT', 'Process timed out');
+          return result();
+        },
+      }).catch((e: unknown) => e);
+      expect(error).toMatchObject({ code: 'PROCESS_TIMEOUT', message: 'UI plan exceeded 3 s' });
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  const passingXctestWithBundle =(exportAttachments: (output: string) => Promise<ReturnType<typeof result>>) =>
     async (executable: string, args: string[]) => {
       if (executable === 'plutil' && args[1] === 'json') return result(JSON.stringify({ AgentRunner: { TestBundlePath: 'Runner.xctest' } }));
       if (executable === 'xcodebuild' && args[0] === 'test-without-building') {

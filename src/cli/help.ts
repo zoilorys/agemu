@@ -18,8 +18,9 @@ agemu simulator boot [--udid=ID | --name=NAME [--runtime=RUNTIME]]
 agemu simulator shutdown [--udid=ID | --name=NAME [--runtime=RUNTIME]]
   Boot or shut down a simulator. A configured UDID takes precedence over --name;
   --udid overrides the configured selection.`,
-  build: `agemu build
+  build: `agemu build [--timeout=SECONDS]
   Build native, bare React Native, or Expo development apps for the selected Simulator.
+  --timeout limits the whole build (default 1800 s, 1 to 86400); a timeout fails with PROCESS_TIMEOUT and keeps the log.
   Expo development builds run expo run:ios, which may generate or modify ios/ files.
   Run before "app install". Expo Go uses an installed host and has no build.`,
   app: `agemu app install
@@ -47,11 +48,12 @@ agemu app open-url --url=URL
   Collect Simulator, build or Expo Go host, screenshot, log, and recent error evidence.
   React Native and Expo add server output and bundling errors; in-app JavaScript console and DevTools are not captured. Saved server output may be stale.
   Log options have the same meaning as in "logs show". Partial results report failures.`,
-  ui: `agemu ui build-runner
-  Build the bundled XCTest runner for the selected simulator.
+  ui: `agemu ui build-runner [--timeout=SECONDS]
+  Build the bundled XCTest runner for the selected simulator. --timeout defaults to 900 s.
 
-agemu ui run (--plan=FILE | --plan-json=JSON) [--backend=auto|idb|xctest]
+agemu ui run (--plan=FILE | --plan-json=JSON) [--backend=auto|idb|xctest] [--timeout=SECONDS]
   Run a JSON UI action plan and save results under .agemu/runs/.
+  --timeout limits the whole plan, including a runner build (default 900 s, 1 to 86400). After an XCTest PROCESS_TIMEOUT agemu terminates the runner and the app.
   Pass JSON inline for short plans, or use a file for longer plans.
   auto uses idb when its companion supports the plan, then falls back to XCTest.
   Use xctest to keep an .xcresult bundle; idb saves a transcript and screenshots.

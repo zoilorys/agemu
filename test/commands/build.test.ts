@@ -88,7 +88,7 @@ describe('build command', () => {
         resolveUdid: async () => 'PHONE', now: () => new Date('2026-09-21T12:00:00.000Z'),
         run: async () => {
           call += 1;
-          if (call === failedCall) throw new CliError('PROCESS_TIMEOUT', 'spawn rejected secret-token', {
+          if (call === failedCall) throw new CliError('PROCESS_FAILED', 'spawn rejected secret-token', {
             result: processResult('partial secret-token', 'failure secret-token', null),
           });
           return processResult('build completed');
@@ -99,6 +99,47 @@ describe('build command', () => {
       expect(artifact).toMatchObject({
         stdout: 'partial [REDACTED]', stderr: 'failure [REDACTED]', executionError: 'spawn rejected [REDACTED]',
       });
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it.each([
+    { failedCall: 1, log: 'xcodebuild.log' },
+    { failedCall: 2, log: 'build-settings.log' },
+  ])('reports a timed-out xcodebuild invocation $failedCall as PROCESS_TIMEOUT with its log', async ({ failedCall, log }) => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-build-'));
+    let call = 0;
+    try {
+      const error = await buildApp(config(root), {
+        resolveUdid: async () => 'PHONE', timeoutMs: 5_000,
+        run: async () => {
+          call += 1;
+          if (call === failedCall) throw new CliError('PROCESS_TIMEOUT', 'Process timed out', { result: processResult('partial secret-token', '', null) });
+          return processResult(settings);
+        },
+      }).catch((caught: unknown) => caught as CliError);
+      expect(error).toMatchObject({ code: 'PROCESS_TIMEOUT', message: 'Build exceeded 5 s', details: { timeoutSeconds: 5, log: expect.stringContaining(log) } });
+      expect(JSON.parse(await readFile(path.join(root, error.details?.log as string), 'utf8'))).toMatchObject({ stdout: 'partial [REDACTED]' });
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('gives every process call the remaining part of one build deadline', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-build-'));
+    const timeouts: Array<number | undefined> = [];
+    const responses = [processResult(), processResult(settings)];
+    try {
+      await buildApp(config(root), {
+        resolveUdid: async () => 'PHONE', timeoutMs: 60_000,
+        run: async (_executable, _args, options) => {
+          timeouts.push(options?.timeoutMs);
+          await new Promise(resolve => setTimeout(resolve, 20));
+          return responses.shift()!;
+        },
+      });
+      expect(timeouts).toHaveLength(2);
+      for (const timeout of timeouts) expect(timeout).toBeGreaterThan(0);
+      expect(timeouts[0]).toBeLessThanOrEqual(60_000);
+      // The second call starts later on the same deadline, so it receives less time.
+      expect(timeouts[1]).toBeLessThan(timeouts[0]!);
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 

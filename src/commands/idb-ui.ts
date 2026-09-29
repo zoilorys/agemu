@@ -4,7 +4,7 @@ import { targetBundleId, type LoadedConfig } from '../config/config.js';
 import { CliError } from '../core/errors.js';
 import { redact } from '../core/redact.js';
 import { redactValue } from '../artifacts/runs.js';
-import type { ProcessResult, RunOptions } from '../process/run-process.js';
+import { deadline, type Deadline, type ProcessResult, type RunOptions } from '../process/run-process.js';
 import type { LongPress, Point, Swipe, UiPlan } from './ui.js';
 
 type Run = (executable: string, args: string[], options?: RunOptions) => Promise<ProcessResult>;
@@ -104,9 +104,19 @@ function swipePoints(frame: NonNullable<Element['frame']>, direction: string): [
   return [start, end];
 }
 
-export async function tryRunIdbPlan(config: LoadedConfig, plan: UiPlan, udid: string, directory: string, run: Run) {
+const idbCallMs = 8_000;
+
+export async function tryRunIdbPlan(config: LoadedConfig, plan: UiPlan, udid: string, directory: string, unbounded: Run,
+  limit: Deadline = deadline(900_000)) {
   if (!idbCompatible(plan)) return undefined;
-  const idb = (args: string[]) => run('idb', [...args, '--udid', udid], { timeoutMs: 8_000 });
+  // Every call ends by the plan deadline; idb calls additionally stop after 8 s unless the caller allows longer.
+  const run: Run = (executable, args, options = {}) => unbounded(executable, args, {
+    ...options, timeoutMs: Math.min(options.timeoutMs ?? (executable === 'idb' ? idbCallMs : Infinity), limit.remaining()),
+  });
+  const idb = (args: string[]) => run('idb', [...args, '--udid', udid]);
+  let deadlineHit = false;
+  const expire = () => { deadlineHit = true; return new Error('the UI plan deadline was reached'); };
+  const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
   try {
     const probe = await idb(['ui', 'describe-all', '--api', 'axbridge']);
     if (probe.exitCode !== 0) return undefined;
@@ -138,6 +148,7 @@ export async function tryRunIdbPlan(config: LoadedConfig, plan: UiPlan, udid: st
       const [kind] = Object.keys(action);
       current = index;
       currentKind = kind;
+      if (limit.expired()) throw expire();
       const value = action[kind];
       if (kind === 'launch') {
         const stopped = await run('xcrun', ['simctl', 'terminate', udid, targetBundleId(config)]);
@@ -149,14 +160,18 @@ export async function tryRunIdbPlan(config: LoadedConfig, plan: UiPlan, udid: st
         await execute('xcrun', ['simctl', 'launch', udid, targetBundleId(config), ...((value.arguments as string[] | undefined) ?? [])], { env: environment });
       } else if (kind === 'wait') {
         if (typeof value.duration === 'number') {
-          await new Promise(resolve => setTimeout(resolve, value.duration as number * 1000));
+          const pause = (value.duration as number) * 1000;
+          const available = limit.remaining();
+          await sleep(Math.min(pause, available));
+          if (pause > available) throw expire();
         } else {
           const timeout = (value.timeout as number | undefined) ?? 5;
-          const deadline = Date.now() + timeout * 1000;
+          const giveUp = Date.now() + timeout * 1000;
           while (true) {
             if (findElement(await elements(), value as Target)) break;
-            if (Date.now() >= deadline) throw new Error(`element did not appear: ${value.identifier ?? value.label}`);
-            await new Promise(resolve => setTimeout(resolve, 250));
+            if (Date.now() >= giveUp) throw new Error(`element did not appear: ${value.identifier ?? value.label}`);
+            if (limit.expired()) throw expire();
+            await sleep(Math.min(250, limit.remaining()));
           }
         }
       } else if (kind === 'tap' || kind === 'type') {
@@ -177,12 +192,13 @@ export async function tryRunIdbPlan(config: LoadedConfig, plan: UiPlan, udid: st
         const coordinates = Number.isFinite(press.x) && Number.isFinite(press.y)
           ? [press.x!, press.y!] : center(await targetElement(press));
         await execute('idb', ['ui', 'tap', String(Math.round(coordinates[0])), String(Math.round(coordinates[1])),
-          '--duration', String(press.duration ?? 1), '--udid', udid]);
+          '--duration', String(press.duration ?? 1), '--udid', udid], { timeoutMs: idbCallMs + (press.duration ?? 1) * 1000 });
       } else if (kind === 'swipe') {
         const swipe = value as Swipe;
         const [from, to] = 'from' in swipe ? [swipe.from, swipe.to] : swipePoints((await targetElement(swipe)).frame ?? {}, swipe.direction);
         await execute('idb', ['ui', 'swipe', String(Math.round(from.x)), String(Math.round(from.y)),
-          String(Math.round(to.x)), String(Math.round(to.y)), ...(swipe.duration === undefined ? [] : ['--duration', String(swipe.duration)]), '--udid', udid]);
+          String(Math.round(to.x)), String(Math.round(to.y)), ...(swipe.duration === undefined ? [] : ['--duration', String(swipe.duration)]), '--udid', udid],
+          { timeoutMs: idbCallMs + (swipe.duration ?? 0) * 1000 });
       } else if (kind === 'assertVisible' || kind === 'assertNotVisible') {
         const tree = await elements();
         const element = findElement(tree, value as Target);
@@ -217,6 +233,11 @@ export async function tryRunIdbPlan(config: LoadedConfig, plan: UiPlan, udid: st
     const message = redact(error instanceof Error ? error.message : String(error), secrets);
     lines.push(`action ${current} (${currentKind}) error: ${message}`);
     const failedAction = { index: current, kind: currentKind, message };
+    if (deadlineHit || limit.expired()) {
+      // No failure screenshot: it would run past the deadline.
+      throw new CliError('PROCESS_TIMEOUT', `UI plan exceeded ${limit.ms / 1000} s`,
+        redactValue({ timeoutSeconds: limit.ms / 1000, transcript: path.relative(config.root, transcript), failedAction, completed: current, screenshots }, secrets));
+    }
     let failureScreenshot: string | undefined;
     try {
       const file = path.join(directory, 'screenshots', 'failure.png');
