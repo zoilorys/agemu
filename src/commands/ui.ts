@@ -164,19 +164,21 @@ export async function runUiPlan(config: LoadedConfig, source: { file: string } |
   const udid = await (dependencies.resolveUdid?.(config)
     ?? (config.simulator.udid || listDevices().then(devices => resolveDevice(devices, config.simulator).udid)));
   if (plan.actions.some(action => typeof action === 'object' && action !== null && 'startVideoRecording' in action)) {
-    const segments: Array<{ actions: unknown[]; recording?: 'start' | 'stop'; name?: string }> = [];
+    const segments: Array<{ actions: unknown[]; offset: number; recording?: 'start' | 'stop'; name?: string }> = [];
     let actions: unknown[] = [];
-    for (const raw of plan.actions) {
+    let actionsOffset = 0;
+    for (const [planIndex, raw] of plan.actions.entries()) {
       const action = raw as Record<string, Record<string, unknown>>;
       if ('startVideoRecording' in action || 'stopVideoRecording' in action) {
-        if (actions.length) segments.push({ actions });
+        if (actions.length) segments.push({ actions, offset: actionsOffset });
         actions = [];
+        actionsOffset = planIndex + 1;
         segments.push('startVideoRecording' in action
-          ? { actions: [], recording: 'start', name: action.startVideoRecording.name as string | undefined }
-          : { actions: [], recording: 'stop' });
+          ? { actions: [], offset: planIndex, recording: 'start', name: action.startVideoRecording.name as string | undefined }
+          : { actions: [], offset: planIndex, recording: 'stop' });
       } else actions.push(raw);
     }
-    if (actions.length) segments.push({ actions });
+    if (actions.length) segments.push({ actions, offset: actionsOffset });
     const actionSegments = segments.filter(segment => !segment.recording);
     const supportsIdb = actionSegments.every(segment => idbCompatible({ version: 1, actions: segment.actions }));
     let useIdb = false;
@@ -199,19 +201,33 @@ export async function runUiPlan(config: LoadedConfig, source: { file: string } |
     let active: Recording | undefined;
     try {
       for (const [index, segment] of segments.entries()) {
-        if (segment.recording === 'start') {
-          const name = segment.name?.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 80) || 'video';
-          const file = path.join(directory, `${recordings.length + 1}-${name}.mp4`);
-          active = await (dependencies.startRecording ?? startVideoRecording)(udid, file);
-          recordings.push(path.relative(config.root, file));
-        } else if (segment.recording === 'stop') {
-          const recording = active!;
-          active = undefined;
-          await recording.stop();
+        if (segment.recording) {
+          const kind = segment.recording === 'start' ? 'startVideoRecording' : 'stopVideoRecording';
+          try {
+            if (segment.recording === 'start') {
+              const name = segment.name?.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 80) || 'video';
+              const file = path.join(directory, `${recordings.length + 1}-${name}.mp4`);
+              active = await (dependencies.startRecording ?? startVideoRecording)(udid, file);
+              recordings.push(path.relative(config.root, file));
+            } else {
+              const recording = active!;
+              active = undefined;
+              await recording.stop();
+            }
+          } catch (error) {
+            const secrets = config.redactions ?? [];
+            const failedAction = { index: segment.offset, kind, message: error instanceof Error ? error.message : String(error) };
+            throw new CliError('UI_DELIVERY_FAILED', redact(failureMessage(failedAction), secrets),
+              redactValue({ failedAction, completed: segment.offset }, secrets));
+          }
         } else {
           const location = path.join(directory, `segment-${index}`);
           await mkdir(location, { recursive: true });
-          outputs.push(await runUiSegment(config, { version: 1, actions: segment.actions }, udid, location, run, 'idb', dependencies));
+          try {
+            outputs.push(await runUiSegment(config, { version: 1, actions: segment.actions }, udid, location, run, 'idb', dependencies));
+          } catch (error) {
+            throw offsetFailure(error, segment.offset);
+          }
         }
       }
     } finally {
@@ -222,6 +238,57 @@ export async function runUiPlan(config: LoadedConfig, source: { file: string } |
     }, config.redactions ?? []);
   }
   return { ...await runUiSegment(config, plan, udid, directory, run, backend, dependencies), durationMs: Date.now() - runStarted };
+}
+
+export type FailedAction = { index: number; kind: string; message: string };
+
+export function actionKind(action: unknown): string {
+  return typeof action === 'object' && action !== null && !Array.isArray(action) ? Object.keys(action)[0] ?? 'unknown' : 'unknown';
+}
+
+export function failureMessage(failed: FailedAction): string {
+  return `UI action ${failed.index} (${failed.kind}) failed: ${failed.message}`;
+}
+
+/** Maps a segment-relative failure to its index in the submitted plan. The message is already redacted. */
+function offsetFailure(error: unknown, offset: number): unknown {
+  if (!(error instanceof CliError) || !error.details) return error;
+  const failed = error.details.failedAction as FailedAction | undefined;
+  if (!failed || typeof failed.index !== 'number') return error;
+  const failedAction = { ...failed, index: failed.index + offset };
+  return new CliError(error.code, failureMessage(failedAction), {
+    ...error.details, failedAction, completed: (typeof error.details.completed === 'number' ? error.details.completed : failed.index) + offset,
+  });
+}
+
+function xctestFailedAction(stdout: string, plan: UiPlan): FailedAction | undefined {
+  const lines = stdout.split(/\r?\n/);
+  let lastStarted: number | undefined;
+  let encodedFailure: string | undefined;
+  for (const line of lines) {
+    const started = line.indexOf('AGEMU_ACTION:');
+    if (started >= 0) {
+      const match = /^(\d+)/.exec(line.slice(started + 13).trim());
+      if (match) lastStarted = Number(match[1]);
+    }
+    const failed = line.indexOf('AGEMU_FAILURE:');
+    if (failed >= 0) encodedFailure = line.slice(failed + 14).trim();
+  }
+  if (encodedFailure) {
+    try {
+      const value = JSON.parse(Buffer.from(encodedFailure, 'base64').toString('utf8')) as unknown;
+      const failure = value as Record<string, unknown>;
+      if (failure && Number.isInteger(failure.index) && typeof failure.kind === 'string' && typeof failure.message === 'string') {
+        return { index: failure.index as number, kind: failure.kind, message: failure.message };
+      }
+    } catch { /* Fall back to the last started action. */ }
+  }
+  if (lastStarted === undefined) return undefined;
+  const internal = lines.map(line => /error: -\[(?:\w+\.)?AgentRunner testPlan\] : (.+)$/.exec(line)?.[1]).find(Boolean);
+  return {
+    index: lastStarted, kind: actionKind(plan.actions[lastStarted]),
+    message: internal?.trim() ?? 'XCTest reported a failure; inspect the result bundle',
+  };
 }
 
 async function runUiSegment(config: LoadedConfig, plan: UiPlan, udid: string, directory: string,
@@ -249,9 +316,14 @@ async function runUiSegment(config: LoadedConfig, plan: UiPlan, udid: string, di
   const transcript = path.join(directory, 'xcodebuild.log');
   await writeFile(transcript, redact(`${result.stdout}${result.stderr}`, config.redactions ?? []), { mode: 0o600 });
   if (result.exitCode !== 0) {
-    throw new CliError('UI_DELIVERY_FAILED', 'The XCTest UI plan failed', {
+    const secrets = config.redactions ?? [];
+    const failedAction = xctestFailedAction(result.stdout, plan);
+    const details = {
       exitCode: result.exitCode, resultBundle: path.relative(config.root, resultBundle), transcript: path.relative(config.root, transcript),
-    });
+      ...(failedAction ? { failedAction } : {}), completed: failedAction ? failedAction.index : 0,
+    };
+    throw new CliError('UI_DELIVERY_FAILED', redact(failedAction ? failureMessage(failedAction) : 'The XCTest UI plan failed', secrets),
+      redactValue(details, secrets));
   }
   const marker = result.stdout.split(/\r?\n/).find(line => line.includes('AGEMU_RESULT:'));
   const runnerResult = marker ? JSON.parse(Buffer.from(marker.slice(marker.indexOf('AGEMU_RESULT:') + 13), 'base64').toString('utf8')) : undefined;

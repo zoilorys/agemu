@@ -5,7 +5,7 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { expect, test } from 'vitest';
 
-type CliResult = { ok: true; data: Record<string, unknown> } | { ok: false; error: { code: string; message: string } };
+type CliResult = { ok: true; data: Record<string, unknown> } | { ok: false; error: { code: string; message: string; details?: Record<string, unknown> } };
 
 const repository = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const cli = path.join(repository, 'dist/cli/main.js');
@@ -129,6 +129,20 @@ test.skipIf(!enabled)('proves the public native workflow', async (context) => {
     expect(recordings).toHaveLength(2);
     for (const file of recordings) expect((await stat(path.join(root, file))).size).toBeGreaterThan(0);
 
+    const failed = await run(root, ['ui', 'run', '--backend=xctest', '--plan-json=' + JSON.stringify({
+      version: 1, actions: [
+        { launch: {} },
+        { wait: { identifier: 'missing', timeout: 1 } },
+        { longPress: { identifier: 'pressTarget', duration: 1 } },
+      ],
+    })]);
+    expect(failed).toMatchObject({ ok: false, error: { code: 'UI_DELIVERY_FAILED',
+      details: { failedAction: { index: 1, kind: 'wait' }, completed: 1 } } });
+    const untouched = data(await run(root, ['ui', 'run', '--backend=xctest', '--plan-json=' + JSON.stringify({
+      version: 1, actions: [{ assertValue: { identifier: 'gestureStatus', value: 'idle' } }],
+    })]), 'ui run after failure');
+    expect(untouched).toMatchObject({ backend: 'xctest', runnerResult: { completed: 1 } });
+
     data(await run(root, ['app', 'terminate']), 'app terminate');
     launched = false;
     if (bootedByTest) {
@@ -150,4 +164,4 @@ test.skipIf(!enabled)('proves the public native workflow', async (context) => {
     }
     if (retainEvidence || launched || bootedByTest) console.error(`native evidence retained at ${evidence}`);
   }
-}, 240_000);
+}, 480_000);

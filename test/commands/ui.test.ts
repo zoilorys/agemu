@@ -264,6 +264,107 @@ describe('UI backend selection', () => {
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 
+  const cachedRunnerRoot = async (prefix: string) => {
+    const root = await mkdtemp(path.join(tmpdir(), prefix));
+    const manifest = path.join(root, '.agemu', 'RunnerDerivedData', 'Build', 'Runner.xctestrun');
+    await mkdir(path.dirname(manifest), { recursive: true });
+    await writeFile(manifest, 'fixture');
+    return root;
+  };
+  const nativeConfig = (root: string) => ({ version: 2 as const, platform: 'ios' as const, app: { type: 'native' as const,
+    project: path.join(root, 'App.xcodeproj'), scheme: 'App', configuration: 'Debug', bundleId: 'com.example.app' },
+  simulator: { udid: 'PHONE' }, root });
+  const failingXctest = (stdout: string) => async (executable: string, args: string[]) => {
+    if (executable === 'plutil' && args[1] === 'json') return result(JSON.stringify({ AgentRunner: { TestBundlePath: 'Runner.xctest' } }));
+    if (executable === 'xcodebuild' && args[0] === 'test-without-building') return result(stdout, '', 65);
+    return result();
+  };
+
+  it('reports the failing XCTest action from the runner failure marker', async () => {
+    const root = await cachedRunnerRoot('agemu-xctest-failure-');
+    const failure = Buffer.from(JSON.stringify({ index: 1, kind: 'wait', message: 'element did not appear: missing' })).toString('base64');
+    try {
+      const error = await runUiPlan(nativeConfig(root), { json: JSON.stringify({ version: 1, actions: [
+        { launch: {} }, { wait: { identifier: 'missing', timeout: 1 } }, { longPress: { identifier: 'pressTarget' } },
+      ] }) }, { backend: 'xctest', run: failingXctest(`AGEMU_ACTION:0\nAGEMU_ACTION:1\nAGEMU_FAILURE:${failure}\n`) }).catch((e: unknown) => e);
+      expect(error).toMatchObject({ code: 'UI_DELIVERY_FAILED', message: 'UI action 1 (wait) failed: element did not appear: missing',
+        details: { exitCode: 65, failedAction: { index: 1, kind: 'wait', message: 'element did not appear: missing' }, completed: 1 } });
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('falls back to XCTest internal failure text for the last started action', async () => {
+    const root = await cachedRunnerRoot('agemu-xctest-internal-');
+    try {
+      const error = await runUiPlan(nativeConfig(root), { json: JSON.stringify({ version: 1, actions: [
+        { launch: {} }, { inspect: {} }, { tap: { identifier: 'x' } }, { inspect: {} },
+      ] }) }, { backend: 'xctest', run: failingXctest([
+        'AGEMU_ACTION:0', 'Test Case started AGEMU_ACTION:1', 'AGEMU_ACTION:2', 'AGEMU_FAILURE:!!not-base64!!',
+        '/tmp/AgentRunner.swift:120: error: -[AgentRunner.AgentRunner testPlan] : Failed to tap "x"',
+      ].join('\n')) }).catch((e: unknown) => e);
+      expect(error).toMatchObject({ message: 'UI action 2 (tap) failed: Failed to tap "x"',
+        details: { failedAction: { index: 2, kind: 'tap', message: 'Failed to tap "x"' }, completed: 2 } });
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('omits failedAction when XCTest fails before any action starts', async () => {
+    const root = await cachedRunnerRoot('agemu-xctest-crash-');
+    try {
+      const error = await runUiPlan(nativeConfig(root), { json: JSON.stringify({ version: 1, actions: [{ inspect: {} }] }) },
+        { backend: 'xctest', run: failingXctest('Testing failed: runner crashed\n') }).catch((e: unknown) => e) as { message: string; details: Record<string, unknown> };
+      expect(error.message).toBe('The XCTest UI plan failed');
+      expect(error.details.failedAction).toBeUndefined();
+      expect(error.details.completed).toBe(0);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('maps an idb segment failure to its index in the submitted plan', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-idb-offset-'));
+    try {
+      const error = await runUiPlan(nativeConfig(root), { json: JSON.stringify({ version: 1, actions: [
+        { startVideoRecording: {} }, { tap: { x: 1, y: 2 } }, { stopVideoRecording: {} },
+        { startVideoRecording: {} }, { assertVisible: { identifier: 'missing' } }, { stopVideoRecording: {} },
+      ] }) }, {
+        backend: 'idb',
+        startRecording: async () => ({ stop: async () => undefined }),
+        run: async (executable, args) => executable === 'idb' && args[1] === 'describe-all' ? result('[]') : result(),
+      }).catch((e: unknown) => e);
+      expect(error).toMatchObject({ code: 'UI_DELIVERY_FAILED', message: 'UI action 4 (assertVisible) failed: Element not found: missing',
+        details: { failedAction: { index: 4, kind: 'assertVisible' }, completed: 4 } });
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('reports a failing idb recording boundary by its own plan index', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-idb-record-fail-'));
+    try {
+      const error = await runUiPlan(nativeConfig(root), { json: JSON.stringify({ version: 1, actions: [
+        { tap: { x: 1, y: 2 } }, { startVideoRecording: {} }, { tap: { x: 3, y: 4 } }, { stopVideoRecording: {} },
+      ] }) }, {
+        backend: 'idb',
+        startRecording: async () => { throw new Error('recorder busy'); },
+        run: async (executable, args) => executable === 'idb' && args[1] === 'describe-all' ? result('[]') : result(),
+      }).catch((e: unknown) => e);
+      expect(error).toMatchObject({ details: { failedAction: { index: 1, kind: 'startVideoRecording', message: 'recorder busy' }, completed: 1 } });
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('stops an idb plan at the first failed action', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-idb-failfast-'));
+    const commands: string[][] = [];
+    try {
+      const error = await runUiPlan(nativeConfig(root), { json: JSON.stringify({ version: 1, actions: [
+        { assertVisible: { identifier: 'missing' } }, { tap: { x: 10, y: 20 } },
+      ] }) }, {
+        backend: 'idb',
+        run: async (executable, args) => {
+          commands.push([executable, ...args]);
+          return executable === 'idb' && args[1] === 'describe-all' ? result('[]') : result();
+        },
+      }).catch((e: unknown) => e);
+      expect(error).toMatchObject({ details: { failedAction: { index: 0, kind: 'assertVisible' }, completed: 0 } });
+      expect(commands.some(command => command[0] === 'idb' && command[2] === 'tap')).toBe(false);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
   it('uses the cached XCTest runner when idb cannot start', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'agemu-idb-fallback-'));
     const manifest = path.join(root, '.agemu', 'RunnerDerivedData', 'Build', 'Runner.xctestrun');

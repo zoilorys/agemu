@@ -105,10 +105,14 @@ export async function tryRunIdbPlan(config: LoadedConfig, plan: UiPlan, udid: st
     return element;
   };
 
+  let current = 0;
+  let currentKind = 'unknown';
   try {
     for (const [index, raw] of plan.actions.entries()) {
       const action = raw as Record<string, Record<string, unknown>>;
       const [kind] = Object.keys(action);
+      current = index;
+      currentKind = kind;
       const value = action[kind];
       if (kind === 'launch') {
         const stopped = await run('xcrun', ['simctl', 'terminate', udid, targetBundleId(config)]);
@@ -173,9 +177,12 @@ export async function tryRunIdbPlan(config: LoadedConfig, plan: UiPlan, udid: st
       screenshots, transcript: path.relative(config.root, transcript),
     }, config.redactions ?? []);
   } catch (error) {
-    lines.push(`error: ${error instanceof Error ? error.message : String(error)}`);
-    throw new CliError('UI_DELIVERY_FAILED', `The idb UI plan failed: ${redact(error instanceof Error ? error.message : String(error), config.redactions ?? [])}`,
-      redactValue({ transcript: path.relative(config.root, transcript) }, config.redactions ?? []));
+    const secrets = config.redactions ?? [];
+    const message = redact(error instanceof Error ? error.message : String(error), secrets);
+    lines.push(`action ${current} (${currentKind}) error: ${message}`);
+    const failedAction = { index: current, kind: currentKind, message };
+    throw new CliError('UI_DELIVERY_FAILED', redact(`UI action ${current} (${currentKind}) failed: ${message}`, secrets),
+      redactValue({ transcript: path.relative(config.root, transcript), failedAction, completed: current }, secrets));
   } finally {
     await writeFile(transcript, `${redact(lines.join('\n'), config.redactions ?? [])}\n`, { mode: 0o600 });
   }
