@@ -2,7 +2,9 @@ const common = `Global options:
   --help       Show this guide or help for a command (for example, agemu app --help).
   --version    Show the CLI version.
   --pretty     Indent the JSON response.
-  --debug      Include error details in failed JSON responses.`;
+  --debug      Include error details in failed JSON responses.
+Options accept --name=value or --name value. Unknown options are rejected.
+A value starting with -- requires the --name=value form (for example, --arg=--verbose).`;
 
 const commands: Record<string, string> = {
   server: `agemu server start\n  Start or reuse this project's Metro or Expo server. Expo development builds use --dev-client.\n\nagemu server status\n  Report server readiness and ownership; an unverified port occupant is a collision.\n\nagemu server stop\n  Stop only a server started by agemu for this project.`,

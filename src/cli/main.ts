@@ -13,107 +13,98 @@ import { buildUiRunner, runUiPlan } from '../commands/ui.js';
 import { helpFor } from './help.js';
 import { setup } from '../commands/setup.js';
 import { server } from '../commands/server.js';
+import { parseArgs, value, values, type ParsedArgs } from './args.js';
 
 const args = process.argv.slice(2);
 const packageVersion = (JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8')) as { version: string }).version;
-const pretty = args.includes('--pretty');
-const debug = args.includes('--debug');
-const command = args.find((arg) => !arg.startsWith('--'));
-const option = (name: string): string | undefined => {
-  const inline = args.find((arg) => arg.startsWith(`--${name}=`));
-  if (inline) return inline.slice(name.length + 3);
-  const index = args.indexOf(`--${name}`);
-  return index >= 0 ? args[index + 1] : undefined;
+// Output style must be known even when parsing fails.
+let pretty = args.includes('--pretty');
+let debug = args.includes('--debug');
+
+const limitOption = (parsed: ParsedArgs): number | undefined => {
+  const limit = value(parsed, 'limit');
+  if (limit === undefined) return undefined;
+  if (!/^\d+$/.test(limit)) throw new CliError('COMMAND_INVALID', '--limit must be an integer from 0 to 10000');
+  return Number(limit);
 };
 
-const requiredString = (name: string): string => {
-  const value = option(name);
-  if (value === undefined || value.length === 0 || (args.includes(`--${name}`) && value.startsWith('--'))) {
-    throw new CliError('UI_VALIDATION_FAILED', `--${name} requires a non-empty value`);
-  }
-  return value;
+const nonEmpty = (parsed: ParsedArgs, name: string, code: 'COMMAND_INVALID' | 'UI_VALIDATION_FAILED'): string | undefined => {
+  const given = value(parsed, name);
+  if (given !== undefined && given.length === 0) throw new CliError(code, `--${name} requires a non-empty value`);
+  return given;
 };
-if (args.includes('--help')) {
-  writeResult({ ok: true, data: { help: helpFor(command) } }, pretty);
-}
-else if (args.includes('--version')) {
-  writeResult({ ok: true, data: { version: packageVersion } }, pretty);
-} else if (!command) {
-  writeResult(errorResult(new CliError('COMMAND_INVALID', 'A command is required'), debug), pretty);
-  process.exitCode = 1;
-} else try {
-  let data: unknown;
-  if (command === 'setup') {
-    data = await setup(process.cwd(), true, args.includes('--expo-go'), {
-      udid: args.some(arg => arg === '--udid' || arg.startsWith('--udid=')) ? requiredString('udid') : undefined,
-    });
-  } else if (command === 'config' && args.includes('show')) {
-    const config = await loadConfig();
-    const { root: _, redactions: __, ...safe } = config;
-    data = safe;
-  } else if (command === 'simulator' && args.includes('list')) {
-    data = { devices: await listDevices() };
-  } else if (command === 'simulator' && (args.includes('boot') || args.includes('shutdown'))) {
-    const config = await loadConfig();
-    const explicitUdid = args.find((arg) => arg.startsWith('--udid='))?.slice('--udid='.length);
-    const explicitName = args.find((arg) => arg.startsWith('--name='))?.slice('--name='.length);
-    const explicitRuntime = args.find((arg) => arg.startsWith('--runtime='))?.slice('--runtime='.length);
-    const selector = explicitUdid
-      ? { udid: explicitUdid }
-      : config.simulator.udid
-        ? { udid: config.simulator.udid }
-        : explicitName
-          ? { name: explicitName, ...(explicitRuntime ? { runtime: explicitRuntime } : {}) }
-          : config.simulator;
-    const device = resolveDevice(await listDevices(), selector);
-    const action = args.includes('boot') ? 'boot' : 'shutdown';
-    const controlled = action === 'boot' ? await bootDevice(device) : await shutdownDevice(device);
-    data = { action, device: controlled };
-  } else if (command === 'observe') {
-    data = await observe(await loadConfig());
-  } else if (command === 'ui') {
-    const plan = option('plan');
-    const planJson = option('plan-json');
-    if (args.includes('run') && plan !== undefined && planJson !== undefined) {
-      throw new CliError('UI_VALIDATION_FAILED', 'Use either --plan or --plan-json');
-    }
-    const source = args.includes('run')
-      ? planJson !== undefined ? { json: requiredString('plan-json') } : { file: path.resolve(requiredString('plan')) }
-      : undefined;
-    const config = await loadConfig();
-    if (args.includes('build-runner')) data = await buildUiRunner(config, {}, true);
-    else if (source) data = await runUiPlan(config, source, { backend: option('backend') as 'auto' | 'idb' | 'xctest' | undefined });
-    else throw new CliError('COMMAND_INVALID', 'ui requires build-runner or run with --plan or --plan-json');
-  } else if (command === 'build') {
-    const config = await loadConfig();
-    data = await buildApp(config);
-  } else if (command === 'server') {
-    const config = await loadConfig();
-    const action = (['start', 'status', 'stop'] as const).find((name) => args.includes(name));
-    if (!action) throw new CliError('COMMAND_INVALID', 'server requires start, status, or stop');
-    data = await server(config, action);
-  } else if (command === 'app') {
-    const config = await loadConfig();
-    const action = (['install', 'launch', 'terminate', 'restart', 'open-url'] as AppAction[]).find((name) => args.includes(name));
-    if (!action) throw new Error('app requires install, launch, terminate, or restart');
-    data = await controlApp(config, action, {
-      arguments: args.filter((arg) => arg.startsWith('--arg=')).map((arg) => arg.slice('--arg='.length)),
-      environment: args.filter((arg) => arg.startsWith('--env=')).map((arg) => arg.slice('--env='.length)),
-      url: args.find((arg) => arg.startsWith('--url='))?.slice('--url='.length),
-    });
-  } else if (command === 'logs') {
-    const config = await loadConfig();
-    if (!args.includes('show')) throw new CliError('COMMAND_INVALID', 'logs requires show');
-    data = await showLogs(config, {
-      last: option('last'), level: option('level'), limit: option('limit') === undefined ? undefined : Number(option('limit')),
-    });
-  } else if (command === 'diagnose') {
-    const config = await loadConfig();
-    data = await diagnose(config, {
-      last: option('last'), level: option('level'), limit: option('limit') === undefined ? undefined : Number(option('limit')),
-    });
-  } else if (command === 'doctor') {
-    data = await doctor();
-  } else throw new CliError('COMMAND_INVALID', `Unknown command: ${command}`);
-  writeResult({ ok: true, data }, pretty);
+
+try {
+  const parsed = parseArgs(args);
+  ({ pretty, debug } = parsed.globals);
+  const { command, subcommand } = parsed;
+  if (parsed.globals.help) {
+    writeResult({ ok: true, data: { help: helpFor(command) } }, pretty);
+  } else if (parsed.globals.version) {
+    writeResult({ ok: true, data: { version: packageVersion } }, pretty);
+  } else if (!command) {
+    throw new CliError('COMMAND_INVALID', 'A command is required');
+  } else {
+    let data: unknown;
+    if (command === 'setup') {
+      data = await setup(process.cwd(), true, parsed.flags.has('expo-go'), { udid: nonEmpty(parsed, 'udid', 'COMMAND_INVALID') });
+    } else if (command === 'config') {
+      const config = await loadConfig();
+      const { root: _, redactions: __, ...safe } = config;
+      data = safe;
+    } else if (command === 'simulator' && subcommand === 'list') {
+      data = { devices: await listDevices() };
+    } else if (command === 'simulator') {
+      const explicitUdid = nonEmpty(parsed, 'udid', 'COMMAND_INVALID');
+      const explicitName = nonEmpty(parsed, 'name', 'COMMAND_INVALID');
+      const explicitRuntime = nonEmpty(parsed, 'runtime', 'COMMAND_INVALID');
+      if (explicitRuntime !== undefined && explicitName === undefined) throw new CliError('COMMAND_INVALID', '--runtime requires --name');
+      const config = await loadConfig();
+      const selector = explicitUdid
+        ? { udid: explicitUdid }
+        : config.simulator.udid
+          ? { udid: config.simulator.udid }
+          : explicitName
+            ? { name: explicitName, ...(explicitRuntime ? { runtime: explicitRuntime } : {}) }
+            : config.simulator;
+      const device = resolveDevice(await listDevices(), selector);
+      const action = subcommand === 'boot' ? 'boot' : 'shutdown';
+      const controlled = action === 'boot' ? await bootDevice(device) : await shutdownDevice(device);
+      data = { action, device: controlled };
+    } else if (command === 'observe') {
+      data = await observe(await loadConfig());
+    } else if (command === 'ui' && subcommand === 'build-runner') {
+      data = await buildUiRunner(await loadConfig(), {}, true);
+    } else if (command === 'ui') {
+      const plan = nonEmpty(parsed, 'plan', 'UI_VALIDATION_FAILED');
+      const planJson = nonEmpty(parsed, 'plan-json', 'UI_VALIDATION_FAILED');
+      if (plan !== undefined && planJson !== undefined) throw new CliError('UI_VALIDATION_FAILED', 'Use either --plan or --plan-json');
+      if (plan === undefined && planJson === undefined) throw new CliError('UI_VALIDATION_FAILED', 'ui run requires --plan or --plan-json');
+      const backend = value(parsed, 'backend');
+      if (backend !== undefined && !['auto', 'idb', 'xctest'].includes(backend)) {
+        throw new CliError('UI_VALIDATION_FAILED', 'UI backend must be auto, idb, or xctest');
+      }
+      const source = planJson !== undefined ? { json: planJson } : { file: path.resolve(plan!) };
+      data = await runUiPlan(await loadConfig(), source, { backend: backend as 'auto' | 'idb' | 'xctest' | undefined });
+    } else if (command === 'build') {
+      data = await buildApp(await loadConfig());
+    } else if (command === 'server') {
+      data = await server(await loadConfig(), subcommand as 'start' | 'status' | 'stop');
+    } else if (command === 'app') {
+      data = await controlApp(await loadConfig(), subcommand as AppAction, {
+        arguments: values(parsed, 'arg'),
+        environment: values(parsed, 'env'),
+        url: value(parsed, 'url'),
+      });
+    } else if (command === 'logs') {
+      const options = { last: value(parsed, 'last'), level: value(parsed, 'level'), limit: limitOption(parsed) };
+      data = await showLogs(await loadConfig(), options);
+    } else if (command === 'diagnose') {
+      const options = { last: value(parsed, 'last'), level: value(parsed, 'level'), limit: limitOption(parsed) };
+      data = await diagnose(await loadConfig(), options);
+    } else if (command === 'doctor') {
+      data = await doctor();
+    } else throw new CliError('COMMAND_INVALID', `Unknown command: ${command}`);
+    writeResult({ ok: true, data }, pretty);
+  }
 } catch (error) { writeResult(errorResult(error, debug), pretty); process.exitCode = 1; }
