@@ -93,4 +93,10 @@ describe.skipIf(!enabled)('simulator control on a real Simulator', () => {
     }
     expect(await installed()).toBe(true);
   }, 300_000);
+
+  test('privacy grant then reset photos succeed for the fixture app', async (context) => {
+    ready(context);
+    expect(data(await run(root, ['privacy', 'grant', '--service=photos']), 'privacy grant')).toMatchObject({ action: 'grant', service: 'photos', udid, bundleId });
+    expect(data(await run(root, ['privacy', 'reset', '--service=photos']), 'privacy reset')).toMatchObject({ action: 'reset', service: 'photos', udid, bundleId });
+  }, 120_000);
 });

@@ -42,6 +42,13 @@ agemu app uninstall --yes
   Remove the configured app and all of its data from the selected booted Simulator.
   Without --yes nothing is removed. An app that is not installed reports alreadyUninstalled: true.
   Expo Go projects are refused because the host is shared. Build state is kept for "app install".`,
+  privacy: `agemu privacy grant --service=NAME
+agemu privacy revoke --service=NAME
+agemu privacy reset --service=NAME [--all-apps]
+  Change the configured app's permission for a service on the selected booted Simulator.
+  Services: all, calendar, contacts-limited, contacts, location, location-always, photos-add, photos, media-library, microphone, motion, reminders, siri.
+  reset --all-apps resets the service for every app instead of only the configured one.
+  The change may terminate the running app. The current permission state cannot be read.`,
   observe: `agemu observe
   Capture a simulator screenshot under .agemu/runs/ and return its path.`,
   logs: `agemu logs show [--last=30s] [--level=default] [--limit=100]
@@ -98,6 +105,7 @@ Commands:
   app restart          Stop and relaunch the app.
   app open-url         Open a URL in Simulator.
   app uninstall        Remove the app and its data (requires --yes).
+  privacy grant        Grant the app a permission (also revoke, reset).
   observe              Capture a simulator screenshot.
   logs show            Read recent app logs.
   diagnose             Collect debugging evidence.

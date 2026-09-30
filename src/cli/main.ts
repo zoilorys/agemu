@@ -11,6 +11,7 @@ import { bootDevice, listDevices, resolveDevice, shutdownDevice } from '../nativ
 import { buildApp } from '../commands/build.js';
 import { controlApp, requireUninstallable, type AppAction } from '../commands/app.js';
 import { requireYes } from '../native/simctl-commands.js';
+import { privacy, type PrivacyAction } from '../commands/privacy.js';
 import { diagnose, observe, showLogs } from '../commands/diagnostics.js';
 import { buildUiRunner, runUiPlan } from '../commands/ui.js';
 import { clean } from '../commands/clean.js';
@@ -50,6 +51,7 @@ const nonEmpty =(parsed: ParsedArgs, name: string, code: 'COMMAND_INVALID' | 'UI
 // Commands whose invocations are recorded here; observe, logs show, and diagnose record their own events.
 const recorded = new Set([
   'build', 'app install', 'app launch', 'app terminate', 'app restart', 'app open-url', 'app uninstall',
+  'privacy grant', 'privacy revoke', 'privacy reset',
   'server start', 'server status', 'server stop', 'simulator boot', 'simulator shutdown', 'ui build-runner', 'ui run', 'clean',
 ]);
 const durationUnits: Record<string, number> = { s: 1_000, m: 60_000, h: 3_600_000, d: 86_400_000 };
@@ -184,6 +186,9 @@ try {
         environment: values(parsed, 'env'),
         url: value(parsed, 'url'),
       }));
+    } else if (command === 'privacy') {
+      const service = nonEmpty(parsed, 'service', 'COMMAND_INVALID');
+      data = await withConfig(key, (config) => privacy(config, subcommand as PrivacyAction, { service, allApps: parsed.flags.has('all-apps') }));
     } else if (command === 'logs') {
       const options = { last: value(parsed, 'last'), level: value(parsed, 'level'), limit: limitOption(parsed) };
       data = await showLogs(await configured(), options);
