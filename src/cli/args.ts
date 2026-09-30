@@ -27,6 +27,7 @@ export const commandSpecs: Record<string, CommandSpec> = {
   server: { subcommands: { start: {}, status: {}, stop: {} } },
   app: { subcommands: { install: {}, launch: launchOptions, terminate: {}, restart: launchOptions, 'open-url': { url: single }, uninstall: { yes: boolean } } },
   privacy: { subcommands: { grant: { service: single }, revoke: { service: single }, reset: { service: single, 'all-apps': boolean } } },
+  push: { flags: { payload: single, 'payload-json': single } },
   observe: { flags: {} },
   logs: { subcommands: { show: logOptions } },
   diagnose: { flags: logOptions },

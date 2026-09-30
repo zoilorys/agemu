@@ -1,5 +1,5 @@
 import { execFile, spawn } from 'node:child_process';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
@@ -98,5 +98,13 @@ describe.skipIf(!enabled)('simulator control on a real Simulator', () => {
     ready(context);
     expect(data(await run(root, ['privacy', 'grant', '--service=photos']), 'privacy grant')).toMatchObject({ action: 'grant', service: 'photos', udid, bundleId });
     expect(data(await run(root, ['privacy', 'reset', '--service=photos']), 'privacy reset')).toMatchObject({ action: 'reset', service: 'photos', udid, bundleId });
+  }, 120_000);
+
+  test('push delivers a payload to the fixture app and saves it as evidence', async (context) => {
+    ready(context);
+    const input = '{"aps":{"alert":"agemu"}}';
+    const result = data(await run(root, ['push', `--payload-json=${input}`]), 'push');
+    expect(result).toMatchObject({ udid, bundleId, bytes: input.length });
+    expect(await readFile(path.join(root, result.payload as string), 'utf8')).toBe(input);
   }, 120_000);
 });

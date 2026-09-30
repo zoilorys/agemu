@@ -49,6 +49,12 @@ agemu privacy reset --service=NAME [--all-apps]
   Services: all, calendar, contacts-limited, contacts, location, location-always, photos-add, photos, media-library, microphone, motion, reminders, siri.
   reset --all-apps resets the service for every app instead of only the configured one.
   The change may terminate the running app. The current permission state cannot be read.`,
+  push: `agemu push (--payload=FILE | --payload-json=JSON)
+  Deliver a simulated remote notification to the configured app on the selected booted Simulator.
+  Example: agemu push --payload-json='{"aps":{"alert":"Hello"}}'
+  The payload must be a JSON object with an "aps" object and at most 4096 bytes. Delivery is not confirmed.
+  A "Simulator Target Bundle" key is ignored; the configured bundle ID is always used.
+  The payload is saved as .agemu/runs/<run>/push.json (mode 0600) and is NOT redacted; it may contain secrets.`,
   observe: `agemu observe
   Capture a simulator screenshot under .agemu/runs/ and return its path.`,
   logs: `agemu logs show [--last=30s] [--level=default] [--limit=100]
@@ -106,6 +112,7 @@ Commands:
   app open-url         Open a URL in Simulator.
   app uninstall        Remove the app and its data (requires --yes).
   privacy grant        Grant the app a permission (also revoke, reset).
+  push                 Send a simulated remote notification to the app.
   observe              Capture a simulator screenshot.
   logs show            Read recent app logs.
   diagnose             Collect debugging evidence.
