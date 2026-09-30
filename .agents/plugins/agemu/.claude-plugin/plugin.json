@@ -1,6 +1,6 @@
 {
   "name": "agemu",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Debug configured iOS apps in Simulator with the agemu CLI.",
   "author": {
     "name": "Illia Puzanov",

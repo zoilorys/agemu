@@ -2,10 +2,10 @@
   "version": 2,
   "platform": "ios",
   "app": {
-    "type": "native",
-    "project": "App.xcodeproj",
-    "scheme": "App",
-    "configuration": "Debug",
+    "type": "expo",
+    "root": ".",
+    "port": 8081,
+    "launchTarget": "development-build",
     "bundleId": "com.example.app"
   },
   "simulator": { "udid": "SIMULATOR_UDID" }

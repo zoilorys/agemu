@@ -1,10 +1,11 @@
-import { readdir, writeFile, access } from 'node:fs/promises';
+import { readdir, writeFile, access, readFile } from 'node:fs/promises';
 import { createInterface } from 'node:readline/promises';
 import path from 'node:path';
 import { CliError } from '../core/errors.js';
 import type { DebugConfig } from '../config/config.js';
 import { listDevices, type Device } from '../native/simctl.js';
-import { runProcess } from '../process/run-process.js';
+import { installedExpoGoHosts } from '../native/expo-go.js';
+import { runProcess, type ProcessResult, type RunOptions } from '../process/run-process.js';
 
 const ignored = new Set(['.git', 'node_modules', '.build', '.agemu', 'Pods', 'DerivedData', 'build']);
 
@@ -21,8 +22,10 @@ async function findSources(root: string, directory = root, depth = 0): Promise<s
   return sources.sort();
 }
 
-async function checked(args: string[]): Promise<string> {
-  const result = await runProcess('xcodebuild', args, { timeoutMs: 60_000 });
+type Run = (executable: string, args: string[], options?: RunOptions) => Promise<ProcessResult>;
+
+async function checked(run: Run, args: string[]): Promise<string> {
+  const result = await run('xcodebuild', args, { timeoutMs: 60_000 });
   if (result.exitCode !== 0) throw new CliError('PROCESS_FAILED', result.stderr.trim() || 'xcodebuild failed');
   return result.stdout;
 }
@@ -34,6 +37,42 @@ function schemes(json: string, kind: 'project' | 'workspace'): string[] {
     if (Array.isArray(values)) return values.filter((value): value is string => typeof value === 'string');
   } catch { /* Report the same actionable error below. */ }
   throw new CliError('PROCESS_FAILED', 'xcodebuild did not return a scheme list');
+}
+
+type AppTarget = { bundleId: string; target: string };
+
+function applicationTargets(json: string): AppTarget[] {
+  let parsed: unknown;
+  try { parsed = JSON.parse(json); } catch { parsed = undefined; }
+  if (!Array.isArray(parsed)) throw new CliError('PROCESS_FAILED', 'xcodebuild did not return JSON build settings');
+  const found = new Map<string, AppTarget>();
+  for (const entry of parsed as Array<{ target?: unknown; buildSettings?: Record<string, unknown> }>) {
+    const settings = entry?.buildSettings;
+    const bundleId = settings?.PRODUCT_BUNDLE_IDENTIFIER;
+    if (settings?.PRODUCT_TYPE !== 'com.apple.product-type.application') continue;
+    if (typeof bundleId !== 'string' || !bundleId || bundleId.includes('$') || found.has(bundleId)) continue;
+    found.set(bundleId, { bundleId, target: typeof entry.target === 'string' ? entry.target : '' });
+  }
+  return [...found.values()];
+}
+
+export async function resolveExpoBundleId(root: string, run: (executable: string, args: string[], options?: RunOptions) => Promise<ProcessResult> = runProcess): Promise<string> {
+  const dynamic = await Promise.all(['app.config.js', 'app.config.ts', 'app.config.mjs'].map(async name => access(path.join(root, name)).then(() => true, () => false)));
+  let value: unknown;
+  if (dynamic.some(Boolean)) {
+    const cli = path.join(root, 'node_modules', 'expo', 'bin', 'cli');
+    try { await access(cli); } catch { throw new CliError('TOOL_NOT_FOUND', 'Local Expo CLI is required to read app.config; install project dependencies'); }
+    const result = await run(process.execPath, [cli, 'config', '--json', '--type', 'public'], { cwd: root, timeoutMs: 30_000 });
+    if (result.exitCode !== 0) throw new CliError('CONFIG_INVALID', 'Expo could not resolve app.config; inspect the project configuration');
+    try { value = JSON.parse(result.stdout); } catch { throw new CliError('CONFIG_INVALID', 'Expo config did not return JSON'); }
+  } else {
+    try { value = JSON.parse(await readFile(path.join(root, 'app.json'), 'utf8')); }
+    catch { throw new CliError('CONFIG_INVALID', 'Expo app.json or app.config is missing or invalid'); }
+  }
+  const config = value as { expo?: { ios?: { bundleIdentifier?: unknown } }; ios?: { bundleIdentifier?: unknown } };
+  const bundleId = config.expo?.ios?.bundleIdentifier ?? config.ios?.bundleIdentifier;
+  if (typeof bundleId !== 'string' || !bundleId.trim()) throw new CliError('CONFIG_INVALID', 'Expo config needs ios.bundleIdentifier for a development build');
+  return bundleId;
 }
 
 async function choose<T>(label: string, choices: T[], describe: (choice: T) => string, interactive: boolean): Promise<T> {
@@ -56,7 +95,22 @@ async function choose<T>(label: string, choices: T[], describe: (choice: T) => s
   } finally { prompt.close(); }
 }
 
-export async function setup(root = process.cwd(), interactive = true): Promise<{ file: string; config: DebugConfig }> {
+async function chooseDevice(devices: Device[], interactive: boolean, udid?: string): Promise<Device> {
+  if (udid !== undefined) {
+    const selected = devices.find(device => device.udid === udid);
+    if (!selected) throw new CliError('SIMULATOR_NOT_FOUND', `No available iOS Simulator has UDID ${udid}`);
+    return selected;
+  }
+  if (!interactive || !process.stdin.isTTY || !process.stderr.isTTY) {
+    const booted = devices.filter(device => device.state === 'Booted');
+    if (booted.length === 1) return booted[0];
+  }
+  return choose<Device>('simulator', devices, item => `${item.name} (${item.runtime}, ${item.state}, ${item.udid})`, interactive);
+}
+
+export async function setup(root = process.cwd(), interactive = true, expoGo = false, dependencies: { listDevices?: typeof listDevices; installedExpoGoHosts?: typeof installedExpoGoHosts; udid?: string; run?: Run; port?: number } = {}): Promise<{ file: string; config: DebugConfig }> {
+  const run = dependencies.run ?? runProcess;
+  const port = dependencies.port ?? 8081;
   const file = path.join(root, '.agemu.json');
   try {
     await access(file);
@@ -65,16 +119,42 @@ export async function setup(root = process.cwd(), interactive = true): Promise<{
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
   }
   const sources = await findSources(root);
+  let reactNative = false;
+  let expo = false;
+  try {
+    const manifest = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8')) as { dependencies?: Record<string, string>; devDependencies?: Record<string, string> };
+    reactNative = Boolean(manifest.dependencies?.['react-native'] || manifest.devDependencies?.['react-native']);
+    expo = Boolean(manifest.dependencies?.expo || manifest.devDependencies?.expo);
+  } catch { /* A native project need not have package.json. */ }
+  if (expo) {
+    const devices = await (dependencies.listDevices ?? listDevices)();
+    const device = await chooseDevice(devices, interactive, dependencies.udid);
+    const target = expoGo ? 'expo-go' : interactive && process.stdin.isTTY && process.stderr.isTTY
+      ? await choose('Expo launch target', ['development-build', 'expo-go'] as const, item => item, interactive)
+      : 'development-build';
+    const hosts = target === 'expo-go' ? await (dependencies.installedExpoGoHosts ?? installedExpoGoHosts)(device.udid) : [];
+    if (target === 'expo-go' && hosts.length === 0) throw new CliError('CONFIG_INVALID', `Expo Go is not installed on Simulator ${device.udid}; install it, then run agemu setup again`);
+    const app: DebugConfig['app'] = target === 'expo-go'
+      ? { type: 'expo', root: '.', port, launchTarget: 'expo-go', hostBundleId: await choose('Expo Go host', hosts, item => item, interactive) }
+      : { type: 'expo', root: '.', port, launchTarget: 'development-build', bundleId: await resolveExpoBundleId(root, run) };
+    const config: DebugConfig = { version: 2, platform: 'ios', app, simulator: { udid: device.udid } };
+    await writeFile(file, `${JSON.stringify(config, null, 2)}\n`, { flag: 'wx' });
+    return { file, config };
+  }
+  if (!reactNative && dependencies.port !== undefined) throw new CliError('COMMAND_INVALID', '--port applies only to React Native and Expo projects');
   const source = await choose('Xcode project or workspace', sources.filter((item) => !item.endsWith('project.xcworkspace')), (item) => item, interactive);
+  if (reactNative && !source.startsWith(`ios${path.sep}`)) throw new CliError('CONFIG_INVALID', 'React Native needs an Xcode source under ios/');
   const kind = source.endsWith('.xcworkspace') ? 'workspace' : 'project';
   const sourceArgs = [`-${kind}`, path.join(root, source)];
-  const scheme = await choose('scheme', schemes(await checked([...sourceArgs, '-list', '-json']), kind), (item) => item, interactive);
-  const devices = await listDevices();
-  const device = await choose<Device>('simulator', devices, (item) => `${item.name} (${item.runtime}, ${item.state})`, interactive);
-  const settings = await checked([...sourceArgs, '-scheme', scheme, '-configuration', 'Debug', '-destination', `platform=iOS Simulator,id=${device.udid}`, '-showBuildSettings']);
-  const bundleIds = [...new Set([...settings.matchAll(/^\s*PRODUCT_BUNDLE_IDENTIFIER\s*=\s*(\S+)\s*$/gm)].map((match) => match[1]).filter((id) => !id.includes('$') && !id.endsWith('.tests') && !id.endsWith('.Tests')))];
-  const bundleId = await choose('bundle ID', bundleIds, (item) => item, interactive);
-  const config: DebugConfig = { version: 1, [kind]: source, scheme, configuration: 'Debug', bundleId, simulator: { udid: device.udid } };
+  const scheme = await choose('scheme', schemes(await checked(run, [...sourceArgs, '-list', '-json']), kind), (item) => item, interactive);
+  const devices = await (dependencies.listDevices ?? listDevices)();
+  const device = await chooseDevice(devices, interactive, dependencies.udid);
+  const settings = await checked(run, [...sourceArgs, '-scheme', scheme, '-configuration', 'Debug', '-destination', `platform=iOS Simulator,id=${device.udid}`, '-showBuildSettings', '-json']);
+  const { bundleId } = await choose('bundle ID', applicationTargets(settings), (item) => `${item.bundleId} (${item.target})`, interactive);
+  const app: DebugConfig['app'] = kind === 'project'
+    ? { type: reactNative ? 'react-native' : 'native', ...(reactNative ? { root: '.', port } : {}), project: source, scheme, configuration: 'Debug', bundleId } as DebugConfig['app']
+    : { type: reactNative ? 'react-native' : 'native', ...(reactNative ? { root: '.', port } : {}), workspace: source, scheme, configuration: 'Debug', bundleId } as DebugConfig['app'];
+  const config: DebugConfig = { version: 2, platform: 'ios', app, simulator: { udid: device.udid } };
   await writeFile(file, `${JSON.stringify(config, null, 2)}\n`, { flag: 'wx' });
   return { file, config };
 }

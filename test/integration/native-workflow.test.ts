@@ -1,11 +1,11 @@
-import { access, mkdir, stat, writeFile } from 'node:fs/promises';
+import { access, mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { expect, test } from 'vitest';
 
-type CliResult = { ok: true; data: Record<string, unknown> } | { ok: false; error: { code: string; message: string } };
+type CliResult = { ok: true; data: Record<string, unknown> } | { ok: false; error: { code: string; message: string; details?: Record<string, unknown> } };
 
 const repository = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const cli = path.join(repository, 'dist/cli/main.js');
@@ -45,11 +45,10 @@ test.skipIf(!enabled)('proves the public native workflow', async (context) => {
   let evidence = root;
 
   await writeFile(path.join(root, '.agemu.json'), `${JSON.stringify({
-    version: 1,
-    project: fixtureProject,
+    version: 2 as const, platform: 'ios' as const, app: { type: 'native' as const, project: fixtureProject,
     scheme: 'NativeFixture',
     configuration: 'Debug',
-    bundleId: 'dev.agemu.agemu-native-fixture',
+    bundleId: 'dev.agemu.agemu-native-fixture' },
     simulator: { udid },
   }, null, 2)}\n`);
 
@@ -106,9 +105,64 @@ test.skipIf(!enabled)('proves the public native workflow', async (context) => {
         { assertValue: { identifier: 'gestureStatus', value: 'scrolled' } },
         { longPress: { x: 120, y: 125, duration: 1 } },
         { assertValue: { identifier: 'gestureStatus', value: 'pressed' } },
+        { screenshot: { name: 'after' } },
       ],
     })]), 'ui run gestures');
-    expect(gestures).toMatchObject({ backend: 'xctest', runnerResult: { completed: 9 } });
+    expect(gestures).toMatchObject({ backend: 'xctest', runnerResult: { completed: 10 } });
+    expect(gestures.screenshots).toEqual([`${String(gestures.run)}/screenshots/9-after.png`]);
+    const shot = await readFile(path.join(root, (gestures.screenshots as string[])[0]));
+    expect(shot.length).toBeGreaterThan(0);
+    expect(shot.subarray(0, 8).toString('hex')).toBe('89504e470d0a1a0a');
+
+    const videos = data(await run(root, ['ui', 'run', '--backend=xctest', '--plan-json=' + JSON.stringify({
+      version: 1, actions: [
+        { launch: {} },
+        { startVideoRecording: { name: 'scroll' } },
+        { swipe: { identifier: 'resultsList', direction: 'up' } },
+        { assertValue: { identifier: 'gestureStatus', value: 'scrolled' } },
+        { wait: { duration: 1 } },
+        { stopVideoRecording: {} },
+        { startVideoRecording: { name: 'press' } },
+        { longPress: { identifier: 'pressTarget', duration: 1 } },
+        { assertValue: { identifier: 'gestureStatus', value: 'pressed' } },
+        { wait: { duration: 1 } },
+        { stopVideoRecording: {} },
+      ],
+    })]), 'ui run videos');
+    expect(videos).toMatchObject({ backend: 'xctest', runnerResult: { completed: 11 }, screenshots: [] });
+    expect(videos).not.toHaveProperty('screenshotExportError');
+    const recordings = videos.recordings as string[];
+    expect(recordings).toHaveLength(2);
+    for (const file of recordings) expect((await stat(path.join(root, file))).size).toBeGreaterThan(0);
+
+    const failed = await run(root, ['ui', 'run', '--backend=xctest', '--plan-json=' + JSON.stringify({
+      version: 1, actions: [
+        { launch: {} },
+        { wait: { identifier: 'missing', timeout: 1 } },
+        { longPress: { identifier: 'pressTarget', duration: 1 } },
+      ],
+    })]);
+    expect(failed).toMatchObject({ ok: false, error: { code: 'UI_DELIVERY_FAILED',
+      details: { failedAction: { index: 1, kind: 'wait' }, completed: 1 } } });
+    const failureShot = (failed as { error: { details: { failureScreenshot: string } } }).error.details.failureScreenshot;
+    expect(path.basename(failureShot)).toBe('failure.png');
+    expect((await stat(path.join(root, failureShot))).size).toBeGreaterThan(0);
+    const untouched = data(await run(root, ['ui', 'run', '--backend=xctest', '--plan-json=' + JSON.stringify({
+      version: 1, actions: [{ assertValue: { identifier: 'gestureStatus', value: 'idle' } }],
+    })]), 'ui run after failure');
+    expect(untouched).toMatchObject({ backend: 'xctest', runnerResult: { completed: 1 }, screenshots: [] });
+    expect(untouched).not.toHaveProperty('screenshotExportError');
+
+    // Item 24 sits at y=1440 in the 1500-pt scroll view, below the visible area after launch.
+    const offscreen = data(await run(root, ['ui', 'run', '--backend=xctest', '--plan-json=' + JSON.stringify({
+      version: 1, actions: [{ launch: {} }, { assertExists: { label: 'Item 24' } }, { assertNotVisible: { label: 'Item 24' } }],
+    })]), 'ui run off-screen assertions');
+    expect(offscreen).toMatchObject({ backend: 'xctest', runnerResult: { completed: 3 } });
+    const hidden = await run(root, ['ui', 'run', '--backend=xctest', '--plan-json=' + JSON.stringify({
+      version: 1, actions: [{ launch: {} }, { assertVisible: { label: 'Item 24' } }],
+    })]);
+    expect(hidden).toMatchObject({ ok: false, error: { code: 'UI_DELIVERY_FAILED',
+      details: { failedAction: { index: 1, kind: 'assertVisible', message: 'element is not visible: Item 24 (exists but not hittable)' } } } });
 
     data(await run(root, ['app', 'terminate']), 'app terminate');
     launched = false;
@@ -131,4 +185,4 @@ test.skipIf(!enabled)('proves the public native workflow', async (context) => {
     }
     if (retainEvidence || launched || bootedByTest) console.error(`native evidence retained at ${evidence}`);
   }
-}, 240_000);
+}, 900_000);

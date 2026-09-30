@@ -9,7 +9,7 @@ import type { ProcessResult } from '../../src/process/run-process.js';
 
 const device: Device = { udid: 'PHONE', name: 'iPhone', runtime: 'iOS-18-0', state: 'Booted', isAvailable: true };
 const processResult = (exitCode: number, stderr = ''): ProcessResult => ({ stdout: '', stderr, exitCode, signal: null, startedAt: '', durationMs: 1 });
-const config = (root: string): LoadedConfig => ({ version: 1, project: `${root}/App.xcodeproj`, scheme: 'App', configuration: 'Debug', bundleId: 'com.example.app', simulator: { udid: 'PHONE' }, redactions: ['secret-value'], root });
+const config = (root: string): LoadedConfig => ({ version: 2 as const, platform: 'ios' as const, app: { type: 'native' as const, project: `${root}/App.xcodeproj`, scheme: 'App', configuration: 'Debug', bundleId: 'com.example.app' }, simulator: { udid: 'PHONE' }, redactions: ['secret-value'], root });
 
 describe('observe command', () => {
   it('captures a screenshot using the configured simulator and records app identity', async () => {

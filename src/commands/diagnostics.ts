@@ -1,10 +1,12 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, open, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { appendEvent, createRun, redactValue, type Run } from '../artifacts/runs.js';
 import type { AppState } from './build.js';
-import type { LoadedConfig } from '../config/config.js';
+import { nativeApp, targetBundleId, type LoadedConfig } from '../config/config.js';
 import { CliError } from '../core/errors.js';
 import { redact } from '../core/redact.js';
+import { installedExpoGoHost } from '../native/expo-go.js';
+import { server } from './server.js';
 import { listDevices, resolveDevice, simctl, type Device, type SimctlRunner } from '../native/simctl.js';
 
 type Dependencies = {
@@ -13,6 +15,8 @@ type Dependencies = {
   now?: () => Date;
   readState?: (file: string) => Promise<AppState>;
   readEvents?: (file: string) => Promise<string>;
+  serverStatus?: typeof server;
+  readServerOutput?: (file: string) => Promise<string>;
 };
 export type LogOptions = { last?: string; level?: string; limit?: number };
 
@@ -49,8 +53,23 @@ function failure(error: unknown, secrets: string[]): { code: string; message: st
   return { code: normalized.code, message: redact(normalized.message, secrets) };
 }
 
+async function tail(file: string): Promise<string> {
+  const handle = await open(file, 'r');
+  try {
+    const size = (await handle.stat()).size;
+    const buffer = Buffer.alloc(Math.min(size, 64 * 1024));
+    await handle.read(buffer, 0, buffer.length, size - buffer.length);
+    return buffer.toString('utf8');
+  } finally { await handle.close(); }
+}
+
+function bundlingErrors(output: string): string[] {
+  return output.split(/\r?\n/).filter(line => /(?:error:|error \[|bundling failed|unable to resolve module|syntaxerror|transformerror)/i.test(line)).slice(-20);
+}
+
 export async function observe(config: LoadedConfig, dependencies: Dependencies = {}) {
   const secrets = config.redactions ?? [];
+  const bundleId = config.app.type === 'expo' ? (config.app.launchTarget === 'development-build' ? config.app.bundleId : config.app.hostBundleId) : config.app.bundleId;
   const { run, now, device } = await runContext(config, dependencies);
   const directory = path.join(run.directory, 'screenshots');
   const screenshot = path.join(directory, 'screen.png');
@@ -61,24 +80,24 @@ export async function observe(config: LoadedConfig, dependencies: Dependencies =
     if (result.exitCode !== 0) throw new CliError('PROCESS_FAILED', result.stderr.trim() || 'Screenshot capture failed');
     const data = {
       run: run.relativeDirectory, screenshot: safeRelative(config.root, screenshot, secrets), capturedAt: now.toISOString(),
-      simulator: redactValue(device, secrets), bundleId: redact(config.bundleId, secrets),
+      simulator: redactValue(device, secrets), bundleId: redact(bundleId, secrets),
     };
     await appendEvent(config.root, { at: now.toISOString(), command: 'observe', status: 'ok', data }, secrets);
     return data;
   } catch (error) {
-    const details = { run: run.relativeDirectory, simulator: redactValue(device, secrets), bundleId: redact(config.bundleId, secrets) };
+    const details = { run: run.relativeDirectory, simulator: redactValue(device, secrets), bundleId: redact(bundleId, secrets) };
     await appendEvent(config.root, { at: now.toISOString(), command: 'observe', status: 'error', error: failure(error, secrets), details }, secrets);
     throw new CliError('PROCESS_FAILED', redact(error instanceof Error ? error.message : String(error), secrets), details);
   }
 }
 
-function predicate(app: AppState): string {
+function predicate(app: Pick<AppState, 'executableName'>): string {
   if (!app.executableName) throw new CliError('APP_NOT_BUILT', 'Cached app state does not contain an executable name; rebuild the app');
   const processName = app.executableName.replaceAll('\\', '\\\\').replaceAll('"', '\\"');
   return `process == "${processName}"`;
 }
 
-function logArguments(level: string, app: AppState): string[] {
+function logArguments(level: string, app: Pick<AppState, 'executableName'>): string[] {
   const processPredicate = predicate(app);
   if (level === 'info') return ['--info', '--predicate', processPredicate];
   if (level === 'debug') return ['--debug', '--predicate', processPredicate];
@@ -96,8 +115,10 @@ export async function showLogs(config: LoadedConfig, options: LogOptions = {}, d
   if (!allowedLevels.has(level)) throw new CliError('COMMAND_INVALID', '--level must be default, info, debug, error, or fault');
   if (!Number.isSafeInteger(limit) || limit < 0 || limit > 10_000) throw new CliError('COMMAND_INVALID', '--limit must be an integer from 0 to 10000');
   const { run, now, device } = await runContext(config, dependencies);
-  const app = await state(config, dependencies);
-  if (app.bundleId !== config.bundleId || app.udid !== device.udid) throw new CliError('APP_NOT_BUILT', 'Cached app state does not match the configured app and simulator');
+  const app = config.app.type === 'expo' && config.app.launchTarget === 'expo-go'
+    ? await installedExpoGoHost(device.udid, config.app.hostBundleId, dependencies.runner ?? simctl)
+    : await state(config, dependencies);
+  if (app.bundleId !== targetBundleId(config) || ('udid' in app && app.udid !== device.udid)) throw new CliError('APP_NOT_BUILT', 'Cached app state does not match the configured app and simulator');
   const artifact = path.join(run.directory, 'logs.txt');
   const args = ['spawn', device.udid, 'log', 'show', '--last', last, ...logArguments(level, app), '--style', 'compact'];
   let result;
@@ -122,7 +143,7 @@ export async function showLogs(config: LoadedConfig, options: LogOptions = {}, d
   }
   const lines = full.split(/\r?\n/).filter((line, index, all) => line || index < all.length - 1);
   const data = {
-    run: run.relativeDirectory, udid: redact(device.udid, secrets), bundleId: redact(config.bundleId, secrets), last, level,
+    run: run.relativeDirectory, udid: redact(device.udid, secrets), bundleId: redact(targetBundleId(config), secrets), last, level,
     logs: limit === 0 ? [] : lines.slice(-limit), truncated: lines.length > limit,
     artifact: safeRelative(config.root, artifact, secrets), capturedAt: now.toISOString(),
   };
@@ -137,19 +158,40 @@ export async function diagnose(config: LoadedConfig, options: LogOptions = {}, d
   const failures: Record<string, unknown> = {};
   try { evidence.simulator = redactValue(await (dependencies.resolveDevice ? dependencies.resolveDevice(config) : configuredDevice(config)), secrets); }
   catch (error) { failures.simulator = failure(error, secrets); }
-  try { evidence.build = redactValue(await state(config, dependencies), secrets); }
+  if (config.app.type === 'expo' && config.app.launchTarget === 'expo-go') evidence.host = { bundleId: redact(config.app.hostBundleId, secrets) };
+  else try { evidence.build = redactValue(await state(config, dependencies), secrets); }
   catch (error) { failures.build = failure(error, secrets); }
   try { evidence.observation = await observe(config, { ...dependencies, now: () => now }); }
   catch (error) { failures.observation = failure(error, secrets); }
-  try { evidence.logs = await showLogs(config, options, { ...dependencies, now: () => now }); }
+  try { evidence.logs = { source: 'Simulator unified log', ...(await showLogs(config, options, { ...dependencies, now: () => now })) }; }
   catch (error) { failures.logs = failure(error, secrets); }
+  if (config.app.type !== 'native') {
+    const serverEvidence: Record<string, unknown> = { source: 'Metro/Expo server', consoleCoverage: 'Server output and bundling errors only; in-app JavaScript console and React Native DevTools are not captured' };
+    evidence.server = serverEvidence;
+    try {
+      const status = await (dependencies.serverStatus ?? server)(config, 'status');
+      serverEvidence.status = redactValue(status, secrets);
+      if (!status.running) failures.server = { code: 'PROCESS_FAILED', message: 'Metro/Expo server is not ready' };
+    } catch (error) { failures.server = failure(error, secrets); }
+    try {
+      const file = path.join(config.root, '.agemu', 'metro.log');
+      const output = redact(await (dependencies.readServerOutput ?? tail)(file), secrets);
+      const lines = output.split(/\r?\n/).filter(Boolean);
+      serverEvidence.output = lines.slice(-100);
+      serverEvidence.bundlingErrors = bundlingErrors(output);
+      serverEvidence.outputSource = redact(path.relative(config.root, file), secrets);
+      serverEvidence.outputRelation = 'saved log; current server association unverified';
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') failures.serverOutput = failure(error, secrets);
+    }
+  }
   try {
     const eventsFile = path.join(config.root, '.agemu', 'events.jsonl');
     const contents = dependencies.readEvents ? await dependencies.readEvents(eventsFile) : await readFile(eventsFile, 'utf8');
     evidence.recentErrors = redactValue(String(contents).split('\n').filter(Boolean).map((line) => JSON.parse(line) as Record<string, unknown>)
       .filter((event) => event.status === 'error').slice(-10), secrets);
   } catch { evidence.recentErrors = []; }
-  const data = { generatedAt: now.toISOString(), bundleId: redact(config.bundleId, secrets), partial: Object.keys(failures).length > 0, evidence, failures };
+  const data = { generatedAt: now.toISOString(), bundleId: redact(targetBundleId(config), secrets), partial: Object.keys(failures).length > 0, evidence, failures };
   await appendEvent(config.root, { at: now.toISOString(), command: 'diagnose', status: data.partial ? 'partial' : 'ok', data }, secrets);
   return data;
 }

@@ -11,11 +11,12 @@ export async function createRun(root: string, now = new Date()): Promise<Run> {
   return { id, directory, relativeDirectory: path.relative(root, directory) };
 }
 
-export function redactValue(value: unknown, secrets: string[]): unknown {
-  if (typeof value === 'string') return redact(value, secrets);
-  if (Array.isArray(value)) return value.map((item) => redactValue(item, secrets));
+// Keeps the input's shape (only string contents and keys change), so callers keep their static type.
+export function redactValue<T>(value: T, secrets: string[]): T {
+  if (typeof value === 'string') return redact(value, secrets) as T;
+  if (Array.isArray(value)) return value.map((item) => redactValue(item, secrets)) as T;
   if (value && typeof value === 'object') {
-    return Object.fromEntries(Object.entries(value).map(([key, item]) => [redact(key, secrets), redactValue(item, secrets)]));
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [redact(key, secrets), redactValue(item, secrets)])) as T;
   }
   return value;
 }

@@ -1,6 +1,6 @@
 {
   "name": "agemu",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "description": "Build, run, inspect, and control iOS apps in Simulator from a JSON-first CLI.",
   "license": "MIT",
   "author": "Illia Puzanov",

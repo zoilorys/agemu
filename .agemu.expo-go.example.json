@@ -1,0 +1,12 @@
+{
+  "version": 2,
+  "platform": "ios",
+  "app": {
+    "type": "expo",
+    "root": ".",
+    "port": 8081,
+    "launchTarget": "expo-go",
+    "hostBundleId": "EXPO_GO_HOST_BUNDLE_ID"
+  },
+  "simulator": { "udid": "SIMULATOR_UDID" }
+}

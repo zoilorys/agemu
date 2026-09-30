@@ -12,6 +12,14 @@ export type ProcessResult = {
 
 export type RunOptions = { timeoutMs?: number; signal?: AbortSignal; cwd?: string; env?: NodeJS.ProcessEnv };
 
+export type Deadline = { ms: number; remaining: () => number; expired: () => boolean };
+
+/** A fixed end time shared by every step of one command; `remaining` never drops below 1 ms so it is a valid timeout. */
+export function deadline(ms: number): Deadline {
+  const end = Date.now() + ms;
+  return { ms, remaining: () => Math.max(1, end - Date.now()), expired: () => Date.now() >= end };
+}
+
 export function runProcess(executable: string, args: string[], options: RunOptions = {}): Promise<ProcessResult> {
   return new Promise((resolve, reject) => {
     const started = Date.now();
