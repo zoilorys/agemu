@@ -100,6 +100,19 @@ describe.skipIf(!enabled)('simulator control on a real Simulator', () => {
     expect(data(await run(root, ['privacy', 'reset', '--service=photos']), 'privacy reset')).toMatchObject({ action: 'reset', service: 'photos', udid, bundleId });
   }, 120_000);
 
+  test('location list is non-empty, and set and clear succeed', async (context) => {
+    ready(context);
+    const listed = data(await run(root, ['location', 'list']), 'location list');
+    const scenarios = listed.scenarios as string[];
+    expect(scenarios).toContain('City Run');
+    expect(scenarios.some((name) => name === 'Name' || name.startsWith('='))).toBe(false);
+    try {
+      expect(data(await run(root, ['location', 'set', '--coordinate=37.3349,-122.0090']), 'location set')).toMatchObject({ action: 'set', udid, coordinate: '37.3349,-122.0090' });
+    } finally {
+      expect(data(await run(root, ['location', 'clear']), 'location clear')).toMatchObject({ action: 'clear', udid });
+    }
+  }, 120_000);
+
   test('push delivers a payload to the fixture app and saves it as evidence', async (context) => {
     ready(context);
     const input = '{"aps":{"alert":"agemu"}}';

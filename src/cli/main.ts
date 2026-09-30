@@ -13,6 +13,7 @@ import { controlApp, requireUninstallable, type AppAction } from '../commands/ap
 import { requireYes } from '../native/simctl-commands.js';
 import { privacy, type PrivacyAction } from '../commands/privacy.js';
 import { push } from '../commands/push.js';
+import { location, type LocationAction } from '../commands/location.js';
 import { diagnose, observe, showLogs } from '../commands/diagnostics.js';
 import { buildUiRunner, runUiPlan } from '../commands/ui.js';
 import { clean } from '../commands/clean.js';
@@ -53,6 +54,7 @@ const nonEmpty =(parsed: ParsedArgs, name: string, code: 'COMMAND_INVALID' | 'UI
 const recorded = new Set([
   'build', 'app install', 'app launch', 'app terminate', 'app restart', 'app open-url', 'app uninstall',
   'privacy grant', 'privacy revoke', 'privacy reset', 'push',
+  'location set', 'location clear', 'location run',
   'server start', 'server status', 'server stop', 'simulator boot', 'simulator shutdown', 'ui build-runner', 'ui run', 'clean',
 ]);
 const durationUnits: Record<string, number> = { s: 1_000, m: 60_000, h: 3_600_000, d: 86_400_000 };
@@ -194,6 +196,10 @@ try {
       const payload = value(parsed, 'payload');
       const payloadJson = value(parsed, 'payload-json');
       data = await withConfig(key, (config) => push(config, { payload, payloadJson }));
+    } else if (command === 'location') {
+      const coordinate = nonEmpty(parsed, 'coordinate', 'COMMAND_INVALID');
+      const scenario = nonEmpty(parsed, 'scenario', 'COMMAND_INVALID');
+      data = await withConfig(key, (config) => location(config, subcommand as LocationAction, { coordinate, scenario }));
     } else if (command === 'logs') {
       const options = { last: value(parsed, 'last'), level: value(parsed, 'level'), limit: limitOption(parsed) };
       data = await showLogs(await configured(), options);

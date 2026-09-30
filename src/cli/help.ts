@@ -55,6 +55,14 @@ agemu privacy reset --service=NAME [--all-apps]
   The payload must be a JSON object with an "aps" object and at most 4096 bytes. Delivery is not confirmed.
   A "Simulator Target Bundle" key is ignored; the configured bundle ID is always used.
   The payload is saved as .agemu/runs/<run>/push.json (mode 0600) and is NOT redacted; it may contain secrets.`,
+  location: `agemu location set --coordinate=LAT,LON
+agemu location clear
+agemu location list
+agemu location run --scenario=NAME
+  Control the selected booted Simulator's simulated location (device-wide, not per app).
+  set takes one coordinate without spaces (latitude -90 to 90, longitude -180 to 180), for example 37.3349,-122.0090.
+  list returns scenario names; run starts one of them (names may contain spaces, quote them).
+  The current location cannot be read back. Waypoint routes and speed are not supported.`,
   observe: `agemu observe
   Capture a simulator screenshot under .agemu/runs/ and return its path.`,
   logs: `agemu logs show [--last=30s] [--level=default] [--limit=100]
@@ -113,6 +121,7 @@ Commands:
   app uninstall        Remove the app and its data (requires --yes).
   privacy grant        Grant the app a permission (also revoke, reset).
   push                 Send a simulated remote notification to the app.
+  location set         Set the simulated location (also clear, list, run).
   observe              Capture a simulator screenshot.
   logs show            Read recent app logs.
   diagnose             Collect debugging evidence.
