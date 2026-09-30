@@ -10,6 +10,8 @@ final class AgentRunner: XCTestCase {
         let type: TypeAction?
         let wait: WaitAction?
         let assertVisible: Target?
+        let assertExists: Target?
+        let assertNotVisible: Target?
         let assertValue: ValueAssertion?
         let screenshot: Screenshot?
         let inspect: Empty?
@@ -28,6 +30,73 @@ final class AgentRunner: XCTestCase {
     private struct Empty: Decodable {}
     private struct VideoRecording: Decodable { let name: String? }
     private struct Result: Encodable { let completed: Int; let bundleId: String; let trees: [String] }
+    private struct Failure: Encodable { let index: Int; let kind: String; let message: String }
+
+    override func setUp() {
+        super.setUp()
+        continueAfterFailure = false
+    }
+
+    private func actionKind(_ action: Action) -> String {
+        if action.launch != nil { return "launch" }
+        if action.tap != nil { return "tap" }
+        if action.swipe != nil { return "swipe" }
+        if action.longPress != nil { return "longPress" }
+        if action.type != nil { return "type" }
+        if action.wait != nil { return "wait" }
+        if action.assertVisible != nil { return "assertVisible" }
+        if action.assertExists != nil { return "assertExists" }
+        if action.assertNotVisible != nil { return "assertNotVisible" }
+        if action.assertValue != nil { return "assertValue" }
+        if action.screenshot != nil { return "screenshot" }
+        if action.inspect != nil { return "inspect" }
+        if action.startVideoRecording != nil { return "startVideoRecording" }
+        if action.stopVideoRecording != nil { return "stopVideoRecording" }
+        return "unknown"
+    }
+
+    private func describe(_ identifier: String?, _ label: String?) -> String {
+        identifier ?? label ?? "<no target>"
+    }
+
+    /// Matches the idb backend: UTF-16 units outside [A-Za-z0-9_-] become "_", capped at 80, default "screen".
+    private func sanitizedScreenshotName(_ name: String?) -> String {
+        guard let name else { return "screen" }
+        let underscore = UInt16(UInt8(ascii: "_"))
+        let units = name.utf16.prefix(80).map { unit -> UInt16 in
+            switch unit {
+            case 0x30...0x39, 0x41...0x5A, 0x61...0x7A, 0x2D, 0x5F: return unit
+            default: return underscore
+            }
+        }
+        let sanitized = String(decoding: units, as: UTF16.self)
+        return sanitized.isEmpty ? "screen" : sanitized
+    }
+
+    private var failureScreenshotCaptured = false
+
+    /// Every failure, including XCUITest-internal ones that bypass reportFailure, gets one `agemu-failure` screenshot.
+    override func record(_ issue: XCTIssue) {
+        if !failureScreenshotCaptured && Thread.isMainThread {
+            failureScreenshotCaptured = true
+            MainActor.assumeIsolated {
+                let attachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+                attachment.name = "agemu-failure"
+                attachment.lifetime = .keepAlways
+                add(attachment)
+            }
+        }
+        super.record(issue)
+    }
+
+    /// XCTFail routes through record(_:), which attaches the failure screenshot.
+    private func reportFailure(index: Int, kind: String, message: String) {
+        if let data = try? JSONEncoder().encode(Failure(index: index, kind: kind, message: message)) {
+            print("AGEMU_FAILURE:\(data.base64EncodedString())")
+            fflush(stdout)
+        }
+        XCTFail("Action \(index) (\(kind)): \(message)")
+    }
 
     @MainActor
     func testPlan() throws {
@@ -36,8 +105,32 @@ final class AgentRunner: XCTestCase {
         let plan = try JSONDecoder().decode(Plan.self, from: data)
         let app = XCUIApplication(bundleIdentifier: plan.bundleId)
         var trees: [String] = []
+        var completed = 0
 
         for (index, action) in plan.actions.enumerated() {
+            let kind = actionKind(action)
+            print("AGEMU_ACTION:\(index)")
+            fflush(stdout)
+            do {
+                if let message = try perform(action, index: index, in: app, trees: &trees) {
+                    reportFailure(index: index, kind: kind, message: message)
+                    return
+                }
+            } catch {
+                reportFailure(index: index, kind: kind, message: error.localizedDescription)
+                return
+            }
+            completed += 1
+        }
+
+        let output = try JSONEncoder().encode(Result(completed: completed, bundleId: plan.bundleId, trees: trees))
+        print("AGEMU_RESULT:\(output.base64EncodedString())")
+        fflush(stdout)
+    }
+
+    /// Executes one action. Returns a failure message for a failed check, nil on success.
+    @MainActor
+    private func perform(_ action: Action, index: Int, in app: XCUIApplication, trees: inout [String]) throws -> String? {
             if let launch = action.launch {
                 app.launchArguments = launch.arguments ?? []
                 app.launchEnvironment = launch.environment ?? [:]
@@ -57,16 +150,34 @@ final class AgentRunner: XCTestCase {
                     Thread.sleep(forTimeInterval: duration)
                 } else {
                     let candidate = try element(Target(identifier: wait.identifier, label: wait.label, x: nil, y: nil), in: app)
-                    XCTAssertTrue(candidate.waitForExistence(timeout: wait.timeout ?? 5), "Action \(index): element did not appear")
+                    if !candidate.waitForExistence(timeout: wait.timeout ?? 5) {
+                        return "element did not appear: \(describe(wait.identifier, wait.label))"
+                    }
                 }
             } else if let target = action.assertVisible {
-                XCTAssertTrue(try element(target, in: app).exists, "Action \(index): element is not visible")
+                let candidate = try element(target, in: app)
+                let exists = candidate.exists
+                if !(exists && candidate.isHittable) {
+                    return "element is not visible: \(describe(target.identifier, target.label))\(exists ? " (exists but not hittable)" : "")"
+                }
+            } else if let target = action.assertExists {
+                if !(try element(target, in: app).exists) {
+                    return "element does not exist: \(describe(target.identifier, target.label))"
+                }
+            } else if let target = action.assertNotVisible {
+                let candidate = try element(target, in: app)
+                if candidate.exists && candidate.isHittable {
+                    return "element is visible: \(describe(target.identifier, target.label))"
+                }
             } else if let assertion = action.assertValue {
                 let candidate = try element(Target(identifier: assertion.identifier, label: assertion.label, x: nil, y: nil), in: app)
-                XCTAssertEqual(candidate.value as? String, assertion.value, "Action \(index): element value does not match")
+                let actual = candidate.value as? String
+                if actual != assertion.value {
+                    return "element value does not match: expected \(assertion.value), got \(actual ?? "nil")"
+                }
             } else if let shot = action.screenshot {
                 let attachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
-                attachment.name = shot.name ?? "action-\(index)"
+                attachment.name = "agemu-\(index)-\(sanitizedScreenshotName(shot.name))"
                 attachment.lifetime = .keepAlways
                 add(attachment)
             } else if action.inspect != nil {
@@ -76,12 +187,9 @@ final class AgentRunner: XCTestCase {
             } else if action.stopVideoRecording != nil {
                 try recordingRequest("/stop")
             } else {
-                XCTFail("Action \(index) has no supported operation")
+                return "action has no supported operation"
             }
-        }
-
-        let output = try JSONEncoder().encode(Result(completed: plan.actions.count, bundleId: plan.bundleId, trees: trees))
-        print("AGEMU_RESULT:\(output.base64EncodedString())")
+            return nil
     }
 
     private func recordingRequest(_ path: String) throws {

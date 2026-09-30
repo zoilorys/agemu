@@ -6,6 +6,68 @@ import { resolveExpoBundleId, setup } from '../../src/commands/setup.js';
 import type { ProcessResult } from '../../src/process/run-process.js';
 
 const result = (stdout: string): ProcessResult => ({ stdout, stderr: '', exitCode: 0, signal: null, startedAt: '', durationMs: 1 });
+const phone = { udid: 'PHONE', name: 'iPhone', runtime: 'iOS-18-0', state: 'Booted', isAvailable: true };
+
+const settings = JSON.stringify([
+  { target: 'App', action: 'build', buildSettings: { PRODUCT_TYPE: 'com.apple.product-type.application', PRODUCT_BUNDLE_IDENTIFIER: 'com.example.app' } },
+  { target: 'Widget', action: 'build', buildSettings: { PRODUCT_TYPE: 'com.apple.product-type.app-extension', PRODUCT_BUNDLE_IDENTIFIER: 'com.example.app.widget' } },
+  { target: 'AppTests', action: 'build', buildSettings: { PRODUCT_TYPE: 'com.apple.product-type.bundle.unit-test', PRODUCT_BUNDLE_IDENTIFIER: 'com.example.app.AppTests' } },
+  { target: 'Watch', action: 'build', buildSettings: { PRODUCT_TYPE: 'com.apple.product-type.application.watchapp2', PRODUCT_BUNDLE_IDENTIFIER: 'com.example.app.watch' } },
+  { target: 'Unresolved', action: 'build', buildSettings: { PRODUCT_TYPE: 'com.apple.product-type.application', PRODUCT_BUNDLE_IDENTIFIER: '$(UNSET)' } },
+]);
+
+const xcodebuild = (calls: string[][]) => async (executable: string, args: string[]): Promise<ProcessResult> => {
+  expect(executable).toBe('xcodebuild');
+  calls.push(args);
+  if (args.includes('-list')) return result(JSON.stringify({ project: { schemes: ['App'] } }));
+  return result(settings);
+};
+
+describe('Xcode setup discovery', () => {
+  it('selects only the application target bundle ID', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-native-'));
+    try {
+      await mkdir(path.join(root, 'App.xcodeproj'));
+      const calls: string[][] = [];
+      await setup(root, false, false, { listDevices: async () => [phone], run: xcodebuild(calls) });
+      const config = JSON.parse(await readFile(path.join(root, '.agemu.json'), 'utf8'));
+      expect(config.app).toMatchObject({ type: 'native', project: 'App.xcodeproj', scheme: 'App', bundleId: 'com.example.app' });
+      expect(config.app.port).toBeUndefined();
+      expect(calls[1]).toContain('-json');
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('writes the requested port for React Native', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-rn-'));
+    try {
+      await writeFile(path.join(root, 'package.json'), JSON.stringify({ dependencies: { 'react-native': '*' } }));
+      await mkdir(path.join(root, 'ios/App.xcodeproj'), { recursive: true });
+      await setup(root, false, false, { listDevices: async () => [phone], run: xcodebuild([]), port: 8082 });
+      const config = JSON.parse(await readFile(path.join(root, '.agemu.json'), 'utf8'));
+      expect(config.app).toMatchObject({ type: 'react-native', port: 8082, bundleId: 'com.example.app' });
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('rejects --port for native projects without writing config', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-native-port-'));
+    try {
+      await mkdir(path.join(root, 'App.xcodeproj'));
+      await expect(setup(root, false, false, { listDevices: async () => [phone], run: xcodebuild([]), port: 8082 }))
+        .rejects.toMatchObject({ code: 'COMMAND_INVALID' });
+      await expect(access(path.join(root, '.agemu.json'))).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('reports non-JSON build settings', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-native-text-'));
+    try {
+      await mkdir(path.join(root, 'App.xcodeproj'));
+      const run = async (_executable: string, args: string[]) => result(args.includes('-list') ? JSON.stringify({ project: { schemes: ['App'] } }) : 'PRODUCT_BUNDLE_IDENTIFIER = com.example.app');
+      await expect(setup(root, false, false, { listDevices: async () => [phone], run }))
+        .rejects.toMatchObject({ code: 'PROCESS_FAILED', message: 'xcodebuild did not return JSON build settings' });
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+});
 
 describe('Expo setup discovery', () => {
   it('selects the only booted Simulator during noninteractive setup', async () => {
@@ -46,6 +108,16 @@ describe('Expo setup discovery', () => {
         installedExpoGoHosts: async () => { throw new Error('host lookup must not run'); },
       });
       expect(output.config.app).toMatchObject({ launchTarget: 'development-build', bundleId: 'com.example.dev' });
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('writes the requested Metro port', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-expo-port-'));
+    try {
+      await writeFile(path.join(root, 'package.json'), JSON.stringify({ dependencies: { expo: '*' } }));
+      await writeFile(path.join(root, 'app.json'), JSON.stringify({ expo: { ios: { bundleIdentifier: 'com.example.dev' } } }));
+      await setup(root, false, false, { listDevices: async () => [phone], port: 19000 });
+      expect(JSON.parse(await readFile(path.join(root, '.agemu.json'), 'utf8')).app.port).toBe(19000);
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 

@@ -4,15 +4,17 @@ import path from 'node:path';
 import { loadConfig, nativeApp, type LoadedConfig } from '../config/config.js';
 import { listDevices, resolveDevice, type Device } from '../native/simctl.js';
 import { requireExpoGoHost } from '../native/expo-go.js';
-import { runProcess, type ProcessResult } from '../process/run-process.js';
+import { runProcess, type ProcessResult, type RunOptions } from '../process/run-process.js';
+import { CliError } from '../core/errors.js';
 
-export type Check = { ok: boolean; message: string };
+export type Check = { ok: boolean; message: string; advisory?: boolean };
 export type DoctorResult = { ready: boolean; checks: Record<string, Check> };
+type Run = (executable: string, args: string[], options?: RunOptions) => Promise<ProcessResult>;
 type Dependencies = {
   root?: string;
   nodeVersion?: string;
   loadConfig?: (root: string) => Promise<LoadedConfig>;
-  run?: (executable: string, args: string[]) => Promise<ProcessResult>;
+  run?: Run;
   listDevices?: () => Promise<Device[]>;
   resolveDevice?: typeof resolveDevice;
   canWrite?: (directory: string) => Promise<void>;
@@ -22,6 +24,36 @@ const message = (error: unknown) => error instanceof Error ? error.message : Str
 const passed = (result: ProcessResult, fallback: string): Check => result.exitCode === 0
   ? { ok: true, message: 'available' }
   : { ok: false, message: result.stderr || fallback };
+const errorCode = (error: unknown) => error instanceof CliError ? error.code : undefined;
+
+async function deviceChecks(run: Run, device: Device, checks: Record<string, Check>) {
+  checks.simulatorBooted = device.state === 'Booted'
+    ? { ok: true, message: 'booted', advisory: true }
+    : { ok: false, message: 'run agemu simulator boot', advisory: true };
+  try {
+    const result = await run('idb', ['list-targets', '--json'], { timeoutMs: 8000 });
+    checks.idb = result.exitCode !== 0
+      ? { ok: false, message: result.stderr.trim() || `idb list-targets exited with ${result.exitCode}`, advisory: true }
+      : result.stdout.includes(device.udid)
+        ? { ok: true, message: 'available', advisory: true }
+        : { ok: false, message: 'installed but the selected Simulator is not listed', advisory: true };
+  } catch (error) {
+    checks.idb = { ok: false, message: errorCode(error) === 'TOOL_NOT_FOUND' ? 'not installed; UI plans use XCTest' : message(error), advisory: true };
+  }
+}
+
+async function gitignoreCheck(run: Run, root: string): Promise<Check> {
+  try {
+    const result = await run('git', ['check-ignore', '-q', '.agemu/probe'], { cwd: root });
+    if (result.exitCode === 0) return { ok: true, message: '.agemu/ is ignored', advisory: true };
+    if (result.exitCode === 1) return { ok: false, message: 'add .agemu/ to .gitignore', advisory: true };
+    if (result.exitCode === 128) return { ok: true, message: 'not a git repository', advisory: true };
+    return { ok: false, message: result.stderr || 'git check-ignore failed', advisory: true };
+  } catch (error) {
+    if (errorCode(error) === 'TOOL_NOT_FOUND') return { ok: true, message: 'not a git repository', advisory: true };
+    return { ok: false, message: message(error), advisory: true };
+  }
+}
 
 export async function doctor(dependencies: Dependencies = {}): Promise<DoctorResult> {
   const root = dependencies.root ?? process.cwd();
@@ -82,6 +114,7 @@ export async function doctor(dependencies: Dependencies = {}): Promise<DoctorRes
         try { await requireExpoGoHost(device.udid, app.hostBundleId); checks.expoGo = { ok: true, message: 'installed' }; }
         catch (error) { checks.expoGo = { ok: false, message: message(error) }; }
       }
+      await deviceChecks(run, device, checks);
     } catch (error) { checks.simulator = { ok: false, message: message(error) }; }
   } else {
     const app = nativeApp(config);
@@ -96,19 +129,26 @@ export async function doctor(dependencies: Dependencies = {}): Promise<DoctorRes
       await access(source, constants.F_OK);
       checks.project = { ok: true, message: path.relative(root, source) || '.' };
     } catch (error) { checks.project = { ok: false, message: message(error) }; }
+    let device: Device | undefined;
     try {
-      const arguments_ = [app.project ? '-project' : '-workspace', source, '-scheme', app.scheme, '-configuration', app.configuration, '-showBuildSettings'];
-      checks.scheme = passed(await run('xcodebuild', arguments_), `Scheme ${app.scheme} failed validation`);
-    } catch (error) { checks.scheme = { ok: false, message: message(error) }; }
-    try {
-      selectDevice(await devices(), config.simulator);
+      device = selectDevice(await devices(), config.simulator);
       checks.simulator = { ok: true, message: 'resolved' };
     } catch (error) { checks.simulator = { ok: false, message: message(error) }; }
+    try {
+      const arguments_ = [app.project ? '-project' : '-workspace', source, '-scheme', app.scheme, '-configuration', app.configuration];
+      if (device) arguments_.push('-destination', `platform=iOS Simulator,id=${device.udid}`);
+      arguments_.push('-showBuildSettings');
+      checks.scheme = passed(await run('xcodebuild', arguments_, { timeoutMs: 60_000 }), `Scheme ${app.scheme} failed validation`);
+    } catch (error) {
+      checks.scheme = { ok: false, message: errorCode(error) === 'PROCESS_TIMEOUT' ? 'xcodebuild -showBuildSettings timed out after 60 s' : message(error) };
+    }
+    if (device) await deviceChecks(run, device, checks);
   }
+  checks.gitignore = await gitignoreCheck(run, root);
   try {
     await canWrite(root);
     checks.stateDirectory = { ok: true, message: '.agemu/ can be created' };
   } catch (error) { checks.stateDirectory = { ok: false, message: message(error) }; }
-  const ready = Object.values(checks).every((check) => check.ok);
+  const ready = Object.values(checks).filter((check) => !check.advisory).every((check) => check.ok);
   return { ready, checks };
 }
