@@ -25,7 +25,7 @@ export const commandSpecs: Record<string, CommandSpec> = {
   simulator: { subcommands: { list: {}, boot: selector, shutdown: selector } },
   build: { flags: { timeout: single } },
   server: { subcommands: { start: {}, status: {}, stop: {} } },
-  app: { subcommands: { install: {}, launch: launchOptions, terminate: {}, restart: launchOptions, 'open-url': { url: single } } },
+  app: { subcommands: { install: {}, launch: launchOptions, terminate: {}, restart: launchOptions, 'open-url': { url: single }, uninstall: { yes: boolean } } },
   observe: { flags: {} },
   logs: { subcommands: { show: logOptions } },
   diagnose: { flags: logOptions },

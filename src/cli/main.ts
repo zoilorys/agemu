@@ -4,12 +4,13 @@ import path from 'node:path';
 import { errorResult, writeResult, type Result } from '../core/output.js';
 import { redact } from '../core/redact.js';
 import { CliError } from '../core/errors.js';
-import { loadConfig, type LoadedConfig } from '../config/config.js';
+import { loadConfig, targetBundleId, type LoadedConfig } from '../config/config.js';
 import { appendEvent, redactValue } from '../artifacts/runs.js';
 import { doctor } from '../doctor/doctor.js';
 import { bootDevice, listDevices, resolveDevice, shutdownDevice } from '../native/simctl.js';
 import { buildApp } from '../commands/build.js';
-import { controlApp, type AppAction } from '../commands/app.js';
+import { controlApp, requireUninstallable, type AppAction } from '../commands/app.js';
+import { requireYes } from '../native/simctl-commands.js';
 import { diagnose, observe, showLogs } from '../commands/diagnostics.js';
 import { buildUiRunner, runUiPlan } from '../commands/ui.js';
 import { clean } from '../commands/clean.js';
@@ -48,7 +49,7 @@ const nonEmpty =(parsed: ParsedArgs, name: string, code: 'COMMAND_INVALID' | 'UI
 
 // Commands whose invocations are recorded here; observe, logs show, and diagnose record their own events.
 const recorded = new Set([
-  'build', 'app install', 'app launch', 'app terminate', 'app restart', 'app open-url',
+  'build', 'app install', 'app launch', 'app terminate', 'app restart', 'app open-url', 'app uninstall',
   'server start', 'server status', 'server stop', 'simulator boot', 'simulator shutdown', 'ui build-runner', 'ui run', 'clean',
 ]);
 const durationUnits: Record<string, number> = { s: 1_000, m: 60_000, h: 3_600_000, d: 86_400_000 };
@@ -171,6 +172,12 @@ try {
       data = await withConfig(key, (config) => buildApp(config, { timeoutMs }));
     } else if (command === 'server') {
       data = await withConfig(key, (config) => server(config, subcommand as 'start' | 'status' | 'stop'));
+    } else if (command === 'app' && subcommand === 'uninstall') {
+      data = await withConfig(key, async (config) => {
+        requireUninstallable(config);
+        requireYes(parsed.flags.has('yes'), `This removes ${targetBundleId(config)} and its data from Simulator ${config.simulator.udid ?? config.simulator.name}`);
+        return controlApp(config, 'uninstall');
+      });
     } else if (command === 'app') {
       data = await withConfig(key, (config) => controlApp(config, subcommand as AppAction, {
         arguments: values(parsed, 'arg'),

@@ -36,7 +36,12 @@ agemu app restart [--arg=VALUE ...] [--env=KEY=VALUE ...]
   Stop and launch the app with optional launch arguments and environment values.
 
 agemu app open-url --url=URL
-  Open a URL on the selected simulator.`,
+  Open a URL on the selected simulator.
+
+agemu app uninstall --yes
+  Remove the configured app and all of its data from the selected booted Simulator.
+  Without --yes nothing is removed. An app that is not installed reports alreadyUninstalled: true.
+  Expo Go projects are refused because the host is shared. Build state is kept for "app install".`,
   observe: `agemu observe
   Capture a simulator screenshot under .agemu/runs/ and return its path.`,
   logs: `agemu logs show [--last=30s] [--level=default] [--limit=100]
@@ -92,6 +97,7 @@ Commands:
   app terminate        Stop the configured app.
   app restart          Stop and relaunch the app.
   app open-url         Open a URL in Simulator.
+  app uninstall        Remove the app and its data (requires --yes).
   observe              Capture a simulator screenshot.
   logs show            Read recent app logs.
   diagnose             Collect debugging evidence.

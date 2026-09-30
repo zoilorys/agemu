@@ -118,6 +118,52 @@ describe('app command', () => {
     expect(fixture.calls[1]?.options?.env?.SIMCTL_CHILD_VALUE).toBe('a=b c');
   });
 
+  describe('uninstall', () => {
+    const device = (state: string) => async () => [{ udid: 'PHONE', name: 'Phone', runtime: 'iOS-18-0', state, isAvailable: true }];
+
+    it('refuses a Shutdown Simulator without invoking simctl', async () => {
+      const fixture = fake();
+      await expect(controlApp(config, 'uninstall', {}, { ...fixture.dependencies, listDevices: device('Shutdown') })).rejects.toMatchObject({
+        code: 'SIMULATOR_NOT_BOOTED', message: 'Simulator Phone (PHONE) is not booted; run agemu simulator boot',
+      });
+      expect(fixture.calls).toEqual([]);
+    });
+
+    it('uninstalls the configured bundle from the booted Simulator', async () => {
+      const fixture = fake();
+      await expect(controlApp(config, 'uninstall', {}, { ...fixture.dependencies, listDevices: device('Booted') }))
+        .resolves.toEqual({ action: 'uninstall', udid: 'PHONE', bundleId: 'com.example.app' });
+      expect(fixture.calls.map((call) => call.args)).toEqual([['uninstall', 'PHONE', 'com.example.app']]);
+    });
+
+    it('reports an app that is not installed as already uninstalled', async () => {
+      const fixture = fake([{ ...ok(), stderr: 'Failed to uninstall: app is not installed', exitCode: 1 }]);
+      await expect(controlApp(config, 'uninstall', {}, { ...fixture.dependencies, listDevices: device('Booted') }))
+        .resolves.toMatchObject({ action: 'uninstall', alreadyUninstalled: true });
+    });
+
+    it('does not mistake a missing file for an uninstalled app', async () => {
+      const fixture = fake([{ ...ok(), stderr: 'No such file or directory', exitCode: 1 }]);
+      await expect(controlApp(config, 'uninstall', {}, { ...fixture.dependencies, listDevices: device('Booted') }))
+        .rejects.toMatchObject({ code: 'PROCESS_FAILED', message: 'No such file or directory' });
+    });
+
+    it('reports other uninstall failures redacted with the attempted command', async () => {
+      const fixture = fake([{ ...ok(), stderr: 'denied top-secret', exitCode: 2 }]);
+      await expect(controlApp(config, 'uninstall', {}, { ...fixture.dependencies, listDevices: device('Booted') })).rejects.toMatchObject({
+        code: 'PROCESS_FAILED', message: 'denied [REDACTED]', details: { command: ['xcrun', 'simctl', 'uninstall', 'PHONE', 'com.example.app'], exitCode: 2 },
+      });
+    });
+
+    it('refuses Expo Go because it would remove the shared host', async () => {
+      const expo = { ...config, app: { type: 'expo' as const, root: '/repo', port: 8081, launchTarget: 'expo-go' as const, hostBundleId: 'host.exp.Exponent' } };
+      const fixture = fake();
+      await expect(controlApp(expo, 'uninstall', {}, { ...fixture.dependencies, listDevices: device('Booted') }))
+        .rejects.toMatchObject({ code: 'WORKFLOW_UNSUPPORTED' });
+      expect(fixture.calls).toEqual([]);
+    });
+  });
+
   it('rejects malformed launch environment entries before invoking simctl', async () => {
     const fixture = fake();
     await expect(controlApp(config, 'launch', { environment: ['NOT-VALID=value'] }, fixture.dependencies)).rejects.toMatchObject({
