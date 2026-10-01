@@ -51,11 +51,19 @@ agemu logs stream --duration=DURATION [--until=REGEX] [--level=default] [--limit
   --duration is required: a number followed by s or m, from 1s to 10m. Stopping adds up to 3 s.
   --until is a JavaScript regular expression tested against each redacted line; no match is not an error (matched: false).
   log stream needs 1-2 s to start; begin the capture before triggering the behavior. The full capture is saved to .agemu/runs/.
-  Example: agemu logs stream --duration=20s --until='Login succeeded'`,
+  Example: agemu logs stream --duration=20s --until='Login succeeded'
+
+agemu logs js --duration=DURATION [--until=REGEX] [--limit=100]
+  Capture in-app JavaScript console messages (console.log, info, warn, error) of a React Native or Expo app through the running Metro/Expo server, then return one JSON response.
+  Requires agemu server start and the app loaded on the configured Simulator. Messages logged before the command starts are filtered out.
+  --duration is required: a number followed by s or m, from 1s to 10m.
+  --until is a JavaScript regular expression tested against each redacted message text; no match is not an error (matched: false). Messages are saved to .agemu/runs/<run>/js-console.jsonl.
+  Tested alongside a second inspector client, not with the React Native DevTools frontend; refuses targets that would disconnect an existing debugger. Sends no code to the app, but while connected Hermes may run getters or Proxy traps of logged objects to build previews.
+  Example: agemu logs js --duration=20s --until='Login failed'`,
   diagnose: `agemu diagnose [--last=30s | --since=launch|DURATION] [--level=default] [--limit=100]
   Collect Simulator, build or Expo Go host, screenshot, log, crash report, and recent error evidence.
   By default logs and crash reports start at the latest matching agemu launch; without one, logs use --last (30s) and crash reports the last hour. The result's window reports the start and source.
-  React Native and Expo add server output and bundling errors; in-app JavaScript console and DevTools are not captured. Saved server output may be stale.
+  React Native and Expo add server output and bundling errors; use "logs js" for in-app JavaScript console output. Saved server output may be stale.
   Log options have the same meaning as in "logs show". Partial results report failures.`,
   crashes: `agemu crashes list [--since=24h|launch] [--limit=10]
   Return summaries of recent Simulator crash reports for the configured app (exception, termination, message when the report has one, faulting-thread frames with source file/line)
@@ -108,6 +116,7 @@ Commands:
   observe              Capture a simulator screenshot.
   logs show            Read recent app logs.
   logs stream          Capture live app logs for a bounded time.
+  logs js              Capture JavaScript console messages for a bounded time.
   diagnose             Collect debugging evidence.
   crashes list         List recent app crash reports.
   ui build-runner      Build the XCTest UI runner.

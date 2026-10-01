@@ -27,7 +27,7 @@ export const commandSpecs: Record<string, CommandSpec> = {
   server: { subcommands: { start: {}, status: {}, stop: {} } },
   app: { subcommands: { install: {}, launch: launchOptions, terminate: {}, restart: launchOptions, 'open-url': { url: single } } },
   observe: { flags: {} },
-  logs: { subcommands: { show: logOptions, stream: { duration: single, until: single, level: single, limit: single } } },
+  logs: { subcommands: { show: logOptions, stream: { duration: single, until: single, level: single, limit: single }, js: { duration: single, until: single, limit: single } } },
   diagnose: { flags: logOptions },
   crashes: { subcommands: { list: { since: single, limit: single } } },
   ui: { subcommands: { 'build-runner': { timeout: single }, run: { plan: single, 'plan-json': single, backend: single, timeout: single } } },

@@ -13,9 +13,9 @@ const udid = process.env.AGEMU_NATIVE_SIMULATOR_UDID;
 const enabled = process.env.AGEMU_NATIVE === '1' && Boolean(udid);
 const root = path.join(repository, '.agemu', 'diagnostics-evidence', udid ?? 'unset');
 
-function run(args: string[]): Promise<CliResult> {
+function run(args: string[], cwd = root): Promise<CliResult> {
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [cli, ...args], { cwd: root, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(process.execPath, [cli, ...args], { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '';
     let stderr = '';
     child.stdout.setEncoding('utf8').on('data', (chunk) => { stdout += chunk; });
@@ -151,4 +151,44 @@ describe.skipIf(!enabled)('diagnostics evidence on Simulator', () => {
     expect(await run(['logs', 'stream', '--duration=11m'])).toMatchObject({ ok: false, error: { code: 'COMMAND_INVALID' } });
     expect(await run(['logs', 'stream', '--duration=5s', '--until=('])).toMatchObject({ ok: false, error: { code: 'COMMAND_INVALID' } });
   }, 60_000);
+});
+
+// The sample (prototype findings) logs `agemu-js-probe`, `agemu-js-probe-warn`, and `agemu-js-probe-error` every 2 s.
+// Uses the sample's own .agemu.json (port and Simulator); the Simulator must be booted with Expo Go installed.
+const jsSample = process.env.AGEMU_JS_SAMPLE;
+
+describe.skipIf(!jsSample)('logs js on the Expo sample', () => {
+  let startedServer = false;
+
+  afterAll(async () => {
+    if (!startedServer) return;
+    const stopped = await run(['server', 'stop'], jsSample);
+    if (!stopped.ok) console.error(`server cleanup failed: ${stopped.error.message}`);
+  }, 60_000);
+
+  test('captures log, warn, and error and stops on --until', async () => {
+    const started = data(await run(['server', 'start'], jsSample), 'server start');
+    startedServer = started.reused === false;
+    // app restart avoids the "Open in Expo Go?" alert that app launch can hit (findings P5).
+    data(await run(['app', 'restart'], jsSample), 'app restart');
+
+    type Message = { level: string; text: string };
+    const capture = async () => {
+      // Poll until the bundle has loaded and the JavaScript target exists.
+      const deadline = Date.now() + 90_000;
+      for (;;) {
+        const result = await run(['logs', 'js', '--duration=20s', '--until=agemu-js-probe-error'], jsSample);
+        if (result.ok || !/No JavaScript target/.test(result.error.message) || Date.now() > deadline) return data(result, 'logs js');
+        await new Promise((resolve) => setTimeout(resolve, 2_000));
+      }
+    };
+    const levels = (result: Record<string, unknown>) => new Set((result.messages as Message[]).map((message) => message.level));
+    let result = await capture();
+    // A capture starting between one tick's log and error sees the error first; the next capture starts on a fresh tick.
+    if (!['log', 'warn', 'error'].every((level) => levels(result).has(level))) result = await capture();
+    expect(result).toMatchObject({ matched: true, stoppedBy: 'until', matchedMessage: expect.stringContaining('agemu-js-probe-error') });
+    expect([...levels(result)]).toEqual(expect.arrayContaining(['log', 'warn', 'error']));
+    expect((result.messages as Message[]).some((message) => message.text.includes('unsupported debugging client'))).toBe(false);
+    await access(path.join(jsSample!, result.artifact as string));
+  }, 240_000);
 });

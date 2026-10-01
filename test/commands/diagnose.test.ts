@@ -28,7 +28,7 @@ describe('diagnose command', () => {
         readEvents: async () => '', crashDirectory: path.join(root, 'no-crash-reports'),
         runner: async () => ({ stdout: 'native log', stderr: '', exitCode: 0, signal: null, startedAt: '', durationMs: 1 }),
       });
-      expect(result.evidence.server).toMatchObject({ outputRelation: 'saved log; current server association unverified', bundlingErrors: ['Bundling failed: [REDACTED]'] });
+      expect(result.evidence.server).toMatchObject({ consoleCoverage: expect.stringContaining('agemu logs js'), outputRelation: 'saved log; current server association unverified', bundlingErrors: ['Bundling failed: [REDACTED]'] });
       expect(result.evidence.logs).toMatchObject({ logs: ['native log'] });
       if (failure) expect(result.failures.server).toMatchObject({ message: failure });
       else expect(result.failures).not.toHaveProperty('server');

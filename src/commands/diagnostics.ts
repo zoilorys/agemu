@@ -269,7 +269,7 @@ export async function diagnose(config: LoadedConfig, options: LogOptions = {}, d
     })) };
   } catch (error) { failures.crashes = failure(error, secrets); }
   if (config.app.type !== 'native') {
-    const serverEvidence: Record<string, unknown> = { source: 'Metro/Expo server', consoleCoverage: 'Server output and bundling errors only; in-app JavaScript console and React Native DevTools are not captured' };
+    const serverEvidence: Record<string, unknown> = { source: 'Metro/Expo server', consoleCoverage: 'Server output and bundling errors only; capture in-app JavaScript console output with agemu logs js --duration=30s' };
     evidence.server = serverEvidence;
     try {
       const status = await (dependencies.serverStatus ?? server)(config, 'status');

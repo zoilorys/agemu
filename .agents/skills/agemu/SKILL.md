@@ -16,4 +16,6 @@ Use the installed `agemu` CLI from the app root.
 
 After a crash or unexpected exit, run `agemu crashes list --since=launch`; to wait for a log line, use `agemu logs stream --duration=30s --until=<regex>` instead of sleeping.
 
+For React Native or Expo JavaScript console output (`console.log`, `warn`, `error`), run `agemu logs js --duration=30s --until=<regex>` while the server is running and the app is loaded; it returns only messages logged during the capture.
+
 Keep one run ID in launch arguments, environment, and notes when a task needs correlation. `agemu server status` reports readiness and ownership; resolve any port collision before launch. For Expo, `app launch` requires a running project server and opens its URL in the configured development build or Expo Go host.

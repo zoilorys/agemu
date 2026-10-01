@@ -4,6 +4,7 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { writeLaunchMarker } from '../../src/artifacts/launch-marker.js';
 import { showLogs, streamLogs } from '../../src/commands/diagnostics.js';
+import { captureJsLogs } from '../../src/commands/js-logs.js';
 import type { AppState } from '../../src/commands/build.js';
 import type { LoadedConfig } from '../../src/config/config.js';
 import type { Device } from '../../src/native/simctl.js';
@@ -159,6 +160,97 @@ describe('logs show command', () => {
           resolveDevice: async () => ({ ...device, state: 'Shutdown' }), readState: async () => state, stream: streamOf([], calls),
         })).rejects.toMatchObject({ code: 'PROCESS_FAILED', message: expect.stringContaining('not booted') });
         expect(calls).toEqual([]);
+      } finally { await rm(root, { recursive: true, force: true }); }
+    });
+  });
+
+  describe('logs js', () => {
+    type Listener = (event: { data?: unknown; code?: number; reason?: string }) => void;
+    const target = {
+      id: '17f540a5ab9120967d2ea29496a25014754d71fe-1', title: 'host.exp.Exponent (iPhone)', description: 'React Native Bridgeless [C++ connection]',
+      appId: 'host.exp.Exponent', deviceName: 'iPhone', webSocketDebuggerUrl: 'ws://127.0.0.1:8093/inspector/debug?device=17f540a5ab9120967d2ea29496a25014754d71fe&page=1',
+      reactNative: { capabilities: { supportsMultipleDebuggers: true } },
+    };
+    const goConfig = (root: string): LoadedConfig => ({ ...config(root), app: { type: 'expo', root, port: 8093, launchTarget: 'expo-go', hostBundleId: 'host.exp.Exponent' } });
+    // A socket that opens and then delivers the given CDP frames, as Metro's inspector proxy does.
+    const socketOf = (frames: string[], sent: string[] = []) => () => {
+      const listeners = new Map<string, Listener[]>();
+      setTimeout(() => {
+        for (const listener of listeners.get('open') ?? []) listener({});
+        for (const data of frames) for (const listener of listeners.get('message') ?? []) listener({ data });
+      }, 0);
+      return { addEventListener: (type: string, listener: Listener) => { listeners.set(type, [...(listeners.get(type) ?? []), listener]); }, send: (data: string) => { sent.push(data); }, close: () => {} };
+    };
+    const consoleFrame = (type: string, timestamp: number, value: string) => JSON.stringify({ method: 'Runtime.consoleAPICalled', params: {
+      type, timestamp, args: [{ type: 'string', value }], stackTrace: { callFrames: [{ functionName: 'login', url: 'http://127.0.0.1:8093/secret-value.bundle', lineNumber: 3, columnNumber: 7 }] },
+    } });
+    const dependencies = (frames: string[], start: number) => ({
+      clock: () => start, now: () => new Date(start), serverStatus: async () => ({ running: true }), resolveDevice: async () => device,
+      fetch: async () => ({ ok: true, status: 200, json: async () => [target] }), WebSocketImpl: socketOf(frames),
+    });
+
+    it('redacts console text before --until matching and in the response and artifact', async () => {
+      const root = await mkdtemp(path.join(tmpdir(), 'agemu-js-'));
+      const start = Date.now();
+      const frames = [
+        consoleFrame('log', start - 5_000, 'replayed before start'),
+        consoleFrame('log', start + 1, 'token secret-value issued'),
+        consoleFrame('warning', start + 2, 'login secret-value failed'),
+        consoleFrame('error', start + 3, 'never read'),
+      ];
+      try {
+        // 'secret-value' alone must not match: matching sees only redacted text.
+        const result = await captureJsLogs(goConfig(root), { duration: '10s', until: 'secret-value|\\[REDACTED\\] failed' }, dependencies(frames, start));
+        const stack = 'login http://127.0.0.1:8093/[REDACTED].bundle:3:7';
+        expect(result).toMatchObject({
+          bundleId: 'host.exp.Exponent', port: 8093, target: { id: target.id, title: target.title }, duration: '10s',
+          stoppedBy: 'until', matched: true, matchedMessage: 'login [REDACTED] failed', truncated: false,
+          messages: [
+            { level: 'log', text: 'token [REDACTED] issued', timestamp: new Date(start + 1).toISOString(), stack },
+            { level: 'warn', text: 'login [REDACTED] failed', timestamp: new Date(start + 2).toISOString(), stack },
+          ],
+        });
+        expect(JSON.stringify(result)).not.toContain('secret-value');
+        expect(result.artifact).toMatch(/js-console\.jsonl$/);
+        const artifact = await readFile(path.join(root, result.artifact), 'utf8');
+        expect(artifact.trim().split('\n').map((line) => JSON.parse(line) as unknown)).toEqual(result.messages);
+        const events = await readFile(path.join(root, '.agemu', 'events.jsonl'), 'utf8');
+        expect(events).toContain('"command":"logs js"');
+        expect(events).not.toContain('secret-value');
+      } finally { await rm(root, { recursive: true, force: true }); }
+    });
+
+    it('records a redacted error event with run and artifact when no JavaScript target exists', async () => {
+      const root = await mkdtemp(path.join(tmpdir(), 'agemu-js-'));
+      const secretConfig: LoadedConfig = { ...goConfig(root), redactions: ['Exponent'] };
+      try {
+        const failure = await captureJsLogs(secretConfig, { duration: '5s' }, { ...dependencies([], Date.now()), fetch: async () => ({ ok: true, status: 200, json: async () => [] }) })
+          .then(() => undefined, (error: unknown) => error as { code: string; message: string; details: { run: string; artifact: string } });
+        expect(failure).toMatchObject({ code: 'PROCESS_FAILED', message: 'No JavaScript target for host.exp.[REDACTED] on iPhone; launch the app with agemu app launch and wait for it to load' });
+        expect(failure!.details.artifact).toMatch(/js-console\.jsonl$/);
+        await readFile(path.join(root, failure!.details.artifact), 'utf8');
+        const events = (await readFile(path.join(root, '.agemu', 'events.jsonl'), 'utf8')).trim().split('\n').map((line) => JSON.parse(line) as Record<string, unknown>);
+        expect(events).toContainEqual(expect.objectContaining({
+          command: 'logs js', status: 'error', error: { code: 'PROCESS_FAILED', message: failure!.message }, details: expect.objectContaining({ run: failure!.details.run }),
+        }));
+        expect(JSON.stringify(events)).not.toContain('Exponent');
+      } finally { await rm(root, { recursive: true, force: true }); }
+    });
+
+    it('rejects native apps, a stopped server, and invalid options before contacting Metro', async () => {
+      const root = await mkdtemp(path.join(tmpdir(), 'agemu-js-'));
+      const fetched: string[] = [];
+      const base = { ...dependencies([], Date.now()), fetch: async (url: string) => { fetched.push(url); return { ok: true, status: 200, json: async () => [target] }; } };
+      try {
+        await expect(captureJsLogs(config(root), { duration: '5s' }, base)).rejects.toMatchObject({ code: 'WORKFLOW_UNSUPPORTED' });
+        await expect(captureJsLogs(goConfig(root), { duration: '5s' }, { ...base, serverStatus: async () => ({ running: false }) }))
+          .rejects.toMatchObject({ code: 'PROCESS_FAILED', message: 'Metro/Expo server is not running for this project; run agemu server start' });
+        await expect(captureJsLogs(goConfig(root), { duration: '5s' }, { ...base, serverStatus: async () => ({ running: true, collision: true }) }))
+          .rejects.toMatchObject({ code: 'PROCESS_FAILED', message: expect.stringContaining('run agemu server start') });
+        for (const options of [{}, { duration: '11m' }, { duration: '0s' }, { duration: '5s', until: '(' }, { duration: '5s', limit: 10_001 }]) {
+          await expect(captureJsLogs(goConfig(root), options, base)).rejects.toMatchObject({ code: 'COMMAND_INVALID' });
+        }
+        expect(fetched).toEqual([]);
       } finally { await rm(root, { recursive: true, force: true }); }
     });
   });

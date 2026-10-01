@@ -11,6 +11,7 @@ import { bootDevice, listDevices, resolveDevice, shutdownDevice } from '../nativ
 import { buildApp } from '../commands/build.js';
 import { controlApp, type AppAction } from '../commands/app.js';
 import { diagnose, observe, showLogs, streamLogs } from '../commands/diagnostics.js';
+import { captureJsLogs } from '../commands/js-logs.js';
 import { buildUiRunner, runUiPlan } from '../commands/ui.js';
 import { clean } from '../commands/clean.js';
 import { listCrashes } from '../commands/crashes.js';
@@ -182,6 +183,9 @@ try {
     } else if (command === 'logs' && subcommand === 'stream') {
       const options = { duration: value(parsed, 'duration'), until: value(parsed, 'until'), level: value(parsed, 'level'), limit: limitOption(parsed) };
       data = await streamLogs(await configured(), options);
+    } else if (command === 'logs' && subcommand === 'js') {
+      const options = { duration: value(parsed, 'duration'), until: value(parsed, 'until'), limit: limitOption(parsed) };
+      data = await captureJsLogs(await configured(), options);
     } else if (command === 'logs') {
       const options = { last: value(parsed, 'last'), since: value(parsed, 'since'), level: value(parsed, 'level'), limit: limitOption(parsed) };
       data = await showLogs(await configured(), options);
