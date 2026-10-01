@@ -22,6 +22,7 @@
 - `doctor` adds advisory checks (booted Simulator, idb, `.agemu/` ignored) that do not affect `ready`.
 - `doctor` now checks the scheme against the selected Simulator with a 60 s timeout, so `ready` can be false where it was true before.
 - New `agemu clean` command.
+- New Simulator control commands: `privacy`, `push`, `location`, `app uninstall`, and `simulator ui|status-bar|add-media|create|delete|erase`. See [Control the Simulator](#control-the-simulator).
 
 ## Requirements
 
@@ -244,6 +245,69 @@ Targets accept an accessibility `identifier` or an exact `label`. The `tap` and 
 Assertions take a target with exactly one of `identifier` or `label`. `assertVisible` passes only when the element is on screen and hittable; `assertExists` passes when the element is in the accessibility tree, even off screen; `assertNotVisible` passes when the element is absent or not on screen; `assertValue` compares the element's accessibility value with `value`. Plans are validated completely before any Simulator interaction: unknown actions, unknown fields, and missing targets or text fail with `UI_VALIDATION_FAILED`.
 
 The bundled XCTest runner needs no macOS Accessibility or Screen Recording permission. XCTest runs save an `.xcresult` bundle and `xcodebuild.log` under `.agemu/runs/`. Its build is reused until runner sources change; `runnerCached` reports whether the run used that build. `idb` runs save `idb.log` and any requested screenshots there.
+
+## Control the Simulator
+
+These commands set up Simulator state for tests and screenshots. Most need `.agemu.json` and a booted Simulator. `simulator create` and `simulator delete` need no config, and `simulator erase` shuts a booted Simulator down first. Destructive commands do nothing without `--yes`.
+
+### Appearance and status bar
+
+```sh
+agemu simulator ui --appearance=dark --content-size=extra-large --increase-contrast=enabled
+agemu simulator status-bar --preset=clean
+agemu simulator status-bar --clear
+```
+
+`simulator ui` applies the options you pass, then returns the values read back (`appearance`, `contentSize`, `increaseContrast`). Values from older runtimes, such as `unsupported`, are returned as-is. `simulator status-bar --preset=clean` sets 9:41, full Wi-Fi and cellular bars, an empty operator name, and a charged battery at 100%. Explicit options (`--time`, `--data-network`, `--wifi-mode`, `--wifi-bars`, `--cellular-mode`, `--cellular-bars`, `--operator-name`, `--battery-state`, `--battery-level`) override preset values. The result lists the active `overrides` lines from simctl, or `[]` after `--clear`. Both commands accept `--udid=ID` or `--name=NAME [--runtime=RUNTIME]`.
+
+### Photos, videos, and contacts
+
+```sh
+agemu simulator add-media --file=photo.jpg --file=contact.vcf
+```
+
+Imports `.jpg`, `.jpeg`, `.png`, `.heic`, `.gif`, `.mov`, `.mp4`, `.m4v`, and `.vcf` files. Missing files or other types fail before anything is imported. Imported media stays on the Simulator; there is no removal command.
+
+### Permissions
+
+```sh
+agemu privacy grant --service=photos
+agemu privacy revoke --service=location
+agemu privacy reset --service=all --all-apps
+```
+
+Changes the configured app's permission for a service, so you can skip tapping permission prompts. `reset --all-apps` resets every app. The change may terminate the running app, so relaunch it afterwards. The current permission state cannot be read back.
+
+### Push notifications
+
+```sh
+agemu push --payload-json='{"aps":{"alert":"Hello"}}'
+agemu push --payload=push.json
+```
+
+Delivers a simulated remote notification to the configured app. The payload must be a JSON object with an `aps` object, at most 4096 bytes. Delivery is not confirmed. The payload is saved as `.agemu/runs/<run>/push.json` (mode 0600) and is not redacted, so keep secrets out of it.
+
+### Location
+
+```sh
+agemu location set --coordinate=37.3349,-122.0090
+agemu location list
+agemu location run --scenario="City Run"
+agemu location clear
+```
+
+Location is device-wide, not per app. `list` returns the scenario names simctl offers; `run` starts one. The current location cannot be read back. Waypoint routes and speed are not supported.
+
+### Manage Simulators and the app
+
+```sh
+agemu simulator create --name=Review --device-type="iPhone SE (3rd generation)"
+agemu simulator erase --yes
+agemu simulator delete --udid=UDID --yes
+agemu app uninstall --yes
+```
+
+`simulator create` returns the new Simulator. `simulator erase` shuts a booted Simulator down first and wipes its content and settings, so installed apps are removed: run `agemu app install` again. Without `.agemu.json`, `erase` needs `--udid`. `simulator delete` permanently removes the Simulator and its data, and always needs an explicit `--udid`; it never infers the device. `app uninstall` removes the configured app and its data; an app that is not installed reports `alreadyUninstalled: true`, and Expo Go projects are refused because the host is shared. Without `--yes`, none of these change anything.
 
 ## Clean up
 
