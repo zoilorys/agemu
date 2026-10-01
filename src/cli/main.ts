@@ -14,6 +14,7 @@ import { requireYes } from '../native/simctl-commands.js';
 import { privacy, type PrivacyAction } from '../commands/privacy.js';
 import { push } from '../commands/push.js';
 import { location, type LocationAction } from '../commands/location.js';
+import { simulatorUi, statusBar } from '../commands/simulator-settings.js';
 import { diagnose, observe, showLogs } from '../commands/diagnostics.js';
 import { buildUiRunner, runUiPlan } from '../commands/ui.js';
 import { clean } from '../commands/clean.js';
@@ -55,7 +56,7 @@ const recorded = new Set([
   'build', 'app install', 'app launch', 'app terminate', 'app restart', 'app open-url', 'app uninstall',
   'privacy grant', 'privacy revoke', 'privacy reset', 'push',
   'location set', 'location clear', 'location run',
-  'server start', 'server status', 'server stop', 'simulator boot', 'simulator shutdown', 'ui build-runner', 'ui run', 'clean',
+  'server start', 'server status', 'server stop', 'simulator boot', 'simulator shutdown', 'simulator ui', 'simulator status-bar', 'ui build-runner', 'ui run', 'clean',
 ]);
 const durationUnits: Record<string, number> = { s: 1_000, m: 60_000, h: 3_600_000, d: 86_400_000 };
 const summaryKeys = ['run', 'udid', 'bundleId', 'backend', 'action'];
@@ -151,6 +152,20 @@ try {
               ? { name: explicitName, ...(explicitRuntime ? { runtime: explicitRuntime } : {}) }
               : config.simulator;
         const device = resolveDevice(await listDevices(), selector);
+        const secretValues = config.redactions ?? [];
+        if (subcommand === 'ui') {
+          return simulatorUi(device, {
+            appearance: value(parsed, 'appearance'), contentSize: value(parsed, 'content-size'), increaseContrast: value(parsed, 'increase-contrast'),
+          }, secretValues);
+        }
+        if (subcommand === 'status-bar') {
+          return statusBar(device, {
+            clear: parsed.flags.has('clear'), preset: value(parsed, 'preset'), time: value(parsed, 'time'),
+            dataNetwork: value(parsed, 'data-network'), wifiMode: value(parsed, 'wifi-mode'), wifiBars: value(parsed, 'wifi-bars'),
+            cellularMode: value(parsed, 'cellular-mode'), cellularBars: value(parsed, 'cellular-bars'), operatorName: value(parsed, 'operator-name'),
+            batteryState: value(parsed, 'battery-state'), batteryLevel: value(parsed, 'battery-level'),
+          }, secretValues);
+        }
         const action = subcommand === 'boot' ? 'boot' : 'shutdown';
         const controlled = action === 'boot' ? await bootDevice(device) : await shutdownDevice(device);
         return { action, device: controlled };

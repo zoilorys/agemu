@@ -17,7 +17,21 @@ const commands: Record<string, string> = {
 agemu simulator boot [--udid=ID | --name=NAME [--runtime=RUNTIME]]
 agemu simulator shutdown [--udid=ID | --name=NAME [--runtime=RUNTIME]]
   Boot or shut down a simulator. A configured UDID takes precedence over --name;
-  --udid overrides the configured selection.`,
+  --udid overrides the configured selection.
+
+agemu simulator ui [--appearance=light|dark] [--content-size=SIZE] [--increase-contrast=enabled|disabled] [selector]
+  Set any given options on the booted simulator, then return the current appearance, contentSize, and increaseContrast.
+  SIZE: increment, decrement, extra-small, small, medium, large, extra-large, extra-extra-large, extra-extra-extra-large,
+  accessibility-medium, accessibility-large, accessibility-extra-large, accessibility-extra-extra-large, accessibility-extra-extra-extra-large.
+  Values read from older runtimes (for example, unsupported) are returned as-is.
+
+agemu simulator status-bar (--clear | [--preset=clean] [override options]) [selector]
+  Override or clear the booted simulator's status bar, then return the active override lines (empty after --clear).
+  --preset=clean: time 9:41, Wi-Fi active 3 bars, cellular active 4 bars, empty operator name, battery charged 100.
+  Explicit options override preset values: --time=TEXT, --data-network=hide|wifi|3g|4g|lte|lte-a|lte+|5g|5g+|5g-uwb|5g-uc,
+  --wifi-mode=searching|failed|active, --wifi-bars=0-3, --cellular-mode=notSupported|searching|failed|active, --cellular-bars=0-4,
+  --operator-name=TEXT (may be empty), --battery-state=charging|charged|discharging, --battery-level=0-100.
+  [selector] is --udid=ID | --name=NAME [--runtime=RUNTIME], as for boot.`,
   build: `agemu build [--timeout=SECONDS]
   Build native, bare React Native, or Expo development apps for the selected Simulator.
   --timeout limits the whole build (default 1800 s, 1 to 86400); a timeout fails with PROCESS_TIMEOUT and keeps the log.
@@ -109,6 +123,8 @@ Commands:
   simulator list       List available simulators.
   simulator boot       Boot the selected simulator.
   simulator shutdown   Shut down the selected simulator.
+  simulator ui         Read or set appearance, content size, and contrast.
+  simulator status-bar Override or clear the status bar.
   build                Build the configured iOS app.
   server start         Start or reuse this project's Metro or Expo server.
   server status        Inspect server readiness and ownership.

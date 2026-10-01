@@ -22,7 +22,14 @@ const launchOptions = { arg: repeat, env: repeat };
 export const commandSpecs: Record<string, CommandSpec> = {
   setup: { flags: { 'expo-go': boolean, udid: single, port: single } },
   config: { subcommands: { show: {} } },
-  simulator: { subcommands: { list: {}, boot: selector, shutdown: selector } },
+  simulator: { subcommands: {
+    list: {}, boot: selector, shutdown: selector,
+    ui: { ...selector, appearance: single, 'content-size': single, 'increase-contrast': single },
+    'status-bar': {
+      ...selector, clear: boolean, preset: single, time: single, 'data-network': single, 'wifi-mode': single, 'wifi-bars': single,
+      'cellular-mode': single, 'cellular-bars': single, 'operator-name': single, 'battery-state': single, 'battery-level': single,
+    },
+  } },
   build: { flags: { timeout: single } },
   server: { subcommands: { start: {}, status: {}, stop: {} } },
   app: { subcommands: { install: {}, launch: launchOptions, terminate: {}, restart: launchOptions, 'open-url': { url: single }, uninstall: { yes: boolean } } },

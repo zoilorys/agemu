@@ -113,6 +113,25 @@ describe.skipIf(!enabled)('simulator control on a real Simulator', () => {
     }
   }, 120_000);
 
+  test('simulator ui appearance round-trips dark then light', async (context) => {
+    ready(context);
+    try {
+      expect(data(await run(root, ['simulator', 'ui', '--appearance=dark']), 'simulator ui dark')).toMatchObject({ udid, appearance: 'dark' });
+    } finally {
+      expect(data(await run(root, ['simulator', 'ui', '--appearance=light']), 'simulator ui light')).toMatchObject({ udid, appearance: 'light' });
+    }
+  }, 120_000);
+
+  test('simulator status-bar clean preset then clear reflect each state', async (context) => {
+    ready(context);
+    try {
+      const clean = data(await run(root, ['simulator', 'status-bar', '--preset=clean']), 'status-bar clean');
+      expect(clean.overrides).toEqual(expect.arrayContaining(['Time: 09:41', expect.stringContaining('Battery Level: 100')]));
+    } finally {
+      expect(data(await run(root, ['simulator', 'status-bar', '--clear']), 'status-bar clear')).toEqual({ udid, overrides: [] });
+    }
+  }, 120_000);
+
   test('push delivers a payload to the fixture app and saves it as evidence', async (context) => {
     ready(context);
     const input = '{"aps":{"alert":"agemu"}}';
