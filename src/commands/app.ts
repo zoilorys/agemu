@@ -1,6 +1,7 @@
 import { access, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { networkInterfaces } from 'node:os';
+import { writeLaunchMarker } from '../artifacts/launch-marker.js';
 import { requireExpoGoHost } from '../native/expo-go.js';
 import { targetBundleId, type LoadedConfig } from '../config/config.js';
 import { CliError } from '../core/errors.js';
@@ -65,9 +66,11 @@ export async function controlApp(config: LoadedConfig, action: AppAction, option
   if (expoGo) await requireExpoGoHost(udid, bundleId, runner);
   const configuration = config.app.type === 'expo' ? 'Debug' : config.app.configuration;
   const terminate = () => checked(runner, ['terminate', udid, bundleId], secrets, true);
-  const launch = () => checked(runner, [
-    'launch', udid, bundleId, ...(options.arguments ?? []),
-  ], secrets, false, { env: launchEnvironment(options.environment ?? []) });
+  const launch = async () => {
+    const env = launchEnvironment(options.environment ?? []);
+    await writeLaunchMarker(config.root, { at: new Date(), udid, bundleId, source: `app ${action}` });
+    await checked(runner, ['launch', udid, bundleId, ...(options.arguments ?? [])], secrets, false, { env });
+  };
 
   if (action === 'install') {
     if (expoGo) throw new CliError('WORKFLOW_UNSUPPORTED', 'Expo Go uses an existing installed host; install Expo Go on the selected Simulator');

@@ -9,8 +9,10 @@ import { redact } from '../core/redact.js';
 import { findCrashReports, type CrashSummary } from '../native/crash-reports.js';
 import { installedExpoGoHost } from '../native/expo-go.js';
 import { listDevices, resolveDevice, simctl, type Device, type SimctlRunner } from '../native/simctl.js';
+import { resolveSince } from './since.js';
 
-export type CrashOptions = { sinceMs?: number; limit?: number };
+/** `since` is `launch` or a duration such as `2h`; without it, `sinceMs` (default 24 h) counts back from now. */
+export type CrashOptions = { since?: string; sinceMs?: number; limit?: number };
 export type CrashDependencies = {
   directory?: string;
   now?: () => Date;
@@ -41,8 +43,12 @@ export async function listCrashes(config: LoadedConfig, options: CrashOptions = 
   if (!Number.isSafeInteger(sinceMs) || sinceMs < 0) throw new CliError('COMMAND_INVALID', '--since must be a number followed by s, m, h, or d');
   if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new CliError('COMMAND_INVALID', '--limit must be an integer from 1 to 100');
   const now = dependencies.now?.() ?? new Date();
-  const since = new Date(now.getTime() - sinceMs);
   const bundleId = targetBundleId(config);
+  const udid = options.since === 'launch'
+    ? (dependencies.resolveDevice ? await dependencies.resolveDevice(config) : resolveDevice(await listDevices(), config.simulator)).udid
+    : undefined;
+  const window = await resolveSince(options.since, config.root, now, sinceMs, { bundleId, udid });
+  const since = window.start;
   const [run, executable] = await Promise.all([createRun(config.root, now), executableName(config, dependencies)]);
   const found = await findCrashReports({ directory: dependencies.directory ?? defaultCrashDirectory(), since, bundleId, executableName: executable, limit });
   const directory = path.join(run.directory, 'crashes');

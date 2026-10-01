@@ -1,12 +1,20 @@
-import { describe, expect, it } from 'vitest';
+import { mkdtempSync } from 'node:fs';
+import { rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { afterAll, describe, expect, it } from 'vitest';
+import { readLaunchMarker } from '../../src/artifacts/launch-marker.js';
 import { controlApp } from '../../src/commands/app.js';
 import type { AppState } from '../../src/commands/build.js';
 import type { LoadedConfig } from '../../src/config/config.js';
 import type { ProcessResult, RunOptions } from '../../src/process/run-process.js';
 
+// Launches record .agemu/launch.json under the project root.
+const root = mkdtempSync(path.join(tmpdir(), 'agemu-app-'));
+afterAll(() => rm(root, { recursive: true, force: true }));
 const config: LoadedConfig = {
   version: 2 as const, platform: 'ios' as const, app: { type: 'native' as const, project: '/repo/App.xcodeproj', scheme: 'App', configuration: 'Debug', bundleId: 'com.example.app' },
-  simulator: { udid: 'PHONE' }, redactions: ['top-secret'], root: '/repo',
+  simulator: { udid: 'PHONE' }, redactions: ['top-secret'], root,
 };
 const state: AppState = { appPath: '/products/App.app', bundleId: 'com.example.app', executableName: 'AppExecutable', udid: 'PHONE', configuration: 'Debug', updatedAt: '' };
 const ok = (): ProcessResult => ({ stdout: '', stderr: '', exitCode: 0, signal: null, startedAt: '', durationMs: 0 });
@@ -116,6 +124,37 @@ describe('app command', () => {
     await controlApp(config, 'restart', { environment: ['VALUE=a=b c'] }, fixture.dependencies);
     expect(fixture.calls[1]?.args).toEqual(['launch', 'PHONE', 'com.example.app']);
     expect(fixture.calls[1]?.options?.env?.SIMCTL_CHILD_VALUE).toBe('a=b c');
+  });
+
+  it('records each launch and restart before issuing it, and nothing for other actions', async () => {
+    const markerRoot = mkdtempSync(path.join(tmpdir(), 'agemu-app-marker-'));
+    const scoped = { ...config, root: markerRoot };
+    try {
+      const fixture = fake();
+      await controlApp(scoped, 'terminate', {}, fixture.dependencies);
+      await controlApp(scoped, 'install', {}, fixture.dependencies);
+      expect(await readLaunchMarker(markerRoot)).toBeUndefined();
+
+      const before = Date.now();
+      await controlApp(scoped, 'launch', {}, fixture.dependencies);
+      const launched = await readLaunchMarker(markerRoot);
+      expect(launched).toMatchObject({ udid: 'PHONE', bundleId: 'com.example.app', source: 'app launch' });
+      expect(Date.parse(launched!.at)).toBeGreaterThanOrEqual(before);
+
+      let markerAtLaunch: Awaited<ReturnType<typeof readLaunchMarker>>;
+      const failing = fake();
+      failing.dependencies.runner = async (args: string[]) => {
+        if (args[0] === 'launch') {
+          markerAtLaunch = await readLaunchMarker(markerRoot);
+          return { ...ok(), stderr: 'launch failed', exitCode: 1 };
+        }
+        return ok();
+      };
+      // A failed launch still marks the attempt, which is where its diagnosis starts.
+      await expect(controlApp(scoped, 'restart', {}, failing.dependencies)).rejects.toMatchObject({ code: 'PROCESS_FAILED' });
+      expect(markerAtLaunch!).toMatchObject({ source: 'app restart' });
+      expect(await readLaunchMarker(markerRoot)).toMatchObject({ source: 'app restart' });
+    } finally { await rm(markerRoot, { recursive: true, force: true }); }
   });
 
   it('rejects malformed launch environment entries before invoking simctl', async () => {

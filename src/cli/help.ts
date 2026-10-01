@@ -39,19 +39,21 @@ agemu app open-url --url=URL
   Open a URL on the selected simulator.`,
   observe: `agemu observe
   Capture a simulator screenshot under .agemu/runs/ and return its path.`,
-  logs: `agemu logs show [--last=30s] [--level=default] [--limit=100]
+  logs: `agemu logs show [--last=30s | --since=launch|DURATION] [--level=default] [--limit=100]
   Return Simulator logs for the built app or Expo Go host and save the full output to .agemu/runs/.
   --last accepts a number followed by s, m, h, or d (for example, 1m).
+  --since=launch starts at the latest agemu launch (app launch, app restart, or a ui run plan with launch) of the configured app on the configured Simulator; it also accepts a duration. Do not combine --since with --last.
   --level accepts default, info, debug, error, or fault.
   --limit accepts an integer from 0 to 10000; it limits returned lines.`,
-  diagnose: `agemu diagnose [--last=30s] [--level=default] [--limit=100]
-  Collect Simulator, build or Expo Go host, screenshot, log, crash report (last hour), and recent error evidence.
+  diagnose: `agemu diagnose [--last=30s | --since=launch|DURATION] [--level=default] [--limit=100]
+  Collect Simulator, build or Expo Go host, screenshot, log, crash report, and recent error evidence.
+  By default logs and crash reports start at the latest matching agemu launch; without one, logs use --last (30s) and crash reports the last hour. The result's window reports the start and source.
   React Native and Expo add server output and bundling errors; in-app JavaScript console and DevTools are not captured. Saved server output may be stale.
   Log options have the same meaning as in "logs show". Partial results report failures.`,
-  crashes: `agemu crashes list [--since=24h] [--limit=10]
+  crashes: `agemu crashes list [--since=24h|launch] [--limit=10]
   Return summaries of recent Simulator crash reports for the configured app (exception, termination, message when the report has one, faulting-thread frames with source file/line)
   and save redacted copies under .agemu/runs/<run>/crashes/. Reports are matched by bundle ID, or by executable name when a report has none.
-  --since accepts a number followed by s, m, h, or d. --limit accepts an integer from 1 to 100. Reports are not symbolicated.`,
+  --since accepts a number followed by s, m, h, or d, or launch for the latest agemu launch of the configured app. --limit accepts an integer from 1 to 100. Reports are not symbolicated.`,
   ui: `agemu ui build-runner [--timeout=SECONDS]
   Build the bundled XCTest runner for the selected simulator. --timeout defaults to 900 s.
 

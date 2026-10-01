@@ -16,7 +16,7 @@ const boolean: FlagSpec = { kind: 'boolean' };
 const single: FlagSpec = { kind: 'value' };
 const repeat: FlagSpec = { kind: 'repeat' };
 const selector = { udid: single, name: single, runtime: single };
-const logOptions = { last: single, level: single, limit: single };
+const logOptions = { last: single, since: single, level: single, limit: single };
 const launchOptions = { arg: repeat, env: repeat };
 
 export const commandSpecs: Record<string, CommandSpec> = {

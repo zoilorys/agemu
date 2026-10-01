@@ -93,7 +93,33 @@ describe.skipIf(!enabled)('diagnostics evidence on Simulator', () => {
     }));
     await access(path.join(root, crash.file));
 
+    // The crash launch is the latest agemu launch, so the launch window holds that crash alone.
+    const sinceLaunch = data(await run(['crashes', 'list', '--since=launch', '--limit=100']), 'crashes list --since=launch');
+    expect((sinceLaunch.crashes as typeof crashes).map((item) => item.incidentId)).toEqual([crash.incidentId]);
+
     const invalid = await run(['crashes', 'list', '--since=abc']);
     expect(invalid).toMatchObject({ ok: false, error: { code: 'COMMAND_INVALID' } });
+  }, 180_000);
+
+  test('scopes logs to the latest agemu launch', async () => {
+    const earlier = `earlier-${Date.now()}`;
+    const latest = `latest-${Date.now()}`;
+    data(await run(['app', 'restart', `--env=AGEMU_NATIVE_RUN_ID=${earlier}`]), 'app restart (earlier)');
+    // Ensure the earlier line falls in an earlier second than the next launch; log show --start has second precision.
+    await new Promise((resolve) => setTimeout(resolve, 3_000));
+    data(await run(['app', 'restart', `--env=AGEMU_NATIVE_RUN_ID=${latest}`]), 'app restart (latest)');
+
+    let logs: string[] = [];
+    const deadline = Date.now() + 30_000;
+    while (Date.now() < deadline) {
+      logs = data(await run(['logs', 'show', '--since=launch', '--limit=10000']), 'logs show --since=launch').logs as string[];
+      if (logs.some((line) => line.includes(`agemu-native-run:${latest}`))) break;
+      await new Promise((resolve) => setTimeout(resolve, 2_000));
+    }
+    expect(logs.some((line) => line.includes(`agemu-native-run:${latest}`))).toBe(true);
+    expect(logs.some((line) => line.includes(`agemu-native-run:${earlier}`))).toBe(false);
+
+    const conflicting = await run(['logs', 'show', '--since=launch', '--last=1m']);
+    expect(conflicting).toMatchObject({ ok: false, error: { code: 'COMMAND_INVALID' } });
   }, 180_000);
 });

@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { writeLaunchMarker } from '../../src/artifacts/launch-marker.js';
 import { listCrashes } from '../../src/commands/crashes.js';
 import type { LoadedConfig } from '../../src/config/config.js';
 
@@ -34,6 +35,23 @@ describe('crashes list command', () => {
       expect(copied).not.toContain('secret-value');
       expect((await stat(copy)).mode & 0o777).toBe(0o600);
       expect(JSON.stringify(result)).not.toContain('secret-value');
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('returns only crashes after the latest agemu launch with since=launch', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-crashes-launch-'));
+    const reports = path.join(root, 'reports');
+    await mkdir(reports);
+    await writeFile(path.join(reports, 'App-before.ips'), crash('before', '2026-09-30 11:29:59.00 +0000'));
+    await writeFile(path.join(reports, 'App-after.ips'), crash('after', '2026-09-30 11:30:05.00 +0000'));
+    try {
+      await writeLaunchMarker(root, { at: new Date('2026-09-30T11:30:00Z'), udid: 'PHONE', bundleId: 'com.example.app', source: 'app launch' });
+      const result = await listCrashes(configFor(root), { since: 'launch' }, {
+        directory: reports, now: () => now, readState: async () => { throw new Error('not built'); },
+        resolveDevice: async () => ({ udid: 'PHONE', name: 'iPhone', runtime: 'iOS-18-0', state: 'Booted', isAvailable: true }),
+      });
+      expect(result.since).toBe('2026-09-30T11:30:00.000Z');
+      expect(result.crashes.map((item) => item.incidentId)).toEqual(['after']);
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 

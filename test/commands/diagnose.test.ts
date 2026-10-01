@@ -2,7 +2,9 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { writeLaunchMarker } from '../../src/artifacts/launch-marker.js';
 import { diagnose } from '../../src/commands/diagnostics.js';
+import { localTimestamp } from '../../src/commands/since.js';
 import type { AppState } from '../../src/commands/build.js';
 import type { LoadedConfig } from '../../src/config/config.js';
 import type { Device } from '../../src/native/simctl.js';
@@ -62,6 +64,53 @@ describe('diagnose command', () => {
       expect(result.evidence.crashes).toMatchObject({ bundleId: 'com.example.app', crashes: [], skipped: 0 });
       expect(result.failures).not.toHaveProperty('crashes');
       expect(result.partial).toBe(false);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it.each([
+    {
+      name: 'starts at a matching agemu launch', launched: { udid: 'PHONE', bundleId: 'com.example.app' }, start: '2026-09-30T11:50:00.000Z',
+      window: { logs: { start: '2026-09-30T11:50:00.000Z', source: 'launch' }, crashes: { start: '2026-09-30T11:50:00.000Z', source: 'launch' } },
+      range: ['--start', localTimestamp(new Date('2026-09-30T11:50:00.000Z'))],
+    },
+    {
+      name: 'ignores a launch on another Simulator', launched: { udid: 'TABLET', bundleId: 'com.example.app' }, start: '2026-09-30T11:00:00.000Z',
+      window: { logs: { start: '2026-09-30T11:59:30.000Z', source: 'default', last: '30s' }, crashes: { start: '2026-09-30T11:00:00.000Z', source: 'default' } },
+      range: ['--last', '30s'],
+    },
+    {
+      name: 'uses an explicit --last for logs only', options: { last: '5m' }, launched: { udid: 'PHONE', bundleId: 'com.example.app' }, start: '2026-09-30T11:00:00.000Z',
+      window: { logs: { start: '2026-09-30T11:55:00.000Z', source: 'duration', last: '5m' }, crashes: { start: '2026-09-30T11:00:00.000Z', source: 'default' } },
+      range: ['--last', '5m'],
+    },
+  ])('by default $name', async ({ launched, window, start, range, options }) => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-diagnose-window-'));
+    const config: LoadedConfig = { version: 2, platform: 'ios', app: { type: 'native', project: `${root}/App.xcodeproj`, scheme: 'App', configuration: 'Debug', bundleId: 'com.example.app' }, simulator: { udid: 'PHONE' }, root };
+    const calls: string[][] = [];
+    try {
+      await writeLaunchMarker(root, { at: new Date('2026-09-30T11:50:00.000Z'), source: 'app launch', ...launched });
+      const result = await diagnose(config, options ?? {}, {
+        now: () => new Date('2026-09-30T12:00:00.000Z'),
+        resolveDevice: async () => device, readState: async () => state, readEvents: async () => '',
+        crashDirectory: path.join(root, 'missing'),
+        runner: async (args) => { calls.push(args); return { stdout: '', stderr: '', exitCode: 0, signal: null, startedAt: '', durationMs: 1 }; },
+      });
+      expect(result.window).toEqual(window);
+      expect(result.evidence.crashes).toMatchObject({ since: start });
+      expect(calls.find((args) => args.includes('log'))?.slice(4, 6)).toEqual(range);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('fails an explicit --since=launch without a recorded launch, and --since with --last', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-diagnose-since-'));
+    const config: LoadedConfig = { version: 2, platform: 'ios', app: { type: 'native', project: `${root}/App.xcodeproj`, scheme: 'App', configuration: 'Debug', bundleId: 'com.example.app' }, simulator: { udid: 'PHONE' }, root };
+    const dependencies = {
+      resolveDevice: async () => device, readState: async () => state, readEvents: async () => '', crashDirectory: path.join(root, 'missing'),
+      runner: async () => ({ stdout: '', stderr: '', exitCode: 0, signal: null, startedAt: '', durationMs: 1 }),
+    };
+    try {
+      await expect(diagnose(config, { since: 'launch' }, dependencies)).rejects.toMatchObject({ code: 'COMMAND_INVALID', message: expect.stringContaining('No agemu launch recorded') });
+      await expect(diagnose(config, { since: '5m', last: '1m' }, dependencies)).rejects.toMatchObject({ code: 'COMMAND_INVALID' });
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 

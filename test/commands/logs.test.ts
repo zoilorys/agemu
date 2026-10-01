@@ -2,6 +2,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { writeLaunchMarker } from '../../src/artifacts/launch-marker.js';
 import { showLogs } from '../../src/commands/diagnostics.js';
 import type { AppState } from '../../src/commands/build.js';
 import type { LoadedConfig } from '../../src/config/config.js';
@@ -58,6 +59,41 @@ describe('logs show command', () => {
       });
       expect(result.udid).toBe('[REDACTED]-PHONE');
       expect(JSON.stringify(result)).not.toContain('secret-value');
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('starts at the latest agemu launch in local time with --since=launch', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-logs-'));
+    const calls: string[][] = [];
+    const launchedAt = new Date(2026, 8, 30, 7, 5, 9, 500);
+    try {
+      await writeLaunchMarker(root, { at: launchedAt, udid: 'PHONE', bundleId: 'com.example.app', source: 'app launch' });
+      const result = await showLogs(config(root), { since: 'launch' }, {
+        resolveDevice: async () => device, readState: async () => state,
+        runner: async (args) => {
+          calls.push(args);
+          const stdout = 'Timestamp               Ty Process[PID:TID]\n2026-09-30 07:05:09.200 Df RealExecutable[1:2] before launch\n2026-09-30 07:05:09.600 Df RealExecutable[1:2] after launch\n';
+          return { stdout, stderr: '', exitCode: 0, signal: null, startedAt: '', durationMs: 1 };
+        },
+      });
+      expect(calls[0]).toEqual(['spawn', 'PHONE', 'log', 'show', '--start', expect.stringMatching(/^2026-09-30 07:05:09[+-]\d{4}$/), '--predicate', 'process == "RealExecutable"', '--style', 'compact']);
+      expect(result).toMatchObject({ since: { start: launchedAt.toISOString(), source: 'launch' } });
+      expect(result.logs).toEqual(['Timestamp               Ty Process[PID:TID]', '2026-09-30 07:05:09.600 Df RealExecutable[1:2] after launch']);
+      expect(result).not.toHaveProperty('last');
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('rejects --since with --last and --since=launch without a recorded launch, before querying logs', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-logs-'));
+    const calls: string[][] = [];
+    const dependencies = {
+      resolveDevice: async () => device, readState: async () => state,
+      runner: async (args: string[]) => { calls.push(args); return { stdout: '', stderr: '', exitCode: 0, signal: null, startedAt: '', durationMs: 1 }; },
+    };
+    try {
+      await expect(showLogs(config(root), { since: 'launch', last: '1m' }, dependencies)).rejects.toMatchObject({ code: 'COMMAND_INVALID' });
+      await expect(showLogs(config(root), { since: 'launch' }, dependencies)).rejects.toMatchObject({ code: 'COMMAND_INVALID', message: expect.stringContaining('No agemu launch recorded') });
+      expect(calls).toEqual([]);
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 

@@ -180,18 +180,16 @@ try {
         url: value(parsed, 'url'),
       }));
     } else if (command === 'logs') {
-      const options = { last: value(parsed, 'last'), level: value(parsed, 'level'), limit: limitOption(parsed) };
+      const options = { last: value(parsed, 'last'), since: value(parsed, 'since'), level: value(parsed, 'level'), limit: limitOption(parsed) };
       data = await showLogs(await configured(), options);
     } else if (command === 'diagnose') {
-      const options = { last: value(parsed, 'last'), level: value(parsed, 'level'), limit: limitOption(parsed) };
+      const options = { last: value(parsed, 'last'), since: value(parsed, 'since'), level: value(parsed, 'level'), limit: limitOption(parsed) };
       data = await diagnose(await configured(), options);
     } else if (command === 'crashes') {
       const since = value(parsed, 'since');
-      const sinceMatch = since === undefined ? undefined : /^(\d+)([smhd])$/.exec(since);
-      if (sinceMatch === null) throw new CliError('COMMAND_INVALID', '--since must be a number followed by s, m, h, or d (for example, 24h)');
       const limit = value(parsed, 'limit');
       if (limit !== undefined && !/^\d+$/.test(limit)) throw new CliError('COMMAND_INVALID', '--limit must be an integer from 1 to 100');
-      const options = { sinceMs: sinceMatch ? Number(sinceMatch[1]) * durationUnits[sinceMatch[2]] : undefined, limit: limit === undefined ? undefined : Number(limit) };
+      const options = { since, limit: limit === undefined ? undefined : Number(limit) };
       data = await withConfig(key, (config) => listCrashes(config, options));
     } else if (command === 'clean') {
       const runs = parsed.flags.has('runs');

@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { readLaunchMarker } from '../../src/artifacts/launch-marker.js';
 import { buildUiRunner, injectEnvironment, runUiPlan } from '../../src/commands/ui.js';
 import { CliError } from '../../src/core/errors.js';
 import type { ProcessResult } from '../../src/process/run-process.js';
@@ -35,6 +36,27 @@ describe('XCTest run manifest', () => {
         run: async () => { throw new Error('xcodebuild must not run'); },
       });
       expect(result).toMatchObject({ manifest, cached: true, udid: 'PHONE' });
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+});
+
+describe('UI plan launch marker', () => {
+  it.each([
+    ['records a plan with a launch action before running it', [{ tap: { x: 1, y: 2 } }, { launch: {} }], { udid: 'PHONE', bundleId: 'com.example.app', source: 'ui run' }],
+    ['records nothing for a plan without a launch action', [{ tap: { x: 1, y: 2 } }], undefined],
+  ])('%s', async (_, actions, expected) => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-ui-marker-'));
+    const config = { version: 2 as const, platform: 'ios' as const, app: { type: 'native' as const, project: path.join(root, 'App.xcodeproj'), scheme: 'App', configuration: 'Debug',
+      bundleId: 'com.example.app' }, simulator: { udid: 'PHONE' }, root };
+    const seen: unknown[] = [];
+    try {
+      await expect(runUiPlan(config, { json: JSON.stringify({ version: 1, actions }) }, {
+        backend: 'idb',
+        run: async () => { seen.push(await readLaunchMarker(root)); throw new Error('process unavailable'); },
+      })).rejects.toThrow();
+      expect(seen.length).toBeGreaterThan(0);
+      expect(seen[0]).toEqual(expected === undefined ? undefined : expect.objectContaining(expected));
+      expect(await readLaunchMarker(root)).toEqual(expected === undefined ? undefined : expect.objectContaining(expected));
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 });
