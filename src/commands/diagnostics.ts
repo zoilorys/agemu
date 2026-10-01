@@ -1,3 +1,4 @@
+import { closeSync, openSync, writeSync } from 'node:fs';
 import { mkdir, open, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { appendEvent, createRun, redactValue, type Run } from '../artifacts/runs.js';
@@ -9,6 +10,7 @@ import { installedExpoGoHost } from '../native/expo-go.js';
 import { server } from './server.js';
 import { listCrashes } from './crashes.js';
 import { localTimestamp, loggedBefore, resolveSince, type SinceWindow } from './since.js';
+import { streamLines } from '../process/stream-lines.js';
 import { listDevices, resolveDevice, simctl, type Device, type SimctlRunner } from '../native/simctl.js';
 
 type Dependencies = {
@@ -157,6 +159,81 @@ export async function showLogs(config: LoadedConfig, options: LogOptions = {}, d
     artifact: safeRelative(config.root, artifact, secrets), capturedAt: now.toISOString(),
   };
   await appendEvent(config.root, { at: now.toISOString(), command: 'logs show', status: 'ok', args, data }, secrets);
+  return data;
+}
+
+export type StreamLogOptions = { duration?: string; until?: string; level?: string; limit?: number };
+type StreamDependencies = Dependencies & { stream?: typeof streamLines };
+
+// log stream takes --level info|debug; error and fault narrow the predicate as in log show.
+function streamArguments(level: string, app: Pick<AppState, 'executableName'>): string[] {
+  if (level === 'info' || level === 'debug') return ['--level', level, '--predicate', predicate(app)];
+  return logArguments(level, app);
+}
+
+export async function streamLogs(config: LoadedConfig, options: StreamLogOptions = {}, dependencies: StreamDependencies = {}) {
+  const secrets = config.redactions ?? [];
+  const level = options.level ?? 'default';
+  const limit = options.limit ?? 100;
+  const match = options.duration === undefined ? null : /^(\d+)([sm])$/.exec(options.duration);
+  const durationMs = match ? Number(match[1]) * (match[2] === 'm' ? 60_000 : 1_000) : NaN;
+  if (!(durationMs >= 1_000 && durationMs <= 600_000)) throw new CliError('COMMAND_INVALID', '--duration is required: a number followed by s or m, from 1s to 10m');
+  if (!allowedLevels.has(level)) throw new CliError('COMMAND_INVALID', '--level must be default, info, debug, error, or fault');
+  if (!Number.isSafeInteger(limit) || limit < 0 || limit > 10_000) throw new CliError('COMMAND_INVALID', '--limit must be an integer from 0 to 10000');
+  let until: RegExp | undefined;
+  if (options.until !== undefined) {
+    if (options.until.length === 0) throw new CliError('COMMAND_INVALID', '--until requires a non-empty regular expression');
+    try { until = new RegExp(options.until); }
+    catch (error) { throw new CliError('COMMAND_INVALID', `--until is not a valid regular expression: ${error instanceof Error ? error.message : String(error)}`); }
+  }
+  const { run, now, device } = await runContext(config, dependencies);
+  if (device.state !== 'Booted') throw new CliError('PROCESS_FAILED', `Simulator ${redact(device.udid, secrets)} is not booted; run agemu simulator boot`);
+  const app = config.app.type === 'expo' && config.app.launchTarget === 'expo-go'
+    ? await installedExpoGoHost(device.udid, config.app.hostBundleId, dependencies.runner ?? simctl)
+    : await state(config, dependencies);
+  if (app.bundleId !== targetBundleId(config) || ('udid' in app && app.udid !== device.udid)) throw new CliError('APP_NOT_BUILT', 'Cached app state does not match the configured app and simulator');
+  const artifact = path.join(run.directory, 'logs-stream.txt');
+  const args = ['spawn', device.udid, 'log', 'stream', '--style', 'compact', ...streamArguments(level, app)];
+  // Only the returned tail stays in memory; every line is appended to the artifact as it arrives.
+  const lines: string[] = [];
+  let total = 0;
+  let matchedLine: string | undefined;
+  const fd = openSync(artifact, 'w', 0o600);
+  const base = { run: run.relativeDirectory, udid: redact(device.udid, secrets), bundleId: redact(targetBundleId(config), secrets), duration: options.duration!, level };
+  const recordError = async (error: CliError) => {
+    await appendEvent(config.root, { at: now.toISOString(), command: 'logs stream', status: 'error', args, error: failure(error, secrets), details: error.details }, secrets);
+    return error;
+  };
+  let outcome;
+  try {
+    outcome = await (dependencies.stream ?? streamLines)('xcrun', ['simctl', ...args], {
+      durationMs,
+      onLine: (raw) => {
+        if (total === 0 && raw.startsWith('Filtering the log data using')) return false;
+        const line = redact(raw, secrets);
+        total += 1;
+        writeSync(fd, `${line}\n`);
+        if (limit > 0) { lines.push(line); if (lines.length > limit) lines.shift(); }
+        if (until?.test(line)) { matchedLine = line; return true; }
+        return false;
+      },
+    });
+  } catch (error) {
+    closeSync(fd);
+    const details = { artifact: safeRelative(config.root, artifact, secrets), run: run.relativeDirectory };
+    throw await recordError(new CliError('PROCESS_FAILED', redact(error instanceof Error ? error.message : String(error), secrets), details));
+  }
+  closeSync(fd);
+  const artifactPath = safeRelative(config.root, artifact, secrets);
+  if (outcome.stoppedBy === 'exit' && outcome.exitCode !== 0) {
+    const details = { artifact: artifactPath, run: run.relativeDirectory, exitCode: outcome.exitCode, signal: outcome.signal };
+    throw await recordError(new CliError('PROCESS_FAILED', redact(outcome.stderr.trim() || 'Log streaming exited before the duration elapsed', secrets), details));
+  }
+  const data = {
+    ...base, stoppedBy: outcome.stoppedBy, matched: matchedLine !== undefined, ...(matchedLine !== undefined ? { matchedLine } : {}),
+    logs: lines, truncated: total > limit, artifact: artifactPath, capturedAt: now.toISOString(),
+  };
+  await appendEvent(config.root, { at: now.toISOString(), command: 'logs stream', status: 'ok', args, data: { ...data, logs: undefined } }, secrets);
   return data;
 }
 

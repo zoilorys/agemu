@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { writeLaunchMarker } from '../../src/artifacts/launch-marker.js';
-import { showLogs } from '../../src/commands/diagnostics.js';
+import { showLogs, streamLogs } from '../../src/commands/diagnostics.js';
 import type { AppState } from '../../src/commands/build.js';
 import type { LoadedConfig } from '../../src/config/config.js';
 import type { Device } from '../../src/native/simctl.js';
@@ -95,6 +95,72 @@ describe('logs show command', () => {
       await expect(showLogs(config(root), { since: 'launch' }, dependencies)).rejects.toMatchObject({ code: 'COMMAND_INVALID', message: expect.stringContaining('No agemu launch recorded') });
       expect(calls).toEqual([]);
     } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  describe('logs stream', () => {
+    type Call = { executable: string; args: string[] };
+    const streamOf = (lines: string[], calls: Call[], exit = { exitCode: 0 as number | null, stderr: '' }) =>
+      async (executable: string, args: string[], options: { onLine: (line: string) => boolean | void }) => {
+        calls.push({ executable, args });
+        for (const line of lines) if (options.onLine(line) === true) return { stoppedBy: 'until' as const, exitCode: null, signal: 'SIGINT' as const, stderr: '' };
+        return { stoppedBy: exit.exitCode === 0 ? 'duration' as const : 'exit' as const, exitCode: exit.exitCode, signal: null, stderr: exit.stderr };
+      };
+
+    it('redacts lines before matching and saves the redacted capture without the filter banner', async () => {
+      const root = await mkdtemp(path.join(tmpdir(), 'agemu-stream-'));
+      const calls: Call[] = [];
+      const lines = ['Filtering the log data using "process == \\"RealExecutable\\""', 'token secret-value issued', 'Login succeeded for [REDACTED]', 'never read'];
+      try {
+        const result = await streamLogs(config(root), { duration: '30s', until: 'issued|succeeded', level: 'debug' }, {
+          resolveDevice: async () => device, readState: async () => state, stream: streamOf(lines, calls),
+        });
+        expect(calls[0]).toEqual({ executable: 'xcrun', args: ['simctl', 'spawn', 'PHONE', 'log', 'stream', '--style', 'compact', '--level', 'debug', '--predicate', 'process == "RealExecutable"'] });
+        expect(result).toMatchObject({ stoppedBy: 'until', matched: true, matchedLine: 'token [REDACTED] issued', logs: ['token [REDACTED] issued'] });
+        expect(await readFile(path.join(root, result.artifact), 'utf8')).toBe('token [REDACTED] issued\n');
+      } finally { await rm(root, { recursive: true, force: true }); }
+    });
+
+    it('does not match a regex that only the unredacted secret would satisfy', async () => {
+      const root = await mkdtemp(path.join(tmpdir(), 'agemu-stream-'));
+      try {
+        const result = await streamLogs(config(root), { duration: '3s', until: 'secret-value', limit: 1 }, {
+          resolveDevice: async () => device, readState: async () => state, stream: streamOf(['a secret-value', 'b'], []),
+        });
+        expect(result).toMatchObject({ stoppedBy: 'duration', matched: false, logs: ['b'], truncated: true });
+        expect(result).not.toHaveProperty('matchedLine');
+      } finally { await rm(root, { recursive: true, force: true }); }
+    });
+
+    it('fails with PROCESS_FAILED when log stream exits early with an error', async () => {
+      const root = await mkdtemp(path.join(tmpdir(), 'agemu-stream-'));
+      try {
+        await expect(streamLogs(config(root), { duration: '10s' }, {
+          resolveDevice: async () => device, readState: async () => state, stream: streamOf([], [], { exitCode: 1, stderr: 'bad secret-value' }),
+        })).rejects.toMatchObject({ code: 'PROCESS_FAILED', message: 'bad [REDACTED]' });
+      } finally { await rm(root, { recursive: true, force: true }); }
+    });
+
+    it.each([[{}], [{ duration: '11m' }], [{ duration: '0s' }], [{ duration: '5h' }], [{ duration: '5s', until: '(' }]])(
+      'rejects invalid options %j before streaming', async (options) => {
+        const root = await mkdtemp(path.join(tmpdir(), 'agemu-stream-'));
+        const calls: Call[] = [];
+        try {
+          await expect(streamLogs(config(root), options, { resolveDevice: async () => device, readState: async () => state, stream: streamOf([], calls) }))
+            .rejects.toMatchObject({ code: 'COMMAND_INVALID' });
+          expect(calls).toEqual([]);
+        } finally { await rm(root, { recursive: true, force: true }); }
+      });
+
+    it('requires a booted simulator', async () => {
+      const root = await mkdtemp(path.join(tmpdir(), 'agemu-stream-'));
+      const calls: Call[] = [];
+      try {
+        await expect(streamLogs(config(root), { duration: '5s' }, {
+          resolveDevice: async () => ({ ...device, state: 'Shutdown' }), readState: async () => state, stream: streamOf([], calls),
+        })).rejects.toMatchObject({ code: 'PROCESS_FAILED', message: expect.stringContaining('not booted') });
+        expect(calls).toEqual([]);
+      } finally { await rm(root, { recursive: true, force: true }); }
+    });
   });
 
   it.each([

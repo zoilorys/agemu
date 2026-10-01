@@ -122,4 +122,33 @@ describe.skipIf(!enabled)('diagnostics evidence on Simulator', () => {
     const conflicting = await run(['logs', 'show', '--since=launch', '--last=1m']);
     expect(conflicting).toMatchObject({ ok: false, error: { code: 'COMMAND_INVALID' } });
   }, 180_000);
+
+  test('logs stream stops on a live --until match well before the duration', async () => {
+    const id = `stream-${Date.now()}`;
+    const startedAt = Date.now();
+    const streaming = run(['logs', 'stream', '--duration=30s', `--until=agemu-native-run:${id}`]);
+    // log stream needs a moment to attach before the line is emitted.
+    await new Promise((resolve) => setTimeout(resolve, 3_000));
+    const launched = run(['app', 'restart', `--env=AGEMU_NATIVE_RUN_ID=${id}`]);
+    const [streamed, restart] = await Promise.all([streaming, launched]);
+    const elapsed = Date.now() - startedAt;
+    data(restart, 'app restart');
+    const result = data(streamed, 'logs stream');
+    expect(result).toMatchObject({ matched: true, stoppedBy: 'until', matchedLine: expect.stringContaining(`agemu-native-run:${id}`) });
+    expect(elapsed).toBeLessThan(20_000);
+    await access(path.join(root, result.artifact as string));
+  }, 120_000);
+
+  test('logs stream returns after the duration without a match and rejects invalid options', async () => {
+    const startedAt = Date.now();
+    const result = data(await run(['logs', 'stream', '--duration=3s', '--until=agemu-never-matches-[0-9a-f]{40}']), 'logs stream');
+    const elapsed = Date.now() - startedAt;
+    expect(result).toMatchObject({ matched: false, stoppedBy: 'duration' });
+    expect(elapsed).toBeGreaterThanOrEqual(3_000);
+    // Duration plus the 3 s stop grace, plus CLI startup.
+    expect(elapsed).toBeLessThan(10_000);
+
+    expect(await run(['logs', 'stream', '--duration=11m'])).toMatchObject({ ok: false, error: { code: 'COMMAND_INVALID' } });
+    expect(await run(['logs', 'stream', '--duration=5s', '--until=('])).toMatchObject({ ok: false, error: { code: 'COMMAND_INVALID' } });
+  }, 60_000);
 });

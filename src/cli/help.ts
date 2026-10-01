@@ -44,7 +44,14 @@ agemu app open-url --url=URL
   --last accepts a number followed by s, m, h, or d (for example, 1m).
   --since=launch starts at the latest agemu launch (app launch, app restart, or a ui run plan with launch) of the configured app on the configured Simulator; it also accepts a duration. Do not combine --since with --last.
   --level accepts default, info, debug, error, or fault.
-  --limit accepts an integer from 0 to 10000; it limits returned lines.`,
+  --limit accepts an integer from 0 to 10000; it limits returned lines.
+
+agemu logs stream --duration=DURATION [--until=REGEX] [--level=default] [--limit=100]
+  Capture live Simulator logs for the app until --duration elapses or a line matches --until, then return one JSON response.
+  --duration is required: a number followed by s or m, from 1s to 10m. Stopping adds up to 3 s.
+  --until is a JavaScript regular expression tested against each redacted line; no match is not an error (matched: false).
+  log stream needs 1-2 s to start; begin the capture before triggering the behavior. The full capture is saved to .agemu/runs/.
+  Example: agemu logs stream --duration=20s --until='Login succeeded'`,
   diagnose: `agemu diagnose [--last=30s | --since=launch|DURATION] [--level=default] [--limit=100]
   Collect Simulator, build or Expo Go host, screenshot, log, crash report, and recent error evidence.
   By default logs and crash reports start at the latest matching agemu launch; without one, logs use --last (30s) and crash reports the last hour. The result's window reports the start and source.
@@ -100,6 +107,7 @@ Commands:
   app open-url         Open a URL in Simulator.
   observe              Capture a simulator screenshot.
   logs show            Read recent app logs.
+  logs stream          Capture live app logs for a bounded time.
   diagnose             Collect debugging evidence.
   crashes list         List recent app crash reports.
   ui build-runner      Build the XCTest UI runner.
