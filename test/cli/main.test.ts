@@ -506,6 +506,55 @@ if (process.argv[3] === 'list') process.stdout.write(${JSON.stringify(JSON.strin
     }
   });
 
+  it('runs no simctl command for app uninstall without --yes', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-cli-test-'));
+    const calls = path.join(root, 'calls.txt');
+    await writeFile(path.join(root, '.agemu.json'), JSON.stringify({
+      version: 2, platform: 'ios', app: { type: 'native', project: 'App.xcodeproj', scheme: 'App', configuration: 'Debug', bundleId: 'com.example.app' },
+      simulator: { udid: 'PHONE' },
+    }));
+    const devices = { devices: { 'com.apple.CoreSimulator.SimRuntime.iOS-18-0': [{ udid: 'PHONE', name: 'Phone', state: 'Booted', isAvailable: true }] } };
+    await writeFile(path.join(root, 'xcrun'), `#!${process.execPath}
+require('node:fs').appendFileSync(${JSON.stringify(calls)}, process.argv.slice(2).join(' ') + '\\n');
+if (process.argv[3] === 'list') process.stdout.write(${JSON.stringify(JSON.stringify(devices))});
+`);
+    await chmod(path.join(root, 'xcrun'), 0o755);
+    const invoked = () => readFile(calls, 'utf8').catch(() => '');
+    try {
+      const failure = await run(process.execPath, [cli, 'app', 'uninstall'], { cwd: root, env: { PATH: root } })
+        .then(() => undefined, (error: { code: number; stdout: string }) => error);
+      expect(failure?.code).toBe(1);
+      expect(JSON.parse(failure!.stdout).error).toMatchObject({ code: 'COMMAND_INVALID', message: expect.stringContaining('com.example.app') });
+      expect(await invoked()).toBe('');
+      const { stdout } = await run(process.execPath, [cli, 'app', 'uninstall', '--yes'], { cwd: root, env: { PATH: root } });
+      expect(JSON.parse(stdout)).toEqual({ ok: true, data: { action: 'uninstall', udid: 'PHONE', bundleId: 'com.example.app' } });
+      expect(await invoked()).toContain('simctl uninstall PHONE com.example.app');
+      const events = (await readFile(path.join(root, '.agemu', 'events.jsonl'), 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
+      expect(events.map((event) => [event.command, event.status])).toEqual([['app uninstall', 'error'], ['app uninstall', 'ok']]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses app uninstall for Expo Go before the --yes guard and runs no simctl command', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-cli-test-'));
+    const calls = path.join(root, 'calls.txt');
+    await writeFile(path.join(root, '.agemu.json'), JSON.stringify({
+      version: 2, platform: 'ios', app: { type: 'expo', root: '.', port: 8081, launchTarget: 'expo-go', hostBundleId: 'host.exp.Exponent' }, simulator: { udid: 'PHONE' },
+    }));
+    await writeFile(path.join(root, 'xcrun'), `#!${process.execPath}\nrequire('node:fs').appendFileSync(${JSON.stringify(calls)}, process.argv.slice(2).join(' ') + '\\n');\n`);
+    await chmod(path.join(root, 'xcrun'), 0o755);
+    try {
+      const failure = await run(process.execPath, [cli, 'app', 'uninstall'], { cwd: root, env: { PATH: root } })
+        .then(() => undefined, (error: { code: number; stdout: string }) => error);
+      expect(failure?.code).toBe(1);
+      expect(JSON.parse(failure!.stdout).error.code).toBe('WORKFLOW_UNSUPPORTED');
+      expect(await readFile(calls, 'utf8').catch(() => '')).toBe('');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('lists every app subcommand when none is given', async () => {
     const result = await run(process.execPath, [cli, 'app']).then(() => undefined, (error: { code: number; stdout: string }) => error);
     expect(result?.code).toBe(1);

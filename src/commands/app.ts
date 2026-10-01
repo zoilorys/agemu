@@ -5,15 +5,17 @@ import { requireExpoGoHost } from '../native/expo-go.js';
 import { targetBundleId, type LoadedConfig } from '../config/config.js';
 import { CliError } from '../core/errors.js';
 import { redact } from '../core/redact.js';
-import { listDevices, resolveDevice, simctl, type SimctlRunner } from '../native/simctl.js';
+import { listDevices, resolveDevice, simctl, type Device, type SimctlRunner } from '../native/simctl.js';
+import { requireBooted, runSimctl, selectedDevice, simctlFailure } from '../native/simctl-commands.js';
 import type { RunOptions } from '../process/run-process.js';
 import type { AppState } from './build.js';
 import { server } from './server.js';
 
-export type AppAction = 'install' | 'launch' | 'terminate' | 'restart' | 'open-url';
+export type AppAction = 'install' | 'launch' | 'terminate' | 'restart' | 'open-url' | 'uninstall';
 export type AppOptions = { arguments?: string[]; environment?: string[]; url?: string };
 type Dependencies = {
   runner?: SimctlRunner;
+  listDevices?: () => Promise<Device[]>;
   resolveUdid?: (config: LoadedConfig) => Promise<string>;
   readState?: (file: string) => Promise<AppState>;
   appExists?: (file: string) => Promise<void>;
@@ -21,15 +23,32 @@ type Dependencies = {
   resolveExpoUrl?: (port: number) => Promise<string>;
 };
 
-const stopped = (value: string) => /not running|no such process|found nothing to terminate/i.test(value);
-
 async function checked(runner: SimctlRunner, args: string[], secrets: string[], allowStopped = false, options?: RunOptions): Promise<void> {
-  const result = await runner(args, options);
-  if (result.exitCode !== 0 && !(allowStopped && stopped(result.stderr))) {
-    throw new CliError('PROCESS_FAILED', redact(result.stderr.trim() || `simctl ${args[0]} failed`, secrets), {
-      command: ['xcrun', 'simctl', ...args].map((value) => redact(value, secrets)), exitCode: result.exitCode, signal: result.signal,
-    });
+  await runSimctl(args, secrets, { runner }, { allowStopped, run: options });
+}
+
+// Matches simctl's app-missing wording, not generic "No such file or directory".
+const notInstalled = (value: string) => /not installed/i.test(value);
+
+export function requireUninstallable(config: LoadedConfig): void {
+  if (config.app.type === 'expo' && config.app.launchTarget === 'expo-go') {
+    throw new CliError('WORKFLOW_UNSUPPORTED', 'Expo Go projects run inside the shared Expo Go host; agemu will not uninstall the host');
   }
+}
+
+async function uninstall(config: LoadedConfig, dependencies: Dependencies) {
+  requireUninstallable(config);
+  const runner = dependencies.runner ?? simctl;
+  const device = await selectedDevice(config, { runner, listDevices: dependencies.listDevices });
+  requireBooted(device);
+  const bundleId = targetBundleId(config);
+  const secrets = config.redactions ?? [];
+  const result = await runner(['uninstall', device.udid, bundleId]);
+  if (result.exitCode !== 0 && notInstalled(result.stderr)) {
+    return { action: 'uninstall' as const, udid: device.udid, bundleId, alreadyUninstalled: true };
+  }
+  if (result.exitCode !== 0) throw simctlFailure(['uninstall', device.udid, bundleId], result, secrets);
+  return { action: 'uninstall' as const, udid: device.udid, bundleId };
 }
 
 function launchEnvironment(values: string[]): NodeJS.ProcessEnv {
@@ -54,6 +73,7 @@ async function defaultState(file: string, secrets: string[]): Promise<AppState> 
 }
 
 export async function controlApp(config: LoadedConfig, action: AppAction, options: AppOptions = {}, dependencies: Dependencies = {}) {
+  if (action === 'uninstall') return uninstall(config, dependencies);
   const runner = dependencies.runner ?? simctl;
   const udid = await (dependencies.resolveUdid
     ? dependencies.resolveUdid(config)
