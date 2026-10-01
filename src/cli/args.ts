@@ -29,6 +29,7 @@ export const commandSpecs: Record<string, CommandSpec> = {
   observe: { flags: {} },
   logs: { subcommands: { show: logOptions } },
   diagnose: { flags: logOptions },
+  crashes: { subcommands: { list: { since: single, limit: single } } },
   ui: { subcommands: { 'build-runner': { timeout: single }, run: { plan: single, 'plan-json': single, backend: single, timeout: single } } },
   doctor: { flags: {} },
   clean: { flags: { runs: boolean, 'derived-data': boolean, 'older-than': single, 'dry-run': boolean } },

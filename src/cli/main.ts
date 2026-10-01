@@ -13,6 +13,7 @@ import { controlApp, type AppAction } from '../commands/app.js';
 import { diagnose, observe, showLogs } from '../commands/diagnostics.js';
 import { buildUiRunner, runUiPlan } from '../commands/ui.js';
 import { clean } from '../commands/clean.js';
+import { listCrashes } from '../commands/crashes.js';
 import { helpFor } from './help.js';
 import { setup } from '../commands/setup.js';
 import { server } from '../commands/server.js';
@@ -50,6 +51,7 @@ const nonEmpty =(parsed: ParsedArgs, name: string, code: 'COMMAND_INVALID' | 'UI
 const recorded = new Set([
   'build', 'app install', 'app launch', 'app terminate', 'app restart', 'app open-url',
   'server start', 'server status', 'server stop', 'simulator boot', 'simulator shutdown', 'ui build-runner', 'ui run', 'clean',
+  'crashes list',
 ]);
 const durationUnits: Record<string, number> = { s: 1_000, m: 60_000, h: 3_600_000, d: 86_400_000 };
 const summaryKeys = ['run', 'udid', 'bundleId', 'backend', 'action'];
@@ -183,6 +185,14 @@ try {
     } else if (command === 'diagnose') {
       const options = { last: value(parsed, 'last'), level: value(parsed, 'level'), limit: limitOption(parsed) };
       data = await diagnose(await configured(), options);
+    } else if (command === 'crashes') {
+      const since = value(parsed, 'since');
+      const sinceMatch = since === undefined ? undefined : /^(\d+)([smhd])$/.exec(since);
+      if (sinceMatch === null) throw new CliError('COMMAND_INVALID', '--since must be a number followed by s, m, h, or d (for example, 24h)');
+      const limit = value(parsed, 'limit');
+      if (limit !== undefined && !/^\d+$/.test(limit)) throw new CliError('COMMAND_INVALID', '--limit must be an integer from 1 to 100');
+      const options = { sinceMs: sinceMatch ? Number(sinceMatch[1]) * durationUnits[sinceMatch[2]] : undefined, limit: limit === undefined ? undefined : Number(limit) };
+      data = await withConfig(key, (config) => listCrashes(config, options));
     } else if (command === 'clean') {
       const runs = parsed.flags.has('runs');
       const derivedData = parsed.flags.has('derived-data');

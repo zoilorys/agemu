@@ -23,7 +23,7 @@ describe('diagnose command', () => {
         resolveDevice: async () => device, readState: async () => state,
         serverStatus: status,
         readServerOutput: async () => 'Bundling failed: secret-value\n',
-        readEvents: async () => '',
+        readEvents: async () => '', crashDirectory: path.join(root, 'no-crash-reports'),
         runner: async () => ({ stdout: 'native log', stderr: '', exitCode: 0, signal: null, startedAt: '', durationMs: 1 }),
       });
       expect(result.evidence.server).toMatchObject({ outputRelation: 'saved log; current server association unverified', bundlingErrors: ['Bundling failed: [REDACTED]'] });
@@ -42,11 +42,26 @@ describe('diagnose command', () => {
         resolveDevice: async () => device, readState: async () => state,
         serverStatus: async () => ({ running: false, owned: false, port: 8081 }),
         readServerOutput: async () => 'Bundling failed: secret-value in index.js\nerror: Unable to resolve module secret-value\n',
-        readEvents: async () => '',
+        readEvents: async () => '', crashDirectory: path.join(root, 'no-crash-reports'),
         runner: async () => ({ stdout: 'native log', stderr: '', exitCode: 0, signal: null, startedAt: '', durationMs: 1 }),
       });
       expect(result).toMatchObject({ partial: true, evidence: { observation: { bundleId: 'com.example.app' }, logs: { source: 'Simulator unified log', logs: ['native log'] }, server: { status: { running: false }, bundlingErrors: ['Bundling failed: [REDACTED] in index.js', 'error: Unable to resolve module [REDACTED]'] } }, failures: { server: { code: 'PROCESS_FAILED' } } });
       expect(JSON.stringify(result)).not.toContain('secret-value');
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('reports no crashes, not a failure, when the crash reports directory is missing', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-diagnose-crashes-'));
+    const config: LoadedConfig = { version: 2, platform: 'ios', app: { type: 'native', project: `${root}/App.xcodeproj`, scheme: 'App', configuration: 'Debug', bundleId: 'com.example.app' }, simulator: { udid: 'PHONE' }, root };
+    try {
+      const result = await diagnose(config, {}, {
+        resolveDevice: async () => device, readState: async () => state, readEvents: async () => '',
+        crashDirectory: path.join(root, 'missing'),
+        runner: async () => ({ stdout: 'app log', stderr: '', exitCode: 0, signal: null, startedAt: '', durationMs: 1 }),
+      });
+      expect(result.evidence.crashes).toMatchObject({ bundleId: 'com.example.app', crashes: [], skipped: 0 });
+      expect(result.failures).not.toHaveProperty('crashes');
+      expect(result.partial).toBe(false);
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 
@@ -58,6 +73,7 @@ describe('diagnose command', () => {
       const result = await diagnose(config, { limit: 5 }, {
         resolveDevice: async () => device, readState: async () => state,
         readEvents: async () => '{"status":"error","message":"historical secret-value"}\n',
+        crashDirectory: path.join(root, 'no-crash-reports'),
         runner: async () => {
           invocation += 1;
           return invocation === 1

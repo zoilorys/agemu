@@ -7,6 +7,7 @@ import { CliError } from '../core/errors.js';
 import { redact } from '../core/redact.js';
 import { installedExpoGoHost } from '../native/expo-go.js';
 import { server } from './server.js';
+import { listCrashes } from './crashes.js';
 import { listDevices, resolveDevice, simctl, type Device, type SimctlRunner } from '../native/simctl.js';
 
 type Dependencies = {
@@ -17,6 +18,7 @@ type Dependencies = {
   readEvents?: (file: string) => Promise<string>;
   serverStatus?: typeof server;
   readServerOutput?: (file: string) => Promise<string>;
+  crashDirectory?: string;
 };
 export type LogOptions = { last?: string; level?: string; limit?: number };
 
@@ -165,6 +167,12 @@ export async function diagnose(config: LoadedConfig, options: LogOptions = {}, d
   catch (error) { failures.observation = failure(error, secrets); }
   try { evidence.logs = { source: 'Simulator unified log', ...(await showLogs(config, options, { ...dependencies, now: () => now })) }; }
   catch (error) { failures.logs = failure(error, secrets); }
+  try {
+    evidence.crashes = { source: 'Simulator crash reports', ...(await listCrashes(config, { sinceMs: 3_600_000 }, {
+      directory: dependencies.crashDirectory, now: () => now, readState: dependencies.readState,
+      resolveDevice: dependencies.resolveDevice, runner: dependencies.runner,
+    })) };
+  } catch (error) { failures.crashes = failure(error, secrets); }
   if (config.app.type !== 'native') {
     const serverEvidence: Record<string, unknown> = { source: 'Metro/Expo server', consoleCoverage: 'Server output and bundling errors only; in-app JavaScript console and React Native DevTools are not captured' };
     evidence.server = serverEvidence;

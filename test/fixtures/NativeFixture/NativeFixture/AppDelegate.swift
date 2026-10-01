@@ -41,6 +41,10 @@ final class AppDelegate: UIResponder, UIApplicationDelegate, UIScrollViewDelegat
 
         let runID = ProcessInfo.processInfo.environment["AGEMU_NATIVE_RUN_ID"] ?? "missing"
         NSLog("agemu-native-run:%@", runID)
+
+        if ProcessInfo.processInfo.environment["AGEMU_FIXTURE_CRASH"] == "1" {
+            fatalError("agemu fixture crash")
+        }
         return true
     }
 

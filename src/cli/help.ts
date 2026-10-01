@@ -45,9 +45,13 @@ agemu app open-url --url=URL
   --level accepts default, info, debug, error, or fault.
   --limit accepts an integer from 0 to 10000; it limits returned lines.`,
   diagnose: `agemu diagnose [--last=30s] [--level=default] [--limit=100]
-  Collect Simulator, build or Expo Go host, screenshot, log, and recent error evidence.
+  Collect Simulator, build or Expo Go host, screenshot, log, crash report (last hour), and recent error evidence.
   React Native and Expo add server output and bundling errors; in-app JavaScript console and DevTools are not captured. Saved server output may be stale.
   Log options have the same meaning as in "logs show". Partial results report failures.`,
+  crashes: `agemu crashes list [--since=24h] [--limit=10]
+  Return summaries of recent Simulator crash reports for the configured app (exception, termination, message when the report has one, faulting-thread frames with source file/line)
+  and save redacted copies under .agemu/runs/<run>/crashes/. Reports are matched by bundle ID, or by executable name when a report has none.
+  --since accepts a number followed by s, m, h, or d. --limit accepts an integer from 1 to 100. Reports are not symbolicated.`,
   ui: `agemu ui build-runner [--timeout=SECONDS]
   Build the bundled XCTest runner for the selected simulator. --timeout defaults to 900 s.
 
@@ -95,6 +99,7 @@ Commands:
   observe              Capture a simulator screenshot.
   logs show            Read recent app logs.
   diagnose             Collect debugging evidence.
+  crashes list         List recent app crash reports.
   ui build-runner      Build the XCTest UI runner.
   ui run               Execute a JSON UI action plan.
   doctor               Check setup and dependencies.
