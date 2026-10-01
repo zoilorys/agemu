@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { errorResult, writeResult, type Result } from '../core/output.js';
 import { redact } from '../core/redact.js';
@@ -15,6 +15,7 @@ import { privacy, type PrivacyAction } from '../commands/privacy.js';
 import { push } from '../commands/push.js';
 import { location, type LocationAction } from '../commands/location.js';
 import { addMedia, simulatorUi, statusBar } from '../commands/simulator-settings.js';
+import { createSimulator, deleteSimulator, eraseSimulator } from '../commands/simulator-lifecycle.js';
 import { diagnose, observe, showLogs } from '../commands/diagnostics.js';
 import { buildUiRunner, runUiPlan } from '../commands/ui.js';
 import { clean } from '../commands/clean.js';
@@ -56,7 +57,7 @@ const recorded = new Set([
   'build', 'app install', 'app launch', 'app terminate', 'app restart', 'app open-url', 'app uninstall',
   'privacy grant', 'privacy revoke', 'privacy reset', 'push',
   'location set', 'location clear', 'location run',
-  'server start', 'server status', 'server stop', 'simulator boot', 'simulator shutdown', 'simulator ui', 'simulator status-bar', 'simulator add-media', 'ui build-runner', 'ui run', 'clean',
+  'server start', 'server status', 'server stop', 'simulator boot', 'simulator shutdown', 'simulator ui', 'simulator status-bar', 'simulator add-media', 'simulator erase', 'ui build-runner', 'ui run', 'clean',
 ]);
 const durationUnits: Record<string, number> = { s: 1_000, m: 60_000, h: 3_600_000, d: 86_400_000 };
 const summaryKeys = ['run', 'udid', 'bundleId', 'backend', 'action'];
@@ -138,6 +139,15 @@ try {
       data = safe;
     } else if (command === 'simulator' && subcommand === 'list') {
       data = { devices: await listDevices() };
+    } else if (command === 'simulator' && subcommand === 'create') {
+      data = await createSimulator({ name: value(parsed, 'name'), deviceType: value(parsed, 'device-type'), runtime: value(parsed, 'runtime') }, []);
+    } else if (command === 'simulator' && subcommand === 'delete') {
+      // Config is optional: it is read only to warn when the configured Simulator is deleted.
+      const config = await configured().catch(() => undefined);
+      data = await deleteSimulator(nonEmpty(parsed, 'udid', 'COMMAND_INVALID'), parsed.flags.has('yes'), config?.redactions ?? [], {}, config?.simulator.udid);
+    } else if (command === 'simulator' && subcommand === 'erase' && value(parsed, 'udid') && !existsSync(path.join(process.cwd(), '.agemu.json'))) {
+      // Without config, an explicit --udid is the only selector; with config, erase is recorded below.
+      data = await eraseSimulator(resolveDevice(await listDevices(), { udid: value(parsed, 'udid') }), parsed.flags.has('yes'), []);
     } else if (command === 'simulator') {
       const explicitUdid = nonEmpty(parsed, 'udid', 'COMMAND_INVALID');
       const explicitName = nonEmpty(parsed, 'name', 'COMMAND_INVALID');
@@ -167,6 +177,7 @@ try {
           }, secretValues);
         }
         if (subcommand === 'add-media') return addMedia(device, values(parsed, 'file'), secretValues);
+        if (subcommand === 'erase') return eraseSimulator(device, parsed.flags.has('yes'), secretValues);
         const action = subcommand === 'boot' ? 'boot' : 'shutdown';
         const controlled = action === 'boot' ? await bootDevice(device) : await shutdownDevice(device);
         return { action, device: controlled };

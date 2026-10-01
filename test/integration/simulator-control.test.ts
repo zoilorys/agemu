@@ -142,6 +142,32 @@ describe.skipIf(!enabled)('simulator control on a real Simulator', () => {
     expect(data(await run(root, ['simulator', 'add-media', `--file=${png}`]), 'add-media')).toEqual({ udid, added: [png] });
   }, 120_000);
 
+  test('throwaway Simulator is created, erased, guarded against unconfirmed delete, and deleted', async (context) => {
+    ready(context);
+    // No .agemu.json here, so erase cannot fall back to the assigned Simulator.
+    const bare = path.join(repository, '.agemu', 'simulator-lifecycle');
+    await mkdir(bare, { recursive: true });
+    const listed = async () => (data(await run(bare, ['simulator', 'list']), 'simulator list').devices as Array<{ udid: string }>).map((device) => device.udid);
+    const name = `agemu-throwaway-${Math.random().toString(36).slice(2, 10)}`;
+    let created: string | undefined;
+    try {
+      const result = data(await run(bare, ['simulator', 'create', `--name=${name}`, '--device-type=iPhone SE (3rd generation)']), 'simulator create');
+      created = (result.created as { udid: string; name: string }).udid;
+      expect(result.created).toMatchObject({ name, state: 'Shutdown' });
+      if (!created || created === udid) throw new Error(`refusing to act on ${created}: not a new throwaway Simulator`);
+      expect(data(await run(bare, ['simulator', 'erase', `--udid=${created}`, '--yes']), 'simulator erase')).toEqual({ erased: created, udid: created, shutDown: false });
+      expect(await run(bare, ['simulator', 'delete', `--udid=${created}`])).toMatchObject({ ok: false, error: { code: 'COMMAND_INVALID' } });
+      expect(await listed()).toContain(created);
+      expect(data(await run(bare, ['simulator', 'delete', `--udid=${created}`, '--yes']), 'simulator delete')).toEqual({ deleted: created });
+      expect(await listed()).not.toContain(created);
+    } finally {
+      if (created && created !== udid) {
+        const { stdout } = await execFileAsync('xcrun', ['simctl', 'list', 'devices', '--json']);
+        if (stdout.includes(created)) await execFileAsync('xcrun', ['simctl', 'delete', created]);
+      }
+    }
+  }, 300_000);
+
   test('push delivers a payload to the fixture app and saves it as evidence', async (context) => {
     ready(context);
     const input = '{"aps":{"alert":"agemu"}}';

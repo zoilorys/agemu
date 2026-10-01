@@ -36,7 +36,18 @@ agemu simulator status-bar (--clear | [--preset=clean] [override options]) [sele
 agemu simulator add-media --file=PATH [--file=PATH ...] [selector]
   Import photos, videos, live photos, or vCard contacts into the booted simulator. Paths are relative to the current directory.
   Extensions: .jpg .jpeg .png .heic .gif .mov .mp4 .m4v .vcf. Missing files or other types fail before simctl runs.
-  Imported media stays on the Simulator; there is no removal command. Returns the added paths.`,
+  Imported media stays on the Simulator; there is no removal command. Returns the added paths.
+
+agemu simulator create --name=NAME --device-type=TYPE [--runtime=RUNTIME]
+  Create a Simulator and return it. TYPE is a device type name or identifier (for example, "iPhone SE (3rd generation)");
+  RUNTIME is an available iOS runtime identifier, name, or version (default: simctl's choice). Needs no .agemu.json.
+
+agemu simulator delete --udid=ID --yes
+  Permanently delete the Simulator with that UDID and all its data, shutting it down first. Never infers the device; needs no .agemu.json.
+
+agemu simulator erase --yes [selector]
+  Shut down the selected Simulator if needed and erase all its content and settings (installed apps are removed;
+  run "app install" again). Without .agemu.json, --udid is required. Without --yes nothing is changed.`,
   build: `agemu build [--timeout=SECONDS]
   Build native, bare React Native, or Expo development apps for the selected Simulator.
   --timeout limits the whole build (default 1800 s, 1 to 86400); a timeout fails with PROCESS_TIMEOUT and keeps the log.
@@ -131,6 +142,7 @@ Commands:
   simulator ui         Read or set appearance, content size, and contrast.
   simulator status-bar Override or clear the status bar.
   simulator add-media  Import photos, videos, or contacts.
+  simulator create     Create a Simulator (also delete, erase; these require --yes).
   build                Build the configured iOS app.
   server start         Start or reuse this project's Metro or Expo server.
   server status        Inspect server readiness and ownership.
