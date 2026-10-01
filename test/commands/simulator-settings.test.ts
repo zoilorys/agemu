@@ -1,6 +1,9 @@
-import { describe, expect, it } from 'vitest';
-import { simulatorUi, statusBar } from '../../src/commands/simulator-settings.js';
-import { parseArgs, value } from '../../src/cli/args.js';
+import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { afterEach, describe, expect, it } from 'vitest';
+import { addMedia, simulatorUi, statusBar } from '../../src/commands/simulator-settings.js';
+import { parseArgs, value, values } from '../../src/cli/args.js';
 import type { Device } from '../../src/native/simctl.js';
 import type { ProcessResult } from '../../src/process/run-process.js';
 
@@ -109,6 +112,59 @@ describe('simulator status-bar', () => {
     const fixture = fake();
     await expect(statusBar(phone('Shutdown'), { clear: true }, [], fixture.deps)).rejects.toMatchObject({ code: 'SIMULATOR_NOT_BOOTED' });
     expect(fixture.calls).toEqual([]);
+  });
+});
+
+describe('simulator add-media', () => {
+  async function workspace() {
+    const dir = await mkdtemp(path.join(tmpdir(), 'agemu-media-'));
+    cleanups.push(dir);
+    await writeFile(path.join(dir, 'a b.png'), 'x');
+    await writeFile(path.join(dir, 'clip.MOV'), 'x');
+    await writeFile(path.join(dir, 'notes.txt'), 'x');
+    await mkdir(path.join(dir, 'folder.png'));
+    await symlink(path.join(dir, 'a b.png'), path.join(dir, 'link.jpg'));
+    return dir;
+  }
+  const cleanups: string[] = [];
+  afterEach(async () => { await Promise.all(cleanups.splice(0).map((dir) => rm(dir, { recursive: true, force: true }))); });
+
+  it('passes absolute paths in order as single argv elements, following symlinks and ignoring extension case', async () => {
+    const dir = await workspace();
+    const fixture = fake();
+    const output = await addMedia(phone(), ['clip.MOV', 'a b.png', 'link.jpg'], [], fixture.deps, dir);
+    expect(fixture.calls).toEqual([['addmedia', 'PHONE', path.join(dir, 'clip.MOV'), path.join(dir, 'a b.png'), path.join(dir, 'link.jpg')]]);
+    expect(output).toEqual({ udid: 'PHONE', added: ['clip.MOV', 'a b.png', 'link.jpg'] });
+  });
+
+  it.each([
+    [['a b.png', 'gone.png', 'gone2.mp4'], 'gone.png, gone2.mp4'],
+    [['folder.png'], 'folder.png'],
+    [['notes.txt'], 'notes.txt'],
+    [['a b.png', 'notes.txt'], 'notes.txt'],
+  ])('rejects %j before simctl', async (files, named) => {
+    const dir = await workspace();
+    const fixture = fake();
+    await expect(addMedia(phone(), files, [], fixture.deps, dir)).rejects.toMatchObject({ code: 'COMMAND_INVALID', message: expect.stringContaining(named) });
+    expect(fixture.calls).toEqual([]);
+  });
+
+  it('requires at least one file', async () => {
+    const fixture = fake();
+    await expect(addMedia(phone(), [], [], fixture.deps)).rejects.toMatchObject({ code: 'COMMAND_INVALID' });
+    expect(fixture.calls).toEqual([]);
+  });
+
+  it('refuses a Shutdown Simulator without invoking simctl', async () => {
+    const dir = await workspace();
+    const fixture = fake();
+    await expect(addMedia(phone('Shutdown'), ['a b.png'], [], fixture.deps, dir)).rejects.toMatchObject({ code: 'SIMULATOR_NOT_BOOTED' });
+    expect(fixture.calls).toEqual([]);
+  });
+
+  it('collects repeated --file values in order in both option forms', () => {
+    const parsed = parseArgs(['simulator', 'add-media', '--file=one.png', '--file', 'two words.png']);
+    expect(values(parsed, 'file')).toEqual(['one.png', 'two words.png']);
   });
 });
 

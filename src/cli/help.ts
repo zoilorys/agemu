@@ -31,7 +31,12 @@ agemu simulator status-bar (--clear | [--preset=clean] [override options]) [sele
   Explicit options override preset values: --time=TEXT, --data-network=hide|wifi|3g|4g|lte|lte-a|lte+|5g|5g+|5g-uwb|5g-uc,
   --wifi-mode=searching|failed|active, --wifi-bars=0-3, --cellular-mode=notSupported|searching|failed|active, --cellular-bars=0-4,
   --operator-name=TEXT (may be empty), --battery-state=charging|charged|discharging, --battery-level=0-100.
-  [selector] is --udid=ID | --name=NAME [--runtime=RUNTIME], as for boot.`,
+  [selector] is --udid=ID | --name=NAME [--runtime=RUNTIME], as for boot.
+
+agemu simulator add-media --file=PATH [--file=PATH ...] [selector]
+  Import photos, videos, live photos, or vCard contacts into the booted simulator. Paths are relative to the current directory.
+  Extensions: .jpg .jpeg .png .heic .gif .mov .mp4 .m4v .vcf. Missing files or other types fail before simctl runs.
+  Imported media stays on the Simulator; there is no removal command. Returns the added paths.`,
   build: `agemu build [--timeout=SECONDS]
   Build native, bare React Native, or Expo development apps for the selected Simulator.
   --timeout limits the whole build (default 1800 s, 1 to 86400); a timeout fails with PROCESS_TIMEOUT and keeps the log.
@@ -125,6 +130,7 @@ Commands:
   simulator shutdown   Shut down the selected simulator.
   simulator ui         Read or set appearance, content size, and contrast.
   simulator status-bar Override or clear the status bar.
+  simulator add-media  Import photos, videos, or contacts.
   build                Build the configured iOS app.
   server start         Start or reuse this project's Metro or Expo server.
   server status        Inspect server readiness and ownership.

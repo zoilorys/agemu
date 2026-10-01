@@ -1,3 +1,5 @@
+import { stat } from 'node:fs/promises';
+import path from 'node:path';
 import { CliError } from '../core/errors.js';
 import type { Device } from '../native/simctl.js';
 import { requireBooted, runSimctl, type SimctlDeps } from '../native/simctl-commands.js';
@@ -40,6 +42,28 @@ export async function simulatorUi(device: Device, options: UiOptions, secrets: s
     contentSize: await read('content_size'),
     increaseContrast: await read('increase_contrast'),
   };
+}
+
+const mediaExtensions = ['.jpg', '.jpeg', '.png', '.heic', '.gif', '.mov', '.mp4', '.m4v', '.vcf'];
+
+export async function addMedia(device: Device, files: string[], secrets: string[], deps: SimctlDeps = {}, cwd = process.cwd()) {
+  if (files.length === 0) throw invalid('add-media requires at least one --file');
+  const resolved = files.map((file) => path.resolve(cwd, file));
+  const shown = (file: string) => path.relative(cwd, file) || file;
+  const missing: string[] = [];
+  const notFiles: string[] = [];
+  for (const file of resolved) {
+    const info = await stat(file).catch(() => undefined);
+    if (!info) missing.push(shown(file));
+    else if (!info.isFile()) notFiles.push(shown(file));
+  }
+  if (missing.length > 0) throw invalid(`File not found: ${missing.join(', ')}`);
+  if (notFiles.length > 0) throw invalid(`Not a regular file: ${notFiles.join(', ')}`);
+  const unsupported = resolved.filter((file) => !mediaExtensions.includes(path.extname(file).toLowerCase())).map(shown);
+  if (unsupported.length > 0) throw invalid(`Unsupported media type (allowed: ${mediaExtensions.join(' ')}): ${unsupported.join(', ')}`);
+  requireBooted(device);
+  await runSimctl(['addmedia', device.udid, ...resolved], secrets, deps);
+  return { udid: device.udid, added: resolved.map(shown) };
 }
 
 export type StatusBarOptions = {

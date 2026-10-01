@@ -25,6 +25,7 @@ export const commandSpecs: Record<string, CommandSpec> = {
   simulator: { subcommands: {
     list: {}, boot: selector, shutdown: selector,
     ui: { ...selector, appearance: single, 'content-size': single, 'increase-contrast': single },
+    'add-media': { ...selector, file: repeat },
     'status-bar': {
       ...selector, clear: boolean, preset: single, time: single, 'data-network': single, 'wifi-mode': single, 'wifi-bars': single,
       'cellular-mode': single, 'cellular-bars': single, 'operator-name': single, 'battery-state': single, 'battery-level': single,

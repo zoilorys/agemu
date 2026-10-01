@@ -132,6 +132,16 @@ describe.skipIf(!enabled)('simulator control on a real Simulator', () => {
     }
   }, 120_000);
 
+  // Leaves the photo in the assigned Simulator's library; simctl cannot remove media.
+  test('add-media imports a PNG written to the test root', async (context) => {
+    ready(context);
+    const png = '1x1.png';
+    await writeFile(path.join(root, png), Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64',
+    ));
+    expect(data(await run(root, ['simulator', 'add-media', `--file=${png}`]), 'add-media')).toEqual({ udid, added: [png] });
+  }, 120_000);
+
   test('push delivers a payload to the fixture app and saves it as evidence', async (context) => {
     ready(context);
     const input = '{"aps":{"alert":"agemu"}}';
