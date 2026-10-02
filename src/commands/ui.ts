@@ -256,7 +256,6 @@ export async function runUiPlan(config: LoadedConfig, source: { file: string } |
   const { directory } = await createRun(config.root, now);
   const udid = await (dependencies.resolveUdid?.(config)
     ?? (config.simulator.udid || listDevices().then(devices => resolveDevice(devices, config.simulator).udid)));
-  if (plan.actions.some(action => actionKind(action) === 'launch')) await writeLaunchMarker(config.root, { at: new Date(), udid, bundleId: targetBundleId(config), source: 'ui run' });
   if (plan.actions.some(action => typeof action === 'object' && action !== null && 'startVideoRecording' in action)) {
     const segments: Array<{ actions: unknown[]; offset: number; recording?: 'start' | 'stop'; name?: string }> = [];
     let actions: unknown[] = [];
@@ -474,6 +473,8 @@ async function runUiSegment(config: LoadedConfig, plan: UiPlan, udid: string, di
   await checked(run, 'plutil', ['-convert', 'xml1', manifest], 'Unable to write the XCTest run manifest', config.redactions ?? [], limit);
   const resultBundle = path.join(directory, 'AgentRunner.xcresult');
   const transcript = path.join(directory, 'xcodebuild.log');
+  // The runner launches inside xcodebuild, so the whole run is the narrowest launch window agemu can observe.
+  if (plan.actions.some(action => actionKind(action) === 'launch')) await writeLaunchMarker(config.root, { at: new Date(), udid: built.udid, bundleId: targetBundleId(config), source: 'ui run' });
   let result: ProcessResult;
   try {
     result = await run('xcodebuild', [

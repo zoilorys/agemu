@@ -326,7 +326,7 @@ Each result has the exception type and signal, `termination`, and the faulting t
 
 ### Launch windows
 
-`app launch`, `app restart`, and a `ui run` plan that includes a `launch` action record the launch time in `.agemu/launch.json`. `--since=launch` on `logs show`, `crashes list`, and `diagnose` starts at the latest record. It fails with `COMMAND_INVALID` when nothing was recorded or the record is for another app or Simulator. For `logs show`, lines timestamped before the launch are dropped from the response; the saved artifact keeps the full output. Do not combine `--since` with `--last`.
+`app launch`, `app restart`, and each `launch` action in a `ui run` plan record the launch time in `.agemu/launch.json`. With the `idb` backend each launch is recorded as it runs; with XCTest the time is recorded when the runner starts the plan. `--since=launch` on `logs show`, `crashes list`, and `diagnose` starts at the latest record. It fails with `COMMAND_INVALID` when nothing was recorded or the record is for another app or Simulator. For `logs show`, lines timestamped before the launch are dropped from the response; the saved artifact keeps the full output. Do not combine `--since` with `--last`.
 
 ### Live capture
 

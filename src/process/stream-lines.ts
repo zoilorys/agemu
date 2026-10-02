@@ -1,4 +1,5 @@
 import { spawn as nodeSpawn } from 'node:child_process';
+import { StringDecoder } from 'node:string_decoder';
 
 type Readable = { on(event: 'data', listener: (chunk: Buffer | string) => void): unknown; destroy?(): unknown };
 export type StreamChild = {
@@ -40,6 +41,9 @@ export function streamLines(executable: string, args: string[], options: StreamO
     let settled = false;
     let partial = '';
     let stderr = '';
+    // One decoder per pipe keeps a multi-byte character split across chunks intact.
+    const stdoutText = new StringDecoder('utf8');
+    const stderrText = new StringDecoder('utf8');
     let failure: unknown;
     const timers: NodeJS.Timeout[] = [];
     const finish = (exitCode: number | null, signal: NodeJS.Signals | null) => {
@@ -67,13 +71,14 @@ export function streamLines(executable: string, args: string[], options: StreamO
     };
     child.stdout?.on('data', (chunk) => {
       if (stoppedBy || settled) return;
-      const lines = (partial + String(chunk)).split(/\r?\n/);
+      const lines = (partial + (typeof chunk === 'string' ? chunk : stdoutText.write(chunk))).split(/\r?\n/);
       partial = lines.pop() ?? '';
       for (const line of lines) deliver(line);
     });
-    child.stderr?.on('data', (chunk) => { if (stderr.length < 64 * 1024) stderr += String(chunk); });
+    child.stderr?.on('data', (chunk) => { if (stderr.length < 64 * 1024) stderr += typeof chunk === 'string' ? chunk : stderrText.write(chunk); });
     child.once('error', (error) => { if (!stoppedBy) failure = error; finish(null, null); });
     child.once('close', (code, signal) => {
+      partial += stdoutText.end();
       if (partial) { deliver(partial); partial = ''; }
       finish(code, signal);
     });

@@ -33,6 +33,22 @@ describe('streamLines', () => {
     expect(child.signals).toEqual(['SIGINT']);
   });
 
+  it('keeps UTF-8 characters split across stdout and stderr chunks intact', async () => {
+    const child = new FakeChild();
+    const seen: string[] = [];
+    const result = streamLines('x', [], { durationMs: 30_000, spawn: spawnOf(child), onLine: (line) => { seen.push(line); } });
+    const line = Buffer.from('café ✓\ncrème');
+    const split = line.indexOf(0xa9); // second byte of "é"
+    child.stdout.emit('data', line.subarray(0, split));
+    child.stdout.emit('data', line.subarray(split));
+    const error = Buffer.from('erreur é');
+    child.stderr.emit('data', error.subarray(0, error.length - 1));
+    child.stderr.emit('data', error.subarray(error.length - 1));
+    child.emit('close', 0, null);
+    await expect(result).resolves.toMatchObject({ stoppedBy: 'exit', stderr: 'erreur é' });
+    expect(seen).toEqual(['café ✓', 'crème']);
+  });
+
   it('stops at the duration and escalates to SIGKILL, resolving within the 3 s grace even without close', async () => {
     const child = new FakeChild();
     let settled = false;

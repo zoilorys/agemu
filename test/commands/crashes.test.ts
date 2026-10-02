@@ -38,6 +38,30 @@ describe('crashes list command', () => {
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 
+  it('redacts secrets that JSON escapes in the saved copy, including a body that does not parse', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-crashes-escaped-'));
+    const reports = path.join(root, 'reports');
+    await mkdir(reports);
+    const secrets = ['foo"bar', 'C:\\vault', 'line1\nline2'];
+    const header = JSON.stringify({ app_name: 'App', timestamp: '2026-09-30 11:00:00.00 +0000', bug_type: '309', incident_id: 'escaped', bundleID: 'com.example.app' });
+    await writeFile(path.join(reports, 'App-parsed.ips'), `${header}\n${JSON.stringify({ procName: 'App', asi: { lib: [`token ${secrets.join(' and ')}`] } }, null, 2)}`);
+    await writeFile(path.join(reports, 'App-truncated.ips'), `${header.replace('escaped', 'truncated')}\n{"asi": {"lib": ["token ${JSON.stringify(secrets[0]).slice(1, -1)}`);
+    try {
+      const result = await listCrashes({ ...configFor(root), redactions: secrets }, {}, { directory: reports, now: () => now, readState: async () => { throw new Error('not built'); } });
+      expect(result.crashes.map((crash) => crash.incidentId).sort()).toEqual(['escaped', 'truncated']);
+      const parsed = await readFile(path.join(root, result.crashes.find((crash) => crash.incidentId === 'escaped')!.file), 'utf8');
+      expect(JSON.parse(parsed.slice(parsed.indexOf('\n') + 1))).toMatchObject({ asi: { lib: ['token [REDACTED] and [REDACTED] and [REDACTED]'] } });
+      const truncated = await readFile(path.join(root, result.crashes.find((crash) => crash.incidentId === 'truncated')!.file), 'utf8');
+      expect(truncated).toContain('token [REDACTED]');
+      for (const text of [parsed, truncated]) {
+        for (const secret of secrets) {
+          expect(text).not.toContain(secret);
+          expect(text).not.toContain(JSON.stringify(secret).slice(1, -1));
+        }
+      }
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
   it('returns only crashes after the latest agemu launch with since=launch', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'agemu-crashes-launch-'));
     const reports = path.join(root, 'reports');

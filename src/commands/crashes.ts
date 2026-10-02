@@ -21,6 +21,19 @@ export type CrashDependencies = {
   runner?: SimctlRunner;
 };
 
+// Reports are JSON, which escapes quotes, backslashes, and control characters, so secrets are redacted in decoded values.
+// A part that does not parse is redacted as text, including the JSON-escaped form of each secret.
+function redactReport(text: string, secrets: string[]): string {
+  if (secrets.length === 0) return text;
+  const escaped = secrets.filter(Boolean).flatMap((secret) => [secret, JSON.stringify(secret).slice(1, -1)]);
+  const newline = text.indexOf('\n');
+  const parts = newline === -1 ? [text] : [text.slice(0, newline), text.slice(newline + 1)];
+  return parts.map((part, index) => {
+    try { return JSON.stringify(redactValue(JSON.parse(part) as unknown, secrets), null, index === 0 ? undefined : 2); }
+    catch { return redact(part, escaped); }
+  }).join('\n');
+}
+
 export const defaultCrashDirectory = () => path.join(homedir(), 'Library', 'Logs', 'DiagnosticReports');
 
 // Best effort: the bundle ID is the primary match; the executable name only matches reports without one.
@@ -57,7 +70,7 @@ export async function listCrashes(config: LoadedConfig, options: CrashOptions = 
   for (const crash of found.crashes) {
     const source = path.basename(crash.path);
     const copy = path.join(directory, source);
-    await writeFile(copy, redact(crash.text, secrets), { mode: 0o600 });
+    await writeFile(copy, redactReport(crash.text, secrets), { mode: 0o600 });
     crashes.push({ ...crash.summary, file: path.relative(config.root, copy), source });
   }
   return redactValue({ run: run.relativeDirectory, bundleId, since: since.toISOString(), crashes, skipped: found.skipped }, secrets);

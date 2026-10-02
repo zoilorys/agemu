@@ -41,22 +41,72 @@ describe('XCTest run manifest', () => {
 });
 
 describe('UI plan launch marker', () => {
-  it.each([
-    ['records a plan with a launch action before running it', [{ tap: { x: 1, y: 2 } }, { launch: {} }], { udid: 'PHONE', bundleId: 'com.example.app', source: 'ui run' }],
-    ['records nothing for a plan without a launch action', [{ tap: { x: 1, y: 2 } }], undefined],
-  ])('%s', async (_, actions, expected) => {
+  const markerConfig = (root: string) => ({ version: 2 as const, platform: 'ios' as const, app: { type: 'native' as const, project: path.join(root, 'App.xcodeproj'),
+    scheme: 'App', configuration: 'Debug', bundleId: 'com.example.app' }, simulator: { udid: 'PHONE' }, root });
+  const idbRun = (onLaunch: () => Promise<void>) => async (executable: string, args: string[]) => {
+    if (executable === 'idb' && args[1] === 'describe-all') return result('[]');
+    if (executable === 'xcrun' && args[1] === 'launch') await onLaunch();
+    return result();
+  };
+
+  it('records each idb launch when it executes', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'agemu-ui-marker-'));
-    const config = { version: 2 as const, platform: 'ios' as const, app: { type: 'native' as const, project: path.join(root, 'App.xcodeproj'), scheme: 'App', configuration: 'Debug',
-      bundleId: 'com.example.app' }, simulator: { udid: 'PHONE' }, root };
-    const seen: unknown[] = [];
+    const seen: Array<Awaited<ReturnType<typeof readLaunchMarker>>> = [];
+    const launchCalls: number[] = [];
     try {
-      await expect(runUiPlan(config, { json: JSON.stringify({ version: 1, actions }) }, {
+      await runUiPlan(markerConfig(root), { json: JSON.stringify({ version: 1, actions: [{ launch: {} }, { wait: { duration: 0.05 } }, { launch: {} }] }) }, {
         backend: 'idb',
-        run: async () => { seen.push(await readLaunchMarker(root)); throw new Error('process unavailable'); },
+        run: idbRun(async () => { launchCalls.push(Date.now()); seen.push(await readLaunchMarker(root)); }),
+      });
+      expect(seen).toHaveLength(2);
+      expect(seen[0]).toMatchObject({ udid: 'PHONE', bundleId: 'com.example.app', source: 'ui run' });
+      // The second launch starts a new window instead of keeping the first launch's time.
+      expect(Date.parse(seen[1]!.at)).toBeGreaterThan(launchCalls[0]!);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('records nothing for a plan without a launch action', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-ui-marker-'));
+    try {
+      await runUiPlan(markerConfig(root), { json: JSON.stringify({ version: 1, actions: [{ tap: { x: 1, y: 2 } }] }) }, {
+        backend: 'idb', run: idbRun(async () => undefined),
+      });
+      expect(await readLaunchMarker(root)).toBeUndefined();
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('keeps the previous window when the plan fails before any launch runs', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-ui-marker-'));
+    const previous = { at: '2026-09-30T10:00:00.000Z', udid: 'PHONE', bundleId: 'com.example.app', source: 'app launch' };
+    try {
+      await mkdir(path.join(root, '.agemu'), { recursive: true });
+      await writeFile(path.join(root, '.agemu', 'launch.json'), JSON.stringify(previous));
+      await expect(runUiPlan(markerConfig(root), { json: JSON.stringify({ version: 1, actions: [{ launch: {} }] }) }, {
+        backend: 'xctest', run: async () => { throw new Error('runner build failed'); },
       })).rejects.toThrow();
-      expect(seen.length).toBeGreaterThan(0);
-      expect(seen[0]).toEqual(expected === undefined ? undefined : expect.objectContaining(expected));
-      expect(await readLaunchMarker(root)).toEqual(expected === undefined ? undefined : expect.objectContaining(expected));
+      expect(await readLaunchMarker(root)).toEqual(previous);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('records an XCTest launch plan just before the runner executes it', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-ui-marker-'));
+    const manifest = path.join(root, '.agemu', 'RunnerDerivedData', 'Build', 'Runner.xctestrun');
+    let atRun: Awaited<ReturnType<typeof readLaunchMarker>>;
+    try {
+      await mkdir(path.dirname(manifest), { recursive: true });
+      await writeFile(manifest, 'fixture');
+      await runUiPlan(markerConfig(root), { json: JSON.stringify({ version: 1, actions: [{ launch: {} }] }) }, {
+        backend: 'xctest',
+        run: async (executable, args) => {
+          if (executable === 'plutil' && args[1] === 'json') {
+            expect(await readLaunchMarker(root)).toBeUndefined();
+            return result(JSON.stringify({ AgentRunner: { TestBundlePath: 'Runner.xctest' } }));
+          }
+          if (executable === 'xcodebuild' && args[0] === 'test-without-building') atRun = await readLaunchMarker(root);
+          return result();
+        },
+      }).catch(() => undefined);
+      expect(atRun!).toMatchObject({ udid: 'PHONE', bundleId: 'com.example.app', source: 'ui run' });
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 });
