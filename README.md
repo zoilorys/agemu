@@ -5,6 +5,11 @@
 > [!NOTE]
 > `agemu` is under active development. The command and configuration formats may change before 1.0.
 
+## Unreleased changes
+
+- Breaking: the `inspect` plan action no longer returns the `trees` list (XCTest debug text or raw `idb` JSON). It returns `runnerResult.inspections`, a list of `{ "index": <action index in the plan>, "elements": [...] }`, in one element format on both backends. See [Inspect the screen](#inspect-the-screen).
+- New `agemu ui inspect` command, targeting by `labelContains`, `type`, and `index`, and the `clear`, `pressKey`, `pressButton`, `openUrl`, `terminate`, `scrollUntilVisible`, and `assertText` actions. See [Targets](#targets) and [Actions reference](#actions-reference).
+
 ## Breaking changes in 0.2.0
 
 - Unknown options and extra positional arguments fail with `COMMAND_INVALID`. Options accept both `--name=value` and `--name value`; a value starting with `--` needs the `=` form.
@@ -242,11 +247,85 @@ For a short plan, pass JSON directly:
 agemu ui run --plan-json='{"version":1,"actions":[{"screenshot":{"name":"current"}}]}'
 ```
 
-Targets accept an accessibility `identifier` or an exact `label`. The `tap` and `longPress` actions also accept `x` and `y` screen coordinates. `longPress` holds for `duration` seconds (default `1`). Swipe a scrollable element with `{ "swipe": { "direction": "up", "identifier": "resultsList", "duration": 0.3 } }`, or swipe the whole screen by omitting the target. Directions are `up`, `down`, `left`, and `right`; they describe finger movement, so swiping up scrolls content down the page. For a precise path, use `{ "swipe": { "from": { "x": 100, "y": 500 }, "to": { "x": 100, "y": 100 }, "duration": 0.3 } }`. `idb` uses the requested duration; XCTest uses gesture velocity to approximate it. Screen swipes without a target use XCTest. `wait` accepts a target and optional `timeout` to wait for an element, or `duration` in seconds to pause before the next action. Use a timed wait after a swipe before capturing an animation-sensitive screenshot. For `idb`, targeted taps use an accessibility press with an exact-value guard instead of converting the reported frame to touch coordinates. Follow a tap with `wait` or an assertion for the expected result. The `inspect` action returns accessibility data in `runnerResult.trees`: XCTest debug text or `idb` JSON.
+Targets accept an accessibility `identifier`, an exact `label`, and the other fields described in [Targets](#targets). The `tap` and `longPress` actions also accept `x` and `y` screen coordinates. `longPress` holds for `duration` seconds (default `1`). Swipe a scrollable element with `{ "swipe": { "direction": "up", "identifier": "resultsList", "duration": 0.3 } }`, or swipe the whole screen by omitting the target. Directions are `up`, `down`, `left`, and `right`; they describe finger movement, so swiping up scrolls content down the page. For a precise path, use `{ "swipe": { "from": { "x": 100, "y": 500 }, "to": { "x": 100, "y": 100 }, "duration": 0.3 } }`. `idb` uses the requested duration; XCTest uses gesture velocity to approximate it. Screen swipes without a target use XCTest. `wait` accepts a target and optional `timeout` to wait for an element, or `duration` in seconds to pause before the next action. Use a timed wait after a swipe before capturing an animation-sensitive screenshot. For `idb`, targeted taps use an accessibility press with an exact-value guard when the element has a unique identifier or label; otherwise they tap the center of its reported frame and log `coordinate fallback` in the transcript. Follow a tap with `wait` or an assertion for the expected result. The `inspect` action returns the screen's elements in `runnerResult.inspections` (see [Inspect the screen](#inspect-the-screen)).
 
-Assertions take a target with exactly one of `identifier` or `label`. `assertVisible` passes only when the element is on screen and hittable; `assertExists` passes when the element is in the accessibility tree, even off screen; `assertNotVisible` passes when the element is absent or not on screen; `assertValue` compares the element's accessibility value with `value`. Plans are validated completely before any Simulator interaction: unknown actions, unknown fields, and missing targets or text fail with `UI_VALIDATION_FAILED`.
+Assertions take a target (see [Targets](#targets)). `assertVisible` passes only when the element is on screen and hittable; `assertExists` passes when the element is in the accessibility tree, even off screen; `assertNotVisible` passes when the element is absent or not on screen; `assertValue` compares the element's accessibility value with `value`. Plans are validated completely before any Simulator interaction: unknown actions, unknown fields, and missing targets or text fail with `UI_VALIDATION_FAILED`.
 
 The bundled XCTest runner needs no macOS Accessibility or Screen Recording permission. XCTest runs save an `.xcresult` bundle and `xcodebuild.log` under `.agemu/runs/`. Its build is reused until runner sources change; `runnerCached` reports whether the run used that build. `idb` runs save `idb.log` and any requested screenshots there.
+
+### Inspect the screen
+
+```sh
+agemu ui inspect [--backend=auto|idb|xctest] [--all] [--timeout=SECONDS]
+```
+
+Reads the running app's current screen and returns the elements and a screenshot in one response, so you can find identifiers and labels before writing a plan. It is read-only: it never launches, terminates, or taps the app, even on timeout. The app must already be running (`agemu app launch`); otherwise it fails with `UI_DELIVERY_FAILED` and a hint to launch it. With `idb` or `auto`, agemu checks that the app is running with `launchctl` first.
+
+The result has `run`, `udid`, `bundleId`, `backend`, `capturedAt`, `screenshot` (a PNG path), `elements`, and `counts` (`total` and `visible`). `elements` lists only visible elements unless you pass `--all`, which also returns off-screen ones with `visible: false`. If XCTest screenshot export fails, the result keeps its elements and reports `screenshotExportError`.
+
+Each element, in document order, has:
+
+- `type`: one of `application`, `window`, `button`, `staticText`, `textField`, `secureTextField`, `searchField`, `textView`, `image`, `cell`, `switch`, `slider`, `link`, `scrollView`, `table`, `collectionView`, `navigationBar`, `tabBar`, `alert`, `keyboard`, or `other` for anything else.
+- `identifier`, `label`, `value`: strings, omitted when empty.
+- `frame`: `{ x, y, width, height }` in points (zeros when the backend reports none).
+- `visible`: the frame has positive size and intersects the application frame. This is a geometric check, not XCTest's `isHittable`.
+- `enabled`, `selected`: present when the backend reports them.
+- `depth`: nesting depth; XCTest only (the `idb` list is flat).
+
+The `inspect` plan action returns the same elements as `runnerResult.inspections[].elements` (all elements, including off-screen ones), where `index` is the action's position in the submitted plan.
+
+### Targets
+
+Actions that act on an element take these target fields:
+
+| Field | Meaning |
+| --- | --- |
+| `identifier` | Exact accessibility identifier. |
+| `label` | Exact accessibility label. |
+| `labelContains` | Case-sensitive substring of the label; must not be empty. |
+| `type` | One of the element types above except `application` and `other`. |
+| `index` | Zero-based position among the matches, in document order (default `0`). |
+
+Give at least one of `identifier`, `label`, or `labelContains`; `identifier` and `label` cannot be combined. `type` and `index` narrow the match. A target matches the elements that satisfy every field you give, and `index` picks one of them in document order. The application root is never a candidate. Actions that act on or read an element (`tap`, `longPress`, `type`, `clear`, `swipe`, `assertValue`, `assertText`, `assertExists`, `assertVisible`) fail when the target has no match; `wait`, `scrollUntilVisible`, and `assertNotVisible` behave as described for each. Example: `{ "tap": { "labelContains": "Item", "type": "cell", "index": 2 } }`.
+
+With `idb`, a tap on a resolved element presses it through accessibility when its identifier is unique, then when its label is unique, and otherwise taps its center (the transcript logs this coordinate fallback).
+
+### Actions reference
+
+Plans stop at the first failed action and are validated completely before running. "Target" means the fields in [Targets](#targets). Both backends accept every action; where `idb` has a limit, it is noted, and `auto` falls back to XCTest for plans `idb` cannot run.
+
+| Action | Fields | XCTest | idb |
+| --- | --- | --- | --- |
+| `launch` | `arguments`, `environment` | yes | yes |
+| `terminate` | none | yes | yes |
+| `openUrl` | `url`; `confirm` (boolean) | yes, on iOS 16.4 or newer (fails with "openUrl requires iOS 16.4 or newer"); presses SpringBoard's first-open "Open" prompt unless `confirm` is `false` | yes; presses the prompt only with `confirm: true` |
+| `pressButton` | `button`: `home` | yes | yes |
+| `pressKey` | `key`: `return`, `delete`, `tab`, or `space`; `count` 1 to 100 (default 1) | yes | yes |
+| `tap` | target, or `x` and `y` | yes | yes |
+| `longPress` | target or `x` and `y`; `duration` | yes | yes |
+| `type` | target; `text` | yes | yes |
+| `clear` | target | yes | yes |
+| `swipe` | `direction` with an optional target, or `from` and `to`; `duration` | yes | yes, except a direction without a target (XCTest) |
+| `scrollUntilVisible` | `target`; `in` (container target); `direction` (default `up`); `maxSwipes` 1 to 50 (default 10) | yes | yes |
+| `wait` | target with optional `timeout`, or `duration` | yes | yes |
+| `assertVisible`, `assertExists`, `assertNotVisible` | target | yes | yes |
+| `assertValue` | target; `value` | yes | yes |
+| `assertText` | target; exactly one of `equals`, `contains`, `matches` | yes | yes |
+| `screenshot` | `name` | yes | yes |
+| `inspect` | none | yes | yes |
+| `startVideoRecording`, `stopVideoRecording` | `name` (start only) | yes | yes |
+
+Notes:
+
+- `pressKey` types into the focused element. `pressKey` with `return` dismisses the keyboard.
+- `pressButton` with `home` backgrounds the app. Use `launch` or `openUrl` before acting on the app again.
+- `terminate` stops the configured app and succeeds if it is not running.
+- `scrollUntilVisible` swipes the `in` container (default: the whole app) until `target` is visible, up to `maxSwipes` swipes. "Visible" means exists and hittable on XCTest, and the frame-intersection rule of `visible` on `idb`. `direction` is the finger direction, so the default `up` scrolls content down the page. It fails when the target is still not visible afterward.
+- `assertText` compares the element's `value` when it is not empty, otherwise its `label`. `matches` is a regular expression searched anywhere in the text (not anchored); use syntax common to JavaScript and ICU, because the XCTest runner uses ICU and `idb` uses JavaScript.
+
+### Verification notes
+
+All `idb` paths are verified by unit tests only. `idb` was not installed on the machine used for verification, so none of them ran live. The XCTest paths ran on a Simulator.
 
 ## Control the Simulator
 
