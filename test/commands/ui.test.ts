@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { readLaunchMarker } from '../../src/artifacts/launch-marker.js';
-import { buildUiRunner, injectEnvironment, runUiPlan } from '../../src/commands/ui.js';
+import { buildUiRunner, injectEnvironment, inspectScreen, runUiPlan } from '../../src/commands/ui.js';
 import { CliError } from '../../src/core/errors.js';
 import type { ProcessResult } from '../../src/process/run-process.js';
 
@@ -36,6 +36,171 @@ describe('XCTest run manifest', () => {
         run: async () => { throw new Error('xcodebuild must not run'); },
       });
       expect(result).toMatchObject({ manifest, cached: true, udid: 'PHONE' });
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+});
+
+describe('ui inspect', () => {
+  const inspectConfig = (root: string) => ({ version: 2 as const, platform: 'ios' as const, app: { type: 'native' as const,
+    project: path.join(root, 'App.xcodeproj'), scheme: 'App', configuration: 'Debug', bundleId: 'com.example.app' }, simulator: { udid: 'PHONE' }, root });
+  const tree = JSON.stringify([
+    { type: 'Application', AXLabel: 'App', frame: { x: 0, y: 0, width: 400, height: 800 } },
+    { type: 'Button', AXUniqueId: 'saveButton', AXLabel: 'Save', frame: { x: 10, y: 10, width: 80, height: 40 } },
+    { type: 'StaticText', AXLabel: 'Item 24', frame: { x: 0, y: 1600, width: 400, height: 44 } },
+  ]);
+  const recordingRun = (calls: string[][]) => async (executable: string, args: string[]) => {
+    calls.push([executable, ...args]);
+    if (executable === 'idb' && args[1] === 'describe-all') return result(tree);
+    if (args.includes('launchctl')) return result(running);
+    return result();
+  };
+  const running = '81859\t0\tUIKitApplication:com.example.app[0afb][rb-legacy]\n';
+
+  it('returns only on-screen elements by default and all elements with all, with counts', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-inspect-'));
+    try {
+      const visible = await inspectScreen(inspectConfig(root), { backend: 'idb' }, { run: recordingRun([]) });
+      expect(visible.elements.map(element => element.label)).toEqual(['App', 'Save']);
+      expect(visible.counts).toEqual({ total: 3, visible: 2 });
+      expect(visible.screenshot).toMatch(/screenshots\/1-inspect\.png$/);
+      expect(visible).toMatchObject({ udid: 'PHONE', bundleId: 'com.example.app', backend: 'idb' });
+
+      const all = await inspectScreen(inspectConfig(root), { backend: 'idb', all: true }, { run: recordingRun([]) });
+      expect(all.elements.find(element => element.label === 'Item 24')).toMatchObject({ visible: false });
+      expect(all.counts).toEqual({ total: 3, visible: 2 });
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('never launches, terminates, or taps the app', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-inspect-'));
+    const calls: string[][] = [];
+    try {
+      await inspectScreen(inspectConfig(root), { backend: 'idb', all: true }, { run: recordingRun(calls) });
+      expect(calls.length).toBeGreaterThan(0);
+      for (const call of calls) {
+        expect(call.slice(0, 3)).not.toEqual(['xcrun', 'simctl', 'launch']);
+        expect(call.slice(0, 3)).not.toEqual(['xcrun', 'simctl', 'terminate']);
+        expect(call[0] === 'idb' && call[1] === 'ui' && ['tap', 'swipe', 'text'].includes(call[2]!)).toBe(false);
+      }
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it.each([
+    ['only SpringBoard runs', '81000\t0\tUIKitApplication:com.apple.springboard[0afb][rb-legacy]\n'],
+    ['only an app with a longer id runs', '81859\t0\tUIKitApplication:com.example.app2[0afb][rb-legacy]\n'],
+  ])('reports the app as not running when %s', async (_case, listing) => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-inspect-'));
+    try {
+      await expect(inspectScreen(inspectConfig(root), { backend: 'idb' }, {
+        run: async (executable, args) => {
+          if (executable === 'idb' && args[1] === 'describe-all') return result(tree);
+          return args.includes('launchctl') ? result(listing) : result();
+        },
+      })).rejects.toMatchObject({ code: 'UI_DELIVERY_FAILED', message: expect.stringContaining('Launch the app first') });
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('refuses to report the foreground app on idb when the configured app is not running', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-inspect-'));
+    const calls: string[][] = [];
+    try {
+      const error = await inspectScreen(inspectConfig(root), { backend: 'idb' }, {
+        run: async (executable, args) => {
+          calls.push([executable, ...args]);
+          // SpringBoard is in the foreground: idb works, but the app is absent from launchctl.
+          if (executable === 'idb' && args[1] === 'describe-all') return result(tree);
+          if (args.includes('launchctl')) return result('81000\t0\tUIKitApplication:com.apple.springboard[0afb][rb-legacy]\n');
+          return result();
+        },
+      }).catch((caught: unknown) => caught);
+      expect(error).toBeInstanceOf(CliError);
+      expect(error).toMatchObject({ code: 'UI_DELIVERY_FAILED', details: { failedAction: { index: 0, kind: 'inspect' } } });
+      expect((error as CliError).message).toMatch(/Launch the app first/);
+      expect(calls.some(call => call[0] === 'idb' || call.includes('launch'))).toBe(false);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  const appinfo = (name?: string) => `{\n    CFBundleIdentifier = "com.example.app";\n${name ? `    CFBundleDisplayName = ${name};\n` : ''}}\n`;
+  const foregroundRun = (calls: string[][], foreground: string, info: string) => async (executable: string, args: string[]) => {
+    calls.push([executable, ...args]);
+    if (executable === 'idb' && args[1] === 'describe-all') {
+      return result(JSON.stringify([{ type: 'Application', AXLabel: foreground, frame: { x: 0, y: 0, width: 400, height: 800 } }]));
+    }
+    if (args.includes('launchctl')) return result(running);
+    if (args[1] === 'appinfo') return result(info);
+    return result();
+  };
+
+  it('fails on idb when the running app is backgrounded and another app is in the foreground', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-inspect-'));
+    const calls: string[][] = [];
+    try {
+      const error = await inspectScreen(inspectConfig(root), { backend: 'idb' }, { run: foregroundRun(calls, 'SpringBoard', appinfo('App')) })
+        .catch((caught: unknown) => caught);
+      expect(error).toMatchObject({ code: 'UI_DELIVERY_FAILED', details: { failedAction: {
+        index: 0, kind: 'inspect', message: 'com.example.app is not in the foreground (foreground: SpringBoard)' } } });
+      expect((error as CliError).message).toMatch(/agemu app launch/);
+      expect(calls.some(call => call[2] === 'launch' || call[2] === 'terminate')).toBe(false);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it.each([
+    ['the foreground app has the display name', 'App', appinfo('App')],
+    ['the display name is unknown', 'SpringBoard', appinfo()],
+  ])('inspects on idb when %s', async (_case, foreground, info) => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-inspect-'));
+    try {
+      const inspected = await inspectScreen(inspectConfig(root), { backend: 'idb' }, { run: foregroundRun([], foreground, info) });
+      expect(inspected.elements.map(element => element.label)).toEqual([foreground]);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('keeps the app running when an XCTest inspect times out', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-inspect-'));
+    const manifest = path.join(root, '.agemu', 'RunnerDerivedData', 'Build', 'Runner.xctestrun');
+    await mkdir(path.dirname(manifest), { recursive: true });
+    await writeFile(manifest, 'fixture');
+    const calls: string[][] = [];
+    try {
+      const error = await inspectScreen(inspectConfig(root), { backend: 'xctest', timeoutMs: 60_000 }, {
+        runnerProject: path.join(root, 'missing.xcodeproj'),
+        run: async (executable, args) => {
+          calls.push([executable, ...args]);
+          if (executable === 'plutil' && args[1] === 'json') return result(JSON.stringify({ AgentRunner: { TestBundlePath: 'AgentRunner.xctest' } }));
+          if (executable === 'xcodebuild') throw new CliError('PROCESS_TIMEOUT', 'timed out', { result: { stdout: '', stderr: '' } });
+          return result();
+        },
+      }).catch((caught: unknown) => caught);
+      expect(error).toMatchObject({ code: 'PROCESS_TIMEOUT' });
+      expect(calls.some(call => call[1] === 'simctl' && call[2] === 'terminate' && call.includes('com.example.app'))).toBe(false);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('passes through a screenshot export error', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-inspect-'));
+    const manifest = path.join(root, '.agemu', 'RunnerDerivedData', 'Build', 'Runner.xctestrun');
+    await mkdir(path.dirname(manifest), { recursive: true });
+    await writeFile(manifest, 'fixture');
+    const calls: string[][] = [];
+    try {
+      const inspected = await inspectScreen(inspectConfig(root), { backend: 'xctest' }, {
+        runnerProject: path.join(root, 'missing.xcodeproj'),
+        run: async (executable, args) => {
+          calls.push([executable, ...args]);
+          if (executable === 'plutil' && args[1] === 'json') return result(JSON.stringify({ AgentRunner: { TestBundlePath: 'AgentRunner.xctest' } }));
+          if (executable === 'xcodebuild') {
+            await mkdir(args[args.indexOf('-resultBundlePath') + 1]!, { recursive: true });
+            const encoded = Buffer.from(JSON.stringify({ completed: 2, inspections: [{ index: 0, nodes: [] }] })).toString('base64');
+            return result(`AGEMU_RESULT:${encoded}\n`);
+          }
+          if (executable === 'xcrun' && args[0] === 'xcresulttool') return result('', 'export broke', 1);
+          return result();
+        },
+      });
+      expect(inspected.screenshotExportError).toBe('export broke');
+      expect(inspected.screenshot).toBeUndefined();
+      // XCTest inspection is scoped to the app, so no foreground check runs.
+      expect(calls.some(call => call.includes('appinfo'))).toBe(false);
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 });
@@ -184,7 +349,7 @@ describe('UI backend selection', () => {
             expect((await fetch(`${url}/start?name=flow`, { method: 'POST' })).status).toBe(200);
             events.push('tap');
             expect((await fetch(`${url}/stop`, { method: 'POST' })).status).toBe(200);
-            return result(`AGEMU_RESULT:${Buffer.from(JSON.stringify({ completed: 5, trees: [] })).toString('base64')}\n`);
+            return result(`AGEMU_RESULT:${Buffer.from(JSON.stringify({ completed: 5, inspections: [] })).toString('base64')}\n`);
           }
           return result();
         },
@@ -280,11 +445,73 @@ describe('UI backend selection', () => {
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 
+  it('taps a non-unique idb target at its frame center and a unique one through accessibility', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-idb-fallback-tap-'));
+    const commands: string[][] = [];
+    const config = { version: 2 as const, platform: 'ios' as const, app: { type: 'native' as const, project: path.join(root, 'App.xcodeproj'), scheme: 'App', configuration: 'Debug',
+      bundleId: 'com.example.app' }, simulator: { udid: 'PHONE' }, root };
+    try {
+      const output = await runUiPlan(config, { json: JSON.stringify({ version: 1, actions: [
+        { tap: { identifier: 'row', index: 1 } }, { tap: { labelContains: 'Save', index: 1 } },
+      ] }) }, { backend: 'idb', run: async (executable, args) => {
+        commands.push([executable, ...args]);
+        if (executable === 'idb' && args[1] === 'describe-all') return result(JSON.stringify([
+          // Neither the id nor the label is unique, so only a coordinate tap reaches the second row.
+          { AXUniqueId: 'row', AXLabel: 'Item', frame: { x: 0, y: 100, width: 300, height: 40 } },
+          { AXUniqueId: 'row', AXLabel: 'Item', frame: { x: 0, y: 140, width: 300, height: 40 } },
+          { AXUniqueId: 'saveButton', AXLabel: 'Save', frame: { x: 10, y: 10, width: 40, height: 40 } },
+          { AXUniqueId: 'draftButton', AXLabel: 'Save draft', frame: { x: 60, y: 10, width: 40, height: 40 } },
+        ]));
+        return result();
+      } });
+      const taps = commands.filter(command => command[0] === 'idb' && command[2] === 'tap');
+      expect(taps).toEqual([
+        ['idb', 'ui', 'tap', '150', '160', '--udid', 'PHONE'],
+        ['idb', 'ui', 'tap', 'draftButton', '--match-key', 'AXUniqueId', '--expected-key', 'AXUniqueId', '--expected-value', 'draftButton',
+          '--api', 'axbridge', '--udid', 'PHONE'],
+      ]);
+      const transcript = await readFile(path.join(root, (output as { transcript: string }).transcript), 'utf8');
+      expect(transcript).toContain('coordinate fallback: row (index 1) at 150,160');
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('presses an id-less element with a unique label through accessibility', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-idb-label-tap-'));
+    const commands: string[][] = [];
+    try {
+      await runUiPlan(nativeConfig(root), { json: JSON.stringify({ version: 1, actions: [{ tap: { label: 'Save' } }] }) }, {
+        backend: 'idb',
+        run: async (executable, args) => {
+          commands.push([executable, ...args]);
+          return executable === 'idb' && args[1] === 'describe-all' ? result(JSON.stringify([
+            { AXLabel: 'Save draft', frame: { x: 60, y: 10, width: 40, height: 40 } },
+            { AXLabel: 'Save', frame: { x: 10, y: 10, width: 40, height: 40 } },
+          ])) : result();
+        },
+      });
+      expect(commands.filter(command => command[0] === 'idb' && command[2] === 'tap')).toEqual([
+        ['idb', 'ui', 'tap', 'Save', '--match-key', 'AXLabel', '--expected-key', 'AXLabel', '--expected-value', 'Save', '--api', 'axbridge', '--udid', 'PHONE'],
+      ]);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('fails an idb action whose index is beyond the matches', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-idb-index-'));
+    try {
+      const error = await runUiPlan(nativeConfig(root), { json: JSON.stringify({ version: 1, actions: [{ tap: { labelContains: 'Save', index: 1 } }] }) }, {
+        backend: 'idb',
+        run: async (executable, args) => executable === 'idb' && args[1] === 'describe-all'
+          ? result(JSON.stringify([{ AXUniqueId: 'saveButton', AXLabel: 'Save', frame: { x: 10, y: 10, width: 40, height: 40 } }])) : result(),
+      }).catch((e: unknown) => e);
+      expect(error).toMatchObject({ code: 'UI_DELIVERY_FAILED', details: { failedAction: { index: 0, kind: 'tap', message: 'element not found: Save (index 1)' } } });
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
   const secretConfig = (root: string) => ({ version: 2 as const, platform: 'ios' as const, app: { type: 'native' as const,
     project: path.join(root, 'App.xcodeproj'), scheme: 'App', configuration: 'Debug', bundleId: 'com.secret-app.x' },
   simulator: { udid: 'PHONE' }, root, redactions: ['secret-app'] });
 
-  it('redacts configured secrets from idb runner results and trees', async () => {
+  it('redacts configured secrets from idb runner results and inspections', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'agemu-idb-redact-'));
     try {
       const output = await runUiPlan(secretConfig(root), { json: JSON.stringify({ version: 1, actions: [{ inspect: {} }] }) }, {
@@ -295,7 +522,22 @@ describe('UI backend selection', () => {
       const json = JSON.stringify(output);
       expect(json).not.toContain('secret-app');
       expect(json).toContain('com.[REDACTED].x');
-      expect(json).toContain('Welcome to [REDACTED]');
+      expect(output.runnerResult).toMatchObject({ inspections: [{ index: 0, elements: [{ label: 'Welcome to [REDACTED]' }] }] });
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('reports an idb inspection after a recording boundary by its submitted plan index', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-idb-inspect-offset-'));
+    try {
+      const output = await runUiPlan(nativeConfig(root), { json: JSON.stringify({ version: 1, actions: [
+        { inspect: {} }, { startVideoRecording: {} }, { tap: { x: 1, y: 2 } }, { inspect: {} }, { stopVideoRecording: {} },
+      ] }) }, {
+        backend: 'idb',
+        startRecording: async () => ({ stop: async () => undefined }),
+        run: async (executable, args) => executable === 'idb' && args[1] === 'describe-all'
+          ? result(JSON.stringify([{ type: 'Button', AXLabel: 'Go', frame: { x: 0, y: 0, width: 10, height: 10 } }])) : result(),
+      }) as { segments: Array<{ runnerResult: { inspections: Array<{ index: number }> } }> };
+      expect(output.segments.map(segment => segment.runnerResult.inspections.map(inspection => inspection.index))).toEqual([[0], [3]]);
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 
@@ -310,7 +552,10 @@ describe('UI backend selection', () => {
         run: async (executable, args) => {
           if (executable === 'plutil' && args[1] === 'json') return result(JSON.stringify({ AgentRunner: { TestBundlePath: 'Runner.xctest' } }));
           if (executable === 'xcodebuild' && args[0] === 'test-without-building') {
-            const payload = { completed: 1, bundleId: 'com.secret-app.x', trees: ['Application com.secret-app.x'] };
+            const payload = { completed: 1, bundleId: 'com.secret-app.x', inspections: [{ index: 0, nodes: [{
+              type: 'application', identifier: '', label: 'Application com.secret-app.x', value: '',
+              x: 0, y: 0, width: 390, height: 844, enabled: true, selected: false, depth: 0,
+            }] }] };
             return result(`AGEMU_RESULT:${Buffer.from(JSON.stringify(payload)).toString('base64')}\n`);
           }
           return result();
@@ -318,7 +563,10 @@ describe('UI backend selection', () => {
       });
       const json = JSON.stringify(output);
       expect(json).not.toContain('secret-app');
-      expect(output.runnerResult).toEqual({ completed: 1, bundleId: 'com.[REDACTED].x', trees: ['Application com.[REDACTED].x'] });
+      expect(output.runnerResult).toEqual({ completed: 1, bundleId: 'com.[REDACTED].x', inspections: [{ index: 0, elements: [{
+        type: 'application', label: 'Application com.[REDACTED].x', frame: { x: 0, y: 0, width: 390, height: 844 },
+        visible: true, enabled: true, selected: false, depth: 0,
+      }] }] });
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 
@@ -504,7 +752,7 @@ describe('UI backend selection', () => {
       if (executable === 'plutil' && args[1] === 'json') return result(JSON.stringify({ AgentRunner: { TestBundlePath: 'Runner.xctest' } }));
       if (executable === 'xcodebuild' && args[0] === 'test-without-building') {
         await mkdir(args[args.indexOf('-resultBundlePath') + 1], { recursive: true });
-        return result(`AGEMU_RESULT:${Buffer.from(JSON.stringify({ completed: 4, trees: [] })).toString('base64')}\n`);
+        return result(`AGEMU_RESULT:${Buffer.from(JSON.stringify({ completed: 4, inspections: [] })).toString('base64')}\n`);
       }
       if (executable === 'xcrun' && args[0] === 'xcresulttool') return exportAttachments(args[args.indexOf('--output-path') + 1]);
       return result();
@@ -608,9 +856,21 @@ describe('UI backend selection', () => {
     ['unknown kind', { tapp: {} }, 'Action 1: unknown action tapp'],
     ['two kinds', { tap: { label: 'Go' }, inspect: {} }, 'Action 1: must contain exactly one action'],
     ['non-object action', 'tap', 'Action 1: must contain exactly one action'],
-    ['tap without target', { tap: {} }, 'Action 1: tap needs exactly one string identifier or label'],
-    ['tap with target and coordinates', { tap: { label: 'Go', x: 1, y: 2 } }, 'Action 1: tap needs one string identifier or label, or finite x and y, not both'],
-    ['assertVisible with both targets', { assertVisible: { identifier: 'a', label: 'b' } }, 'Action 1: assertVisible needs exactly one string identifier or label'],
+    ['tap without target', { tap: {} }, 'Action 1: tap needs a string identifier, label, or labelContains'],
+    ['tap with target and coordinates', { tap: { label: 'Go', x: 1, y: 2 } }, 'Action 1: tap needs a target or finite x and y, not both'],
+    ['tap with index and coordinates', { tap: { index: 0, x: 1, y: 2 } }, 'Action 1: tap needs a target or finite x and y, not both'],
+    ['assertVisible with both targets', { assertVisible: { identifier: 'a', label: 'b' } }, 'Action 1: assertVisible accepts identifier or label, not both'],
+    ['type alone', { tap: { type: 'button' } }, 'Action 1: tap needs a string identifier, label, or labelContains'],
+    ['type alone on wait', { wait: { type: 'button', timeout: 1 } }, 'Action 1: wait needs a string identifier, label, or labelContains'],
+    ['negative index', { assertExists: { identifier: 'row', index: -1 } }, 'Action 1: assertExists index must be a non-negative integer'],
+    ['fractional index', { assertExists: { identifier: 'row', index: 1.5 } }, 'Action 1: assertExists index must be a non-negative integer'],
+    ['negative index on a swipe target', { swipe: { direction: 'up', identifier: 'list', index: -1 } }, 'Action 1: swipe index must be a non-negative integer'],
+    ['non-string labelContains', { longPress: { labelContains: 3 } }, 'Action 1: longPress labelContains must be a string'],
+    ['unknown type', { assertExists: { label: 'Go', type: 'widget' } }, expect.stringMatching(/^Action 1: assertExists type must be one of .*button/)],
+    ['application type', { assertExists: { label: 'Go', type: 'application' } }, expect.stringMatching(/^Action 1: assertExists type must be one of/)],
+    ['empty labelContains', { assertExists: { labelContains: '' } }, 'Action 1: assertExists labelContains must not be empty'],
+    ['unsafe index', { assertExists: { identifier: 'row', index: 1e300 } }, 'Action 1: assertExists index must be a non-negative integer'],
+    ['the catch-all other type', { assertExists: { label: 'Go', type: 'other' } }, expect.stringMatching(/^Action 1: assertExists type must be one of/)],
     ['type without text', { type: { identifier: 'email' } }, 'Action 1: type needs string text'],
     ['assertValue without value', { assertValue: { identifier: 'email' } }, 'Action 1: assertValue needs string value'],
     ['unknown field', { assertExists: { label: 'Go', timeout: 2 } }, 'Action 1: assertExists does not accept timeout'],
@@ -618,6 +878,35 @@ describe('UI backend selection', () => {
     ['bad env name', { launch: { environment: { 'BAD-NAME': 'x' } } }, 'Action 1: launch environment must map valid variable names to strings'],
     ['non-string argument', { launch: { arguments: [1] } }, 'Action 1: launch arguments must be an array of strings'],
     ['non-string screenshot name', { screenshot: { name: 3 } }, 'Action 1: screenshot name must be a string'],
+    ['unknown key', { pressKey: { key: 'escape' } }, 'Action 1: pressKey key must be one of return, delete, tab, space'],
+    ['missing key', { pressKey: {} }, 'Action 1: pressKey key must be one of return, delete, tab, space'],
+    ['zero key count', { pressKey: { key: 'delete', count: 0 } }, 'Action 1: pressKey count must be an integer from 1 to 100'],
+    ['key count above 100', { pressKey: { key: 'delete', count: 101 } }, 'Action 1: pressKey count must be an integer from 1 to 100'],
+    ['fractional key count', { pressKey: { key: 'delete', count: 1.5 } }, 'Action 1: pressKey count must be an integer from 1 to 100'],
+    ['unknown button', { pressButton: { button: 'lock' } }, 'Action 1: pressButton button must be one of home'],
+    ['clear without target', { clear: {} }, 'Action 1: clear needs a string identifier, label, or labelContains'],
+    ['openUrl without url', { openUrl: {} }, 'Action 1: openUrl needs a valid url string'],
+    ['unparsable url', { openUrl: { url: 'not a url' } }, 'Action 1: openUrl needs a valid url string'],
+    ['non-boolean confirm', { openUrl: { url: 'app://x', confirm: 'yes' } }, 'Action 1: openUrl confirm must be a boolean'],
+    ['terminate with fields', { terminate: { bundleId: 'other.app' } }, 'Action 1: terminate does not accept bundleId'],
+    ['assertText with two modes', { assertText: { label: 'A', equals: 'x', contains: 'x' } }, 'Action 1: assertText needs exactly one string equals, contains, or matches'],
+    ['assertText with no mode', { assertText: { label: 'A' } }, 'Action 1: assertText needs exactly one string equals, contains, or matches'],
+    ['assertText with a non-string mode', { assertText: { label: 'A', equals: 3 } }, 'Action 1: assertText needs exactly one string equals, contains, or matches'],
+    ['assertText with a bad regex', { assertText: { label: 'A', matches: '(' } }, 'Action 1: assertText matches must be a valid regular expression'],
+    ['assertText without target', { assertText: { equals: 'x' } }, 'Action 1: assertText needs a string identifier, label, or labelContains'],
+    ['scrollUntilVisible without target', { scrollUntilVisible: {} }, 'Action 1: scrollUntilVisible target must be an object'],
+    ['scrollUntilVisible with zero maxSwipes', { scrollUntilVisible: { target: { label: 'A' }, maxSwipes: 0 } },
+      'Action 1: scrollUntilVisible maxSwipes must be an integer from 1 to 50'],
+    ['scrollUntilVisible with 51 maxSwipes', { scrollUntilVisible: { target: { label: 'A' }, maxSwipes: 51 } },
+      'Action 1: scrollUntilVisible maxSwipes must be an integer from 1 to 50'],
+    ['scrollUntilVisible with a bad direction', { scrollUntilVisible: { target: { label: 'A' }, direction: 'sideways' } },
+      'Action 1: scrollUntilVisible direction must be one of up, down, left, right'],
+    ['scrollUntilVisible with a bad nested target', { scrollUntilVisible: { target: { identifier: 'a', label: 'b' } } },
+      'Action 1: scrollUntilVisible target accepts identifier or label, not both'],
+    ['scrollUntilVisible with a bad container', { scrollUntilVisible: { target: { label: 'A' }, in: { type: 'table' } } },
+      'Action 1: scrollUntilVisible in needs a string identifier, label, or labelContains'],
+    ['scrollUntilVisible with an unknown nested field', { scrollUntilVisible: { target: { label: 'A', timeout: 1 } } },
+      'Action 1: scrollUntilVisible target does not accept timeout'],
   ])('rejects a plan with %s before any process runs', async (_name, action, message) => {
     const root = await mkdtemp(path.join(tmpdir(), 'agemu-ui-validate-'));
     const commands: string[] = [];
@@ -629,6 +918,139 @@ describe('UI backend selection', () => {
       expect(commands).toEqual([]);
       await expect(stat(path.join(root, '.agemu'))).rejects.toMatchObject({ code: 'ENOENT' });
     } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  const runIdbKeys = async (actions: unknown[], value?: string) => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-idb-keys-'));
+    const commands: string[][] = [];
+    try {
+      const output = await runUiPlan(nativeConfig(root), { json: JSON.stringify({ version: 1, actions }) }, {
+        backend: 'idb',
+        run: async (executable, args) => {
+          commands.push([executable, ...args]);
+          return executable === 'idb' && args[1] === 'describe-all' ? result(JSON.stringify([
+            { AXUniqueId: 'nameField', ...(value === undefined ? {} : { AXValue: value }), frame: { x: 10, y: 100, width: 200, height: 40 } },
+          ])) : result();
+        },
+      });
+      return { output, inputs: commands.filter(command => command[0] === 'idb' && command[1] === 'ui' && command[2] !== 'describe-all') };
+    } finally { await rm(root, { recursive: true, force: true }); }
+  };
+  const tapNameField = ['idb', 'ui', 'tap', 'nameField', '--match-key', 'AXUniqueId', '--expected-key', 'AXUniqueId', '--expected-value', 'nameField',
+    '--api', 'axbridge', '--udid', 'PHONE'];
+  const deleteKey = ['idb', 'ui', 'key', '42', '--udid', 'PHONE'];
+
+  it('clears an idb field by tapping it and deleting each character of its value', async () => {
+    const { output, inputs } = await runIdbKeys([{ clear: { identifier: 'nameField' } }], 'abc');
+    expect(output).toMatchObject({ backend: 'idb', runnerResult: { completed: 1 } });
+    expect(inputs).toEqual([tapNameField, deleteKey, deleteKey, deleteKey]);
+  });
+
+  it.each([['an empty value', ''], ['no value', undefined]])('clears an idb field with %s without keystrokes', async (_case, value) => {
+    expect((await runIdbKeys([{ clear: { identifier: 'nameField' } }], value)).inputs).toEqual([tapNameField]);
+  });
+
+  it('presses keys and the Home button through idb', async () => {
+    const { inputs } = await runIdbKeys([{ pressKey: { key: 'return' } }, { pressKey: { key: 'space', count: 2 } }, { pressButton: { button: 'home' } }]);
+    expect(inputs).toEqual([
+      ['idb', 'ui', 'key', '40', '--udid', 'PHONE'],
+      ['idb', 'ui', 'key', '44', '--udid', 'PHONE'],
+      ['idb', 'ui', 'key', '44', '--udid', 'PHONE'],
+      ['idb', 'ui', 'button', 'HOME', '--udid', 'PHONE'],
+    ]);
+  });
+
+  const existingOpen = { type: 'Button', AXLabel: 'Open', frame: { x: 10, y: 10, width: 60, height: 40 } };
+  const promptOpen = { type: 'Button', AXLabel: 'Open', frame: { x: 200, y: 400, width: 120, height: 44 } };
+  const openText = { type: 'StaticText', AXLabel: 'Open', frame: { x: 0, y: 600, width: 100, height: 20 } };
+  const promptTitle = (app: string) => ({ type: 'StaticText', AXLabel: `Open in “${app}”?`, frame: { x: 60, y: 340, width: 270, height: 22 } });
+  const promptCancel = { type: 'Button', AXLabel: 'Cancel', frame: { x: 70, y: 400, width: 120, height: 44 } };
+  /** Runs an idb plan whose tree is `before` until `simctl openurl` succeeds, then `before` plus `after`. */
+  const runIdbOpenUrl = async (actions: unknown[], options: { before?: object[]; after?: object[]; terminateStderr?: string; openurlStderr?: string;
+    appName?: string } = {}) => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-idb-openurl-'));
+    const commands: string[][] = [];
+    let prompted = false;
+    try {
+      const output = await runUiPlan(nativeConfig(root), { json: JSON.stringify({ version: 1, actions }) }, {
+        backend: 'idb',
+        run: async (executable, args) => {
+          commands.push([executable, ...args]);
+          if (executable === 'idb' && args[1] === 'describe-all') {
+            return result(JSON.stringify([...(options.before ?? []), ...(prompted ? options.after ?? [] : [])]));
+          }
+          if (executable === 'xcrun' && args[1] === 'openurl') {
+            if (options.openurlStderr) return result('', options.openurlStderr, 1);
+            prompted = true;
+          }
+          if (executable === 'xcrun' && args[1] === 'terminate' && options.terminateStderr) return result('', options.terminateStderr, 3);
+          if (executable === 'xcrun' && args[1] === 'appinfo' && options.appName) return result(`{\n    CFBundleDisplayName = "${options.appName}";\n}\n`);
+          return result();
+        },
+      }).catch((e: unknown) => e);
+      const transcript = await readFile(path.join(root, (output as { transcript?: string; details?: { transcript?: string } }).transcript
+        ?? (output as { details: { transcript: string } }).details.transcript), 'utf8');
+      return { output, commands, transcript, taps: commands.filter(command => command[0] === 'idb' && command[2] === 'tap') };
+    } finally { await rm(root, { recursive: true, force: true }); }
+  };
+
+  it('opens a URL and terminates the app through simctl, tolerating an app that is not running', async () => {
+    const { output, commands } = await runIdbOpenUrl([{ openUrl: { url: 'agemufixture://deep/link' } }, { terminate: {} }],
+      { terminateStderr: 'found nothing to terminate' });
+    expect(output).toMatchObject({ backend: 'idb', runnerResult: { completed: 2 } });
+    expect(commands).toContainEqual(['xcrun', 'simctl', 'openurl', 'PHONE', 'agemufixture://deep/link']);
+    expect(commands).toContainEqual(['xcrun', 'simctl', 'terminate', 'PHONE', 'com.example.app']);
+  });
+
+  it('fails openUrl with the simctl error when no app handles the URL', async () => {
+    const { output } = await runIdbOpenUrl([{ openUrl: { url: 'nohandler://x' } }], { openurlStderr: 'no application registered for nohandler' });
+    expect(output).toMatchObject({ code: 'UI_DELIVERY_FAILED',
+      details: { failedAction: { index: 0, kind: 'openUrl', message: 'no application registered for nohandler' } } });
+  });
+
+  it('fails terminate when simctl reports another error', async () => {
+    const { output } = await runIdbOpenUrl([{ terminate: {} }], { terminateStderr: 'device is not booted' });
+    expect(output).toMatchObject({ details: { failedAction: { index: 0, kind: 'terminate', message: 'device is not booted' } } });
+  });
+
+  it('presses a newly appeared Open prompt after openUrl with confirm: true', async () => {
+    const { output, taps, transcript } = await runIdbOpenUrl([{ openUrl: { url: 'agemufixture://deep/link', confirm: true } }],
+      { after: [promptTitle('Fixture'), promptCancel, promptOpen], appName: 'Fixture' });
+    expect(output).toMatchObject({ runnerResult: { completed: 1 } });
+    expect(taps).toEqual([['idb', 'ui', 'tap', 'Open', '--match-key', 'AXLabel', '--expected-key', 'AXLabel', '--expected-value', 'Open',
+      '--api', 'axbridge', '--udid', 'PHONE']]);
+    expect(transcript).toContain('openUrl confirmation: pressed Open');
+  });
+
+  it('presses only the new Open button, never a new "Open" text or the one already on screen', async () => {
+    // Duplicate labels force a tap at the new button's center (260,422).
+    const { taps } = await runIdbOpenUrl([{ openUrl: { url: 'agemufixture://deep/link', confirm: true } }],
+      { before: [existingOpen], after: [openText, promptTitle('Fixture'), promptCancel, promptOpen] });
+    expect(taps).toEqual([['idb', 'ui', 'tap', '260', '422', '--udid', 'PHONE']]);
+  });
+
+  it.each([
+    ['a new app Open button without the prompt title or Cancel', [promptOpen], undefined],
+    ['a prompt naming a different app', [promptTitle('Other'), promptCancel, promptOpen], 'Fixture'],
+  ])('does not press %s', async (_case, after, appName) => {
+    const { output, taps, transcript } = await runIdbOpenUrl([{ openUrl: { url: 'agemufixture://deep/link', confirm: true } }], { after, appName });
+    expect(output).toMatchObject({ runnerResult: { completed: 1 } });
+    expect(taps).toEqual([]);
+    expect(transcript).toContain('openUrl confirmation: no Open prompt appeared');
+  });
+
+  it('makes no tree reads or taps for openUrl without confirm', async () => {
+    const { commands } = await runIdbOpenUrl([{ openUrl: { url: 'agemufixture://deep/link' } }]);
+    // Only the backend probe reads the tree.
+    expect(commands.filter(command => command[0] === 'idb' && command[2] === 'describe-all')).toHaveLength(1);
+    expect(commands.filter(command => command[0] === 'idb' && command[2] === 'tap')).toEqual([]);
+  });
+
+  it('does not press an Open button that was on screen before openUrl', async () => {
+    const { output, taps, transcript } = await runIdbOpenUrl([{ openUrl: { url: 'agemufixture://deep/link', confirm: true } }], { before: [existingOpen], after: [openText] });
+    expect(output).toMatchObject({ runnerResult: { completed: 1 } });
+    expect(taps).toEqual([]);
+    expect(transcript).toContain('openUrl confirmation: no Open prompt appeared');
   });
 
   const offscreenTree = JSON.stringify([
@@ -660,6 +1082,113 @@ describe('UI backend selection', () => {
       await expect(runIdbAssertion(root, { assertExists: { label: 'Missing' } })).rejects.toMatchObject({
         details: { failedAction: { kind: 'assertExists', message: 'element does not exist: Missing' } },
       });
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  /** Runs an idb plan over a list whose `Item 24` scrolls on screen after `visibleAfter` swipes (never when undefined). */
+  const runIdbScroll = async (actions: unknown[], visibleAfter?: number) => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-idb-scroll-'));
+    const swipes: string[][] = [];
+    try {
+      const output = await runUiPlan(nativeConfig(root), { json: JSON.stringify({ version: 1, actions }) }, {
+        backend: 'idb',
+        run: async (executable, args) => {
+          if (executable === 'idb' && args[1] === 'swipe') swipes.push([executable, ...args]);
+          if (executable === 'idb' && args[1] === 'describe-all') {
+            const shown = visibleAfter !== undefined && swipes.length >= visibleAfter;
+            return result(JSON.stringify([
+              { type: 'Application', AXLabel: 'Fixture', frame: { x: 0, y: 0, width: 390, height: 844 } },
+              { type: 'Table', AXUniqueId: 'resultsList', frame: { x: 0, y: 100, width: 390, height: 600 } },
+              { type: 'StaticText', AXLabel: 'Item 24', frame: { x: 0, y: shown ? 400 : 1440, width: 390, height: 44 } },
+            ]));
+          }
+          return result();
+        },
+      }).catch((e: unknown) => e);
+      return { output, swipes };
+    } finally { await rm(root, { recursive: true, force: true }); }
+  };
+
+  it('swipes the idb container until the target is visible, then stops', async () => {
+    const { output, swipes } = await runIdbScroll([{ scrollUntilVisible: { target: { label: 'Item 24' }, in: { identifier: 'resultsList' } } }], 2);
+    expect(output).toMatchObject({ backend: 'idb', runnerResult: { completed: 1 } });
+    // Finger moves up across the list's center: 30% of its height each way.
+    expect(swipes).toEqual([
+      ['idb', 'ui', 'swipe', '195', '580', '195', '220', '--udid', 'PHONE'],
+      ['idb', 'ui', 'swipe', '195', '580', '195', '220', '--udid', 'PHONE'],
+    ]);
+  });
+
+  it('does not swipe when the idb target is already visible', async () => {
+    const { output, swipes } = await runIdbScroll([{ scrollUntilVisible: { target: { label: 'Item 24' } } }], 0);
+    expect(output).toMatchObject({ runnerResult: { completed: 1 } });
+    expect(swipes).toEqual([]);
+  });
+
+  it('swipes the idb app frame in the given direction when no container is given', async () => {
+    const { swipes } = await runIdbScroll([{ scrollUntilVisible: { target: { label: 'Item 24' }, direction: 'down' } }], 1);
+    expect(swipes).toEqual([['idb', 'ui', 'swipe', '195', '169', '195', '675', '--udid', 'PHONE']]);
+  });
+
+  it('fails after exactly maxSwipes idb swipes when the target never appears', async () => {
+    const { output, swipes } = await runIdbScroll([{ scrollUntilVisible: { target: { label: 'Item 24' }, maxSwipes: 3 } }]);
+    expect(swipes).toHaveLength(3);
+    expect(output).toMatchObject({ code: 'UI_DELIVERY_FAILED',
+      details: { failedAction: { index: 0, kind: 'scrollUntilVisible', message: 'target not visible after 3 swipes: Item 24' } } });
+  });
+
+  it('names a missing idb container without swiping', async () => {
+    const { output, swipes } = await runIdbScroll([{ scrollUntilVisible: { target: { label: 'Item 24' }, in: { identifier: 'missingList' } } }]);
+    expect(swipes).toEqual([]);
+    expect(output).toMatchObject({ details: { failedAction: { message: 'container not found: missingList' } } });
+  });
+
+  it('stops idb scrolling at the plan deadline', async () => {
+    const started = Date.now();
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-idb-scroll-deadline-'));
+    try {
+      const error = await runUiPlan(nativeConfig(root), { json: JSON.stringify({ version: 1, actions: [
+        { scrollUntilVisible: { target: { label: 'Item 24' }, maxSwipes: 50 } }] }) }, {
+        backend: 'idb', timeoutMs: 500,
+        run: async (executable, args) => executable === 'idb' && args[1] === 'describe-all' ? result(offscreenTree) : result(),
+      }).catch((e: unknown) => e);
+      expect(error).toMatchObject({ code: 'PROCESS_TIMEOUT', details: { failedAction: { kind: 'scrollUntilVisible' } } });
+      expect(Date.now() - started).toBeLessThan(2_000);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  const textTree = JSON.stringify([
+    { AXUniqueId: 'status', AXLabel: 'Status', AXValue: 'Swiped left', frame: { x: 0, y: 0, width: 100, height: 20 } },
+    { AXUniqueId: 'title', AXLabel: 'Item 24', AXValue: '', frame: { x: 0, y: 30, width: 100, height: 20 } },
+  ]);
+  const runIdbText = (root: string, assertion: Record<string, unknown>) => runUiPlan(nativeConfig(root),
+    { json: JSON.stringify({ version: 1, actions: [{ assertText: assertion }] }) }, {
+      backend: 'idb',
+      run: async (executable, args) => executable === 'idb' && args[1] === 'describe-all' ? result(textTree) : result(),
+    });
+
+  it.each([
+    ['equals on the value', { identifier: 'status', equals: 'Swiped left' }],
+    ['contains on the value', { identifier: 'status', contains: 'left' }],
+    ['matches searched in the value', { identifier: 'status', matches: 'ped\\s+l' }],
+    ['equals on the label when the value is empty', { identifier: 'title', equals: 'Item 24' }],
+    ['matches anchored on the label', { identifier: 'title', matches: '^Item \\d+$' }],
+  ])('passes idb assertText with %s', async (_case, assertion) => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-idb-text-'));
+    try {
+      await expect(runIdbText(root, assertion)).resolves.toMatchObject({ runnerResult: { completed: 1 } });
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it.each([
+    ['equals the label while a value exists', { identifier: 'status', equals: 'Status' }, 'text does not match: expected equals Status, got Swiped left'],
+    ['contains a missing fragment', { identifier: 'status', contains: 'right' }, 'text does not match: expected contains right, got Swiped left'],
+    ['matches a non-matching pattern', { identifier: 'title', matches: '^Item \\d$' }, 'text does not match: expected matches ^Item \\d$, got Item 24'],
+    ['a missing element', { identifier: 'nothing', equals: 'x' }, 'element not found: nothing'],
+  ])('fails idb assertText that %s', async (_case, assertion, message) => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-idb-text-'));
+    try {
+      await expect(runIdbText(root, assertion)).rejects.toMatchObject({ code: 'UI_DELIVERY_FAILED', details: { failedAction: { kind: 'assertText', message } } });
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 
@@ -695,7 +1224,7 @@ describe('UI backend selection', () => {
         run: async (executable, args) => {
           if (executable === 'idb') throw new Error('idb is not installed');
           if (executable === 'plutil' && args[1] === 'json') return result(JSON.stringify({ AgentRunner: { TestBundlePath: 'Runner.xctest' } }));
-          if (executable === 'xcodebuild' && args[0] === 'test-without-building') return result(`AGEMU_RESULT:${Buffer.from(JSON.stringify({ completed: 1, trees: [] })).toString('base64')}\n`);
+          if (executable === 'xcodebuild' && args[0] === 'test-without-building') return result(`AGEMU_RESULT:${Buffer.from(JSON.stringify({ completed: 1, inspections: [] })).toString('base64')}\n`);
           if (executable === 'xcodebuild') throw new Error('The cached runner must be reused');
           return result();
         },
