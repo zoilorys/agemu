@@ -185,7 +185,7 @@ describe('logs show command', () => {
       type, timestamp, args: [{ type: 'string', value }], stackTrace: { callFrames: [{ functionName: 'login', url: 'http://127.0.0.1:8093/secret-value.bundle', lineNumber: 3, columnNumber: 7 }] },
     } });
     const dependencies = (frames: string[], start: number) => ({
-      clock: () => start, now: () => new Date(start), serverStatus: async () => ({ running: true }), resolveDevice: async () => device,
+      clock: () => start, now: () => new Date(start), serverStatus: async () => ({ running: true }), listDevices: async () => [device],
       fetch: async () => ({ ok: true, status: 200, json: async () => [target] }), WebSocketImpl: socketOf(frames),
     });
 
@@ -262,6 +262,24 @@ describe('logs show command', () => {
           await expect(captureJsLogs(goConfig(root), options, base)).rejects.toMatchObject({ code: 'COMMAND_INVALID' });
         }
         expect(fetched).toEqual([]);
+      } finally { await rm(root, { recursive: true, force: true }); }
+    });
+
+    it('refuses a shut-down Simulator or a same-name booted Simulator before contacting Metro', async () => {
+      const root = await mkdtemp(path.join(tmpdir(), 'agemu-js-'));
+      const fetched: string[] = [];
+      // Metro lists the app on a Simulator named like the configured one, so only the device check can refuse it.
+      const base = { ...dependencies([], Date.now()), fetch: async (url: string) => { fetched.push(url); return { ok: true, status: 200, json: async () => [target] }; } };
+      const twin: Device = { ...device, udid: 'TWIN' };
+      try {
+        await expect(captureJsLogs(goConfig(root), { duration: '5s' }, { ...base, listDevices: async () => [{ ...device, state: 'Shutdown' }, twin] }))
+          .rejects.toMatchObject({ code: 'SIMULATOR_NOT_BOOTED', details: { udid: 'PHONE' } });
+        await expect(captureJsLogs(goConfig(root), { duration: '5s' }, { ...base, listDevices: async () => [device, twin] }))
+          .rejects.toMatchObject({ code: 'PROCESS_FAILED', message: expect.stringContaining('Another booted Simulator is also named iPhone'), details: { udid: 'PHONE', sameName: ['TWIN'] } });
+        expect(fetched).toEqual([]);
+        const start = Date.now();
+        await expect(captureJsLogs(goConfig(root), { duration: '5s', until: 'x' }, { ...dependencies([consoleFrame('log', start + 1, 'x')], start), listDevices: async () => [device, { ...twin, state: 'Shutdown' }] }))
+          .resolves.toMatchObject({ target: { id: target.id } });
       } finally { await rm(root, { recursive: true, force: true }); }
     });
   });

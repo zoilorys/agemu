@@ -8,6 +8,7 @@ import {
   captureConsole, listTargets, selectTarget, type CaptureResult, type FetchLike, type JsConsoleMessage, type SelectedTarget, type WebSocketFactory,
 } from '../native/js-console.js';
 import { listDevices, resolveDevice, type Device } from '../native/simctl.js';
+import { requireBooted } from '../native/simctl-commands.js';
 import { server } from './server.js';
 
 export type JsLogOptions = { duration?: string; until?: string; limit?: number };
@@ -15,7 +16,7 @@ type Dependencies = {
   now?: () => Date;
   clock?: () => number;
   serverStatus?: (config: LoadedConfig) => Promise<{ running: boolean; collision?: boolean }>;
-  resolveDevice?: (config: LoadedConfig) => Promise<Device>;
+  listDevices?: () => Promise<Device[]>;
   fetch?: FetchLike;
   WebSocketImpl?: WebSocketFactory;
 };
@@ -42,7 +43,16 @@ export async function captureJsLogs(config: LoadedConfig, options: JsLogOptions 
   }
   const status = await (dependencies.serverStatus ?? defaultStatus)(config);
   if (!status.running || status.collision) throw new CliError('PROCESS_FAILED', 'Metro/Expo server is not running for this project; run agemu server start');
-  const device = await (dependencies.resolveDevice ? dependencies.resolveDevice(config) : listDevices().then((devices) => resolveDevice(devices, config.simulator)));
+  const devices = await (dependencies.listDevices ?? listDevices)();
+  const device = resolveDevice(devices, config.simulator);
+  requireBooted(device);
+  // Metro identifies a target only by device name, so a same-name booted Simulator would be indistinguishable.
+  const twins = devices.filter((other) => other.udid !== device.udid && other.name === device.name && other.state === 'Booted');
+  if (twins.length > 0) {
+    throw new CliError('PROCESS_FAILED', `Another booted Simulator is also named ${device.name}; Metro identifies JavaScript targets only by device name, so agemu cannot tell them apart. Shut down or rename the other Simulator`, {
+      udid: device.udid, sameName: twins.map((other) => other.udid),
+    });
+  }
   const now = dependencies.now?.() ?? new Date();
   const clock = dependencies.clock ?? Date.now;
   const run = await createRun(config.root, now);

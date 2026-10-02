@@ -344,7 +344,7 @@ agemu logs stream --duration=30s --until='Login succeeded'
 agemu logs js --duration=30s --until='Login failed'
 ```
 
-For React Native and Expo apps, `logs js` captures in-app `console.*` messages through the running Metro/Expo server (`agemu server start`) and returns one JSON response when `--duration` (required, 1s to 10m) elapses, a message matches `--until`, or the app disconnects. The app must be loaded on the configured Simulator; otherwise it fails with `PROCESS_FAILED`. Native apps return `WORKFLOW_UNSUPPORTED`.
+For React Native and Expo apps, `logs js` captures in-app `console.*` messages through the running Metro/Expo server (`agemu server start`) and returns one JSON response when `--duration` (required, 1s to 10m) elapses, a message matches `--until`, or the app disconnects. The app must be loaded on the configured Simulator; otherwise it fails with `PROCESS_FAILED`. A shut-down Simulator fails with `SIMULATOR_NOT_BOOTED`. Metro identifies apps only by device name, so `logs js` refuses to run while another booted Simulator has the same name. Native apps return `WORKFLOW_UNSUPPORTED`.
 
 - Each message has `level` (the console method name; observed: `log`, `info`, `warn`, `error`), `text`, an ISO `timestamp`, and `stack` (first call frame, bundle positions, not source-mapped). Objects render from the preview React Native sends, capped at 4000 characters per message.
 - React Native replays messages logged before the command starts; they are filtered out, so only messages logged during the capture are returned.
