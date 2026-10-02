@@ -80,8 +80,12 @@ const actionFields: Record<string, string[] | undefined> = {
   pressButton: ['button'],
   openUrl: ['url', 'confirm'],
   terminate: [],
+  scrollUntilVisible: ['target', 'in', 'direction', 'maxSwipes'],
+  assertText: [...targetFields, 'equals', 'contains', 'matches'],
 };
-const targetedActions = new Set(['tap', 'type', 'assertVisible', 'assertExists', 'assertNotVisible', 'assertValue', 'clear']);
+const targetedActions = new Set(['tap', 'type', 'assertVisible', 'assertExists', 'assertNotVisible', 'assertValue', 'clear', 'assertText']);
+export const swipeDirections = ['up', 'down', 'left', 'right'];
+export const textModes = ['equals', 'contains', 'matches'] as const;
 export const pressKeys = ['return', 'delete', 'tab', 'space'];
 export const pressButtons = ['home'];
 
@@ -123,7 +127,31 @@ function validatePlan(value: unknown): UiPlan {
         fail('pressKey count must be an integer from 1 to 100');
       }
     }
-    if (kind === 'pressButton' && !pressButtons.includes(input.button as string)) fail(`pressButton button must be one of ${pressButtons.join(', ')}`);
+    if (kind === 'scrollUntilVisible') {
+      for (const field of ['target', 'in']) {
+        const nested = input[field];
+        if (nested === undefined && field === 'in') continue;
+        if (!object(nested)) fail(`scrollUntilVisible ${field} must be an object`);
+        const fields = nested as Record<string, unknown>;
+        for (const key of Object.keys(fields)) if (!targetFields.includes(key)) fail(`scrollUntilVisible ${field} does not accept ${key}`);
+        const problem = targetProblem(fields);
+        if (problem) fail(`scrollUntilVisible ${field} ${problem}`);
+      }
+      if (input.direction !== undefined && !swipeDirections.includes(input.direction as string)) {
+        fail(`scrollUntilVisible direction must be one of ${swipeDirections.join(', ')}`);
+      }
+      if (input.maxSwipes !== undefined && !(Number.isSafeInteger(input.maxSwipes) && (input.maxSwipes as number) >= 1 && (input.maxSwipes as number) <= 50)) {
+        fail('scrollUntilVisible maxSwipes must be an integer from 1 to 50');
+      }
+    }
+    if (kind === 'assertText') {
+      const modes = textModes.filter(mode => input[mode] !== undefined);
+      if (modes.length !== 1 || typeof input[modes[0]!] !== 'string') fail('assertText needs exactly one string equals, contains, or matches');
+      if (modes[0] === 'matches') {
+        try { new RegExp(input.matches as string); } catch { fail('assertText matches must be a valid regular expression'); }
+      }
+    }
+    if (kind === 'pressButton' &&!pressButtons.includes(input.button as string)) fail(`pressButton button must be one of ${pressButtons.join(', ')}`);
     if (kind === 'openUrl') {
       const parses = (url: string) => { try { new URL(url); return true; } catch { return false; } };
       if (typeof input.url !== 'string' || !parses(input.url)) fail('openUrl needs a valid url string');

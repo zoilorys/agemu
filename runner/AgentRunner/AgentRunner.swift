@@ -40,6 +40,18 @@ final class AgentRunner: XCTestCase {
         let pressButton: ButtonAction?
         let openUrl: OpenUrl?
         let terminate: Empty?
+        let scrollUntilVisible: ScrollUntilVisible?
+        let assertText: TextAssertion?
+    }
+    private struct TargetFields: Decodable, Targeting {
+        let identifier: String?; let label: String?; let labelContains: String?; let type: String?; let index: Int?
+    }
+    private struct ScrollUntilVisible: Decodable {
+        let target: TargetFields; let `in`: TargetFields?; let direction: String?; let maxSwipes: Int?
+    }
+    private struct TextAssertion: Decodable, Targeting {
+        let identifier: String?; let label: String?; let labelContains: String?; let type: String?; let index: Int?
+        let equals: String?; let contains: String?; let matches: String?
     }
     private struct OpenUrl: Decodable { let url: String; let confirm: Bool? }
     private struct KeyAction: Decodable { let key: String; let count: Int? }
@@ -102,6 +114,8 @@ final class AgentRunner: XCTestCase {
         if action.pressButton != nil { return "pressButton" }
         if action.openUrl != nil { return "openUrl" }
         if action.terminate != nil { return "terminate" }
+        if action.scrollUntilVisible != nil { return "scrollUntilVisible" }
+        if action.assertText != nil { return "assertText" }
         return "unknown"
     }
 
@@ -264,6 +278,10 @@ final class AgentRunner: XCTestCase {
                 _ = app.wait(for: .runningForeground, timeout: 5)
             } else if action.terminate != nil {
                 app.terminate()
+            } else if let scroll = action.scrollUntilVisible {
+                return try scrollUntilVisible(scroll, in: app)
+            } else if let assertion = action.assertText {
+                return try assertText(assertion, in: app)
             } else {
                 return "action has no supported operation"
             }
@@ -408,6 +426,54 @@ final class AgentRunner: XCTestCase {
         } else {
             try element(press, in: app).press(forDuration: duration)
         }
+    }
+
+    /// Swipes `in` (or the app) until the target is visible (`exists && isHittable`), at most `maxSwipes` times. Mirrors idb-ui.ts.
+    @MainActor
+    private func scrollUntilVisible(_ scroll: ScrollUntilVisible, in app: XCUIApplication) throws -> String? {
+        let target = try element(scroll.target, in: app)
+        let maxSwipes = scroll.maxSwipes ?? 10
+        var swipes = 0
+        while !(target.exists && target.isHittable) {
+            if swipes >= maxSwipes { return "target not visible after \(swipes) swipes: \(scroll.target.targetDescription)" }
+            var surface: XCUIElement = app
+            if let container = scroll.`in` {
+                surface = try element(container, in: app)
+                if !surface.exists { return "container not found: \(container.targetDescription)" }
+            }
+            switch scroll.direction ?? "up" {
+            case "up": surface.swipeUp()
+            case "down": surface.swipeDown()
+            case "left": surface.swipeLeft()
+            case "right": surface.swipeRight()
+            default: return "unsupported direction \(scroll.direction ?? "")"
+            }
+            swipes += 1
+            Thread.sleep(forTimeInterval: 0.3)
+        }
+        return nil
+    }
+
+    /// Compares the element's value (or its label when the value is empty) by one mode. Mirrors idb-ui.ts `textMismatch`.
+    @MainActor
+    private func assertText(_ assertion: TextAssertion, in app: XCUIApplication) throws -> String? {
+        let candidate = try element(assertion, in: app)
+        if !candidate.exists { return "element not found: \(assertion.targetDescription)" }
+        let value = candidate.value as? String ?? ""
+        let text = value.isEmpty ? candidate.label : value
+        let result: (mode: String, expected: String, passed: Bool)
+        if let equals = assertion.equals {
+            result = ("equals", equals, text == equals)
+        } else if let contains = assertion.contains {
+            result = ("contains", contains, text.contains(contains))
+        } else if let pattern = assertion.matches {
+            // ICU and JavaScript regex dialects differ; an ICU-only rejection is an action failure, not a crash.
+            guard let regex = try? NSRegularExpression(pattern: pattern) else { return "invalid regular expression: \(pattern)" }
+            result = ("matches", pattern, regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) != nil)
+        } else {
+            return "assertText needs equals, contains, or matches"
+        }
+        return result.passed ? nil : "text does not match: expected \(result.mode) \(result.expected), got \(text)"
     }
 
     @MainActor

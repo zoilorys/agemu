@@ -157,6 +157,26 @@ describe.skipIf(!enabled)('ui inspection fixture', () => {
     expect(opened).toMatchObject({ backend: 'xctest', runnerResult: { completed: 6 } });
   }, 300_000);
 
+  test('scrolls a list until a row is visible and asserts text', async () => {
+    const scrolled = data(await run(['ui', 'run', '--backend=xctest', '--plan-json=' + JSON.stringify({
+      version: 1, actions: [
+        { launch: {} },
+        { scrollUntilVisible: { target: { label: 'Item 24' }, in: { identifier: 'resultsList' } } },
+        { assertVisible: { label: 'Item 24' } },
+        { assertText: { label: 'Item 24', matches: '^Item \\d+$' } },
+      ],
+    })]), 'ui run scrollUntilVisible and assertText');
+    expect(scrolled).toMatchObject({ backend: 'xctest', runnerResult: { completed: 4 } });
+
+    const mismatch = await run(['ui', 'run', '--backend=xctest', '--plan-json=' + JSON.stringify({
+      version: 1, actions: [{ launch: {} }, { assertText: { identifier: 'gestureStatus', equals: 'wrong' } }],
+    })]);
+    expect(mismatch).toMatchObject({ ok: false, error: { code: 'UI_DELIVERY_FAILED', details: { failedAction: {
+      index: 1, kind: 'assertText', message: expect.stringMatching(/^text does not match: expected equals wrong, got idle/),
+    } } } });
+  }, 600_000);
+
+  // Must stay last: it leaves the app backgrounded.
   test('clears a field, presses return, and presses Home', async () => {
     const edited = data(await run(['ui', 'run', '--backend=xctest', '--plan-json=' + JSON.stringify({
       version: 1, actions: [

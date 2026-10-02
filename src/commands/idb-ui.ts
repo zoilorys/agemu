@@ -13,7 +13,23 @@ type Run = (executable: string, args: string[], options?: RunOptions) => Promise
 type Target = ElementTarget & { x?: number; y?: number };
 type Element = IdbElement;
 const operations = new Set(['launch', 'wait', 'type', 'tap', 'swipe', 'longPress', 'assertVisible', 'assertExists', 'assertNotVisible',
-  'assertValue', 'screenshot', 'inspect', 'clear', 'pressKey', 'pressButton', 'openUrl', 'terminate']);
+  'assertValue', 'screenshot', 'inspect', 'clear', 'pressKey', 'pressButton', 'openUrl', 'terminate', 'scrollUntilVisible', 'assertText']);
+/** Pause after each scrollUntilVisible swipe so scrolling settles; AgentRunner.swift uses the same pause. */
+const scrollSettleMs = 300;
+
+/** Text compared by assertText: the value when it is a non-empty string, else the label. Mirrors AgentRunner.swift. */
+function elementText(element: { AXValue?: unknown; AXLabel?: unknown }): string {
+  if (typeof element.AXValue === 'string' && element.AXValue !== '') return element.AXValue;
+  return typeof element.AXLabel === 'string' ? element.AXLabel : '';
+}
+
+/** Failure message for assertText, or undefined when `text` satisfies the one given mode. */
+function textMismatch(assertion: { equals?: string; contains?: string; matches?: string }, text: string): string | undefined {
+  const [mode, expected]: [string, string] = assertion.equals !== undefined ? ['equals', assertion.equals]
+    : assertion.contains !== undefined ? ['contains', assertion.contains] : ['matches', assertion.matches ?? ''];
+  const passed = mode === 'equals' ? text === expected : mode === 'contains' ? text.includes(expected) : new RegExp(expected).test(text);
+  return passed ? undefined : `text does not match: expected ${mode} ${expected}, got ${text}`;
+}
 /** SpringBoard's first-open "Open in …?" prompt button, confirmed by `openUrl` with `confirm: true`. */
 const openPrompt: Target = { label: 'Open', type: 'button' };
 const openPromptWaitMs = 2_000;
@@ -43,6 +59,7 @@ export function idbCompatible(plan: UiPlan): boolean {
     if (keys[0] === 'openUrl') return typeof value.url === 'string' && (value.confirm === undefined || typeof value.confirm === 'boolean');
     if (keys[0] === 'pressKey') return typeof value.key === 'string' && keyCodes[value.key] !== undefined;
     if (keys[0] === 'pressButton') return value.button === 'home';
+    if (keys[0] === 'scrollUntilVisible') return record(value.target) && (value.in === undefined || record(value.in));
     const targeted = typeof value.identifier === 'string' || typeof value.label === 'string' || typeof value.labelContains === 'string';
     if (keys[0] === 'swipe') return value.from !== undefined || targeted;
     if (keys[0] === 'longPress') return targeted || (Number.isFinite(value.x) && Number.isFinite(value.y));
@@ -270,6 +287,27 @@ export async function tryRunIdbPlan(config: LoadedConfig, plan: UiPlan, udid: st
         const element = await targetElement(value as Target);
         if (element.AXValue !== value.value) {
           throw new Error(`element value does not match: expected ${String(value.value)}, got ${typeof element.AXValue === 'string' ? element.AXValue : 'nil'}`);
+        }
+      } else if (kind === 'assertText') {
+        const mismatch = textMismatch(value as { equals?: string; contains?: string; matches?: string }, elementText(await targetElement(value as Target)));
+        if (mismatch) throw new Error(mismatch);
+      } else if (kind === 'scrollUntilVisible') {
+        const target = value.target as Target;
+        const container = value.in as Target | undefined;
+        const direction = (value.direction as string | undefined) ?? 'up';
+        const maxSwipes = (value.maxSwipes as number | undefined) ?? 10;
+        for (let swipes = 0; ; swipes += 1) {
+          const tree = await elements();
+          if (elementVisible(tree, findElement(tree, target))) break;
+          if (swipes >= maxSwipes) throw new Error(`target not visible after ${swipes} swipes: ${describeTarget(target)}`);
+          const surface = container ? findElement(tree, container) : tree.find(candidate => candidate.type === 'Application');
+          if (!surface) throw new Error(container ? `container not found: ${describeTarget(container)}` : 'the application frame is unavailable');
+          const [from, to] = swipePoints(surface.frame ?? {}, direction);
+          await execute('idb', ['ui', 'swipe', String(Math.round(from.x)), String(Math.round(from.y)),
+            String(Math.round(to.x)), String(Math.round(to.y)), '--udid', udid]);
+          if (limit.expired()) throw expire();
+          await sleep(Math.min(scrollSettleMs, limit.remaining()));
+          if (limit.expired()) throw expire();
         }
       } else if (kind === 'screenshot') {
         const name = screenshotName(value.name);

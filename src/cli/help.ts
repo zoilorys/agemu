@@ -141,6 +141,9 @@ agemu ui run (--plan=FILE | --plan-json=JSON) [--backend=auto|idb|xctest] [--tim
   use pressKey return to dismiss the keyboard. pressButton {button: home} backgrounds the app; launch it again before acting on it.
   openUrl {url, confirm?} opens a URL; XCTest presses SpringBoard's first-open "Open" prompt unless confirm is false,
   idb only with confirm: true. terminate {} stops the configured app (succeeds if it is not running).
+  scrollUntilVisible {target, in?, direction?: up|down|left|right (default up, finger direction), maxSwipes?: 1-50 (default 10)}
+  swipes the in container (or the app) until target is visible. assertText (a target) with exactly one of equals, contains,
+  or matches (a regular expression searched in the text; use syntax common to JavaScript and ICU) checks the value, or the label when the value is empty.
   Pair each recording start with a stop. Repeated pairs create separate MP4 files.
 
 agemu ui inspect [--backend=auto|idb|xctest] [--all] [--timeout=SECONDS]

@@ -850,6 +850,24 @@ describe('UI backend selection', () => {
     ['unparsable url', { openUrl: { url: 'not a url' } }, 'Action 1: openUrl needs a valid url string'],
     ['non-boolean confirm', { openUrl: { url: 'app://x', confirm: 'yes' } }, 'Action 1: openUrl confirm must be a boolean'],
     ['terminate with fields', { terminate: { bundleId: 'other.app' } }, 'Action 1: terminate does not accept bundleId'],
+    ['assertText with two modes', { assertText: { label: 'A', equals: 'x', contains: 'x' } }, 'Action 1: assertText needs exactly one string equals, contains, or matches'],
+    ['assertText with no mode', { assertText: { label: 'A' } }, 'Action 1: assertText needs exactly one string equals, contains, or matches'],
+    ['assertText with a non-string mode', { assertText: { label: 'A', equals: 3 } }, 'Action 1: assertText needs exactly one string equals, contains, or matches'],
+    ['assertText with a bad regex', { assertText: { label: 'A', matches: '(' } }, 'Action 1: assertText matches must be a valid regular expression'],
+    ['assertText without target', { assertText: { equals: 'x' } }, 'Action 1: assertText needs a string identifier, label, or labelContains'],
+    ['scrollUntilVisible without target', { scrollUntilVisible: {} }, 'Action 1: scrollUntilVisible target must be an object'],
+    ['scrollUntilVisible with zero maxSwipes', { scrollUntilVisible: { target: { label: 'A' }, maxSwipes: 0 } },
+      'Action 1: scrollUntilVisible maxSwipes must be an integer from 1 to 50'],
+    ['scrollUntilVisible with 51 maxSwipes', { scrollUntilVisible: { target: { label: 'A' }, maxSwipes: 51 } },
+      'Action 1: scrollUntilVisible maxSwipes must be an integer from 1 to 50'],
+    ['scrollUntilVisible with a bad direction', { scrollUntilVisible: { target: { label: 'A' }, direction: 'sideways' } },
+      'Action 1: scrollUntilVisible direction must be one of up, down, left, right'],
+    ['scrollUntilVisible with a bad nested target', { scrollUntilVisible: { target: { identifier: 'a', label: 'b' } } },
+      'Action 1: scrollUntilVisible target accepts identifier or label, not both'],
+    ['scrollUntilVisible with a bad container', { scrollUntilVisible: { target: { label: 'A' }, in: { type: 'table' } } },
+      'Action 1: scrollUntilVisible in needs a string identifier, label, or labelContains'],
+    ['scrollUntilVisible with an unknown nested field', { scrollUntilVisible: { target: { label: 'A', timeout: 1 } } },
+      'Action 1: scrollUntilVisible target does not accept timeout'],
   ])('rejects a plan with %s before any process runs', async (_name, action, message) => {
     const root = await mkdtemp(path.join(tmpdir(), 'agemu-ui-validate-'));
     const commands: string[] = [];
@@ -1010,6 +1028,113 @@ describe('UI backend selection', () => {
       await expect(runIdbAssertion(root, { assertExists: { label: 'Missing' } })).rejects.toMatchObject({
         details: { failedAction: { kind: 'assertExists', message: 'element does not exist: Missing' } },
       });
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  /** Runs an idb plan over a list whose `Item 24` scrolls on screen after `visibleAfter` swipes (never when undefined). */
+  const runIdbScroll = async (actions: unknown[], visibleAfter?: number) => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-idb-scroll-'));
+    const swipes: string[][] = [];
+    try {
+      const output = await runUiPlan(nativeConfig(root), { json: JSON.stringify({ version: 1, actions }) }, {
+        backend: 'idb',
+        run: async (executable, args) => {
+          if (executable === 'idb' && args[1] === 'swipe') swipes.push([executable, ...args]);
+          if (executable === 'idb' && args[1] === 'describe-all') {
+            const shown = visibleAfter !== undefined && swipes.length >= visibleAfter;
+            return result(JSON.stringify([
+              { type: 'Application', AXLabel: 'Fixture', frame: { x: 0, y: 0, width: 390, height: 844 } },
+              { type: 'Table', AXUniqueId: 'resultsList', frame: { x: 0, y: 100, width: 390, height: 600 } },
+              { type: 'StaticText', AXLabel: 'Item 24', frame: { x: 0, y: shown ? 400 : 1440, width: 390, height: 44 } },
+            ]));
+          }
+          return result();
+        },
+      }).catch((e: unknown) => e);
+      return { output, swipes };
+    } finally { await rm(root, { recursive: true, force: true }); }
+  };
+
+  it('swipes the idb container until the target is visible, then stops', async () => {
+    const { output, swipes } = await runIdbScroll([{ scrollUntilVisible: { target: { label: 'Item 24' }, in: { identifier: 'resultsList' } } }], 2);
+    expect(output).toMatchObject({ backend: 'idb', runnerResult: { completed: 1 } });
+    // Finger moves up across the list's center: 30% of its height each way.
+    expect(swipes).toEqual([
+      ['idb', 'ui', 'swipe', '195', '580', '195', '220', '--udid', 'PHONE'],
+      ['idb', 'ui', 'swipe', '195', '580', '195', '220', '--udid', 'PHONE'],
+    ]);
+  });
+
+  it('does not swipe when the idb target is already visible', async () => {
+    const { output, swipes } = await runIdbScroll([{ scrollUntilVisible: { target: { label: 'Item 24' } } }], 0);
+    expect(output).toMatchObject({ runnerResult: { completed: 1 } });
+    expect(swipes).toEqual([]);
+  });
+
+  it('swipes the idb app frame in the given direction when no container is given', async () => {
+    const { swipes } = await runIdbScroll([{ scrollUntilVisible: { target: { label: 'Item 24' }, direction: 'down' } }], 1);
+    expect(swipes).toEqual([['idb', 'ui', 'swipe', '195', '169', '195', '675', '--udid', 'PHONE']]);
+  });
+
+  it('fails after exactly maxSwipes idb swipes when the target never appears', async () => {
+    const { output, swipes } = await runIdbScroll([{ scrollUntilVisible: { target: { label: 'Item 24' }, maxSwipes: 3 } }]);
+    expect(swipes).toHaveLength(3);
+    expect(output).toMatchObject({ code: 'UI_DELIVERY_FAILED',
+      details: { failedAction: { index: 0, kind: 'scrollUntilVisible', message: 'target not visible after 3 swipes: Item 24' } } });
+  });
+
+  it('names a missing idb container without swiping', async () => {
+    const { output, swipes } = await runIdbScroll([{ scrollUntilVisible: { target: { label: 'Item 24' }, in: { identifier: 'missingList' } } }]);
+    expect(swipes).toEqual([]);
+    expect(output).toMatchObject({ details: { failedAction: { message: 'container not found: missingList' } } });
+  });
+
+  it('stops idb scrolling at the plan deadline', async () => {
+    const started = Date.now();
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-idb-scroll-deadline-'));
+    try {
+      const error = await runUiPlan(nativeConfig(root), { json: JSON.stringify({ version: 1, actions: [
+        { scrollUntilVisible: { target: { label: 'Item 24' }, maxSwipes: 50 } }] }) }, {
+        backend: 'idb', timeoutMs: 500,
+        run: async (executable, args) => executable === 'idb' && args[1] === 'describe-all' ? result(offscreenTree) : result(),
+      }).catch((e: unknown) => e);
+      expect(error).toMatchObject({ code: 'PROCESS_TIMEOUT', details: { failedAction: { kind: 'scrollUntilVisible' } } });
+      expect(Date.now() - started).toBeLessThan(2_000);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  const textTree = JSON.stringify([
+    { AXUniqueId: 'status', AXLabel: 'Status', AXValue: 'Swiped left', frame: { x: 0, y: 0, width: 100, height: 20 } },
+    { AXUniqueId: 'title', AXLabel: 'Item 24', AXValue: '', frame: { x: 0, y: 30, width: 100, height: 20 } },
+  ]);
+  const runIdbText = (root: string, assertion: Record<string, unknown>) => runUiPlan(nativeConfig(root),
+    { json: JSON.stringify({ version: 1, actions: [{ assertText: assertion }] }) }, {
+      backend: 'idb',
+      run: async (executable, args) => executable === 'idb' && args[1] === 'describe-all' ? result(textTree) : result(),
+    });
+
+  it.each([
+    ['equals on the value', { identifier: 'status', equals: 'Swiped left' }],
+    ['contains on the value', { identifier: 'status', contains: 'left' }],
+    ['matches searched in the value', { identifier: 'status', matches: 'ped\\s+l' }],
+    ['equals on the label when the value is empty', { identifier: 'title', equals: 'Item 24' }],
+    ['matches anchored on the label', { identifier: 'title', matches: '^Item \\d+$' }],
+  ])('passes idb assertText with %s', async (_case, assertion) => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-idb-text-'));
+    try {
+      await expect(runIdbText(root, assertion)).resolves.toMatchObject({ runnerResult: { completed: 1 } });
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it.each([
+    ['equals the label while a value exists', { identifier: 'status', equals: 'Status' }, 'text does not match: expected equals Status, got Swiped left'],
+    ['contains a missing fragment', { identifier: 'status', contains: 'right' }, 'text does not match: expected contains right, got Swiped left'],
+    ['matches a non-matching pattern', { identifier: 'title', matches: '^Item \\d$' }, 'text does not match: expected matches ^Item \\d$, got Item 24'],
+    ['a missing element', { identifier: 'nothing', equals: 'x' }, 'element not found: nothing'],
+  ])('fails idb assertText that %s', async (_case, assertion, message) => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-idb-text-'));
+    try {
+      await expect(runIdbText(root, assertion)).rejects.toMatchObject({ code: 'UI_DELIVERY_FAILED', details: { failedAction: { kind: 'assertText', message } } });
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 
