@@ -137,7 +137,12 @@ agemu ui run (--plan=FILE | --plan-json=JSON) [--backend=auto|idb|xctest] [--tim
   Build and install the app first, except Expo Go, which uses an installed host. Swipe accepts duration in seconds; wait accepts a target with timeout or a duration-only pause. Actions include launch, wait, type, tap, swipe, longPress,
   assertVisible (on screen and hittable), assertExists (in the tree, even off screen), assertNotVisible (absent or off screen),
   assertValue, screenshot, inspect, startVideoRecording, and stopVideoRecording. Unknown actions or fields fail validation.
-  Pair each recording start with a stop. Repeated pairs create separate MP4 files.`,
+  Pair each recording start with a stop. Repeated pairs create separate MP4 files.
+
+agemu ui inspect [--backend=auto|idb|xctest] [--all] [--timeout=SECONDS]
+  Return the current screen's visible elements and a screenshot path in one response.
+  --all also includes off-screen elements (visible: false); counts reports total and visible.
+  The app must already be running; inspect never launches, terminates, or touches it.`,
   doctor: `agemu doctor
   Check Node.js, Xcode, configuration, Simulator, app prerequisites, and write access. Does not install dependencies or generate native files.
   Advisory checks (advisory: true) report whether the Simulator is booted, idb is usable, and .agemu/ is git-ignored; they do not affect ready.`,
@@ -185,6 +190,7 @@ Commands:
   crashes list         List recent app crash reports.
   ui build-runner      Build the XCTest UI runner.
   ui run               Execute a JSON UI action plan.
+  ui inspect           Read the current screen's elements.
   doctor               Check setup and dependencies.
   clean                Delete agemu runs or derived data.
 

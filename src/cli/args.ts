@@ -44,7 +44,8 @@ export const commandSpecs: Record<string, CommandSpec> = {
   logs: { subcommands: { show: logOptions, stream: { duration: single, until: single, level: single, limit: single }, js: { duration: single, until: single, limit: single } } },
   diagnose: { flags: logOptions },
   crashes: { subcommands: { list: { since: single, limit: single } } },
-  ui: { subcommands: { 'build-runner': { timeout: single }, run: { plan: single, 'plan-json': single, backend: single, timeout: single } } },
+  ui: { subcommands: { 'build-runner': { timeout: single }, run: { plan: single, 'plan-json': single, backend: single, timeout: single },
+    inspect: { backend: single, all: boolean, timeout: single } } },
   doctor: { flags: {} },
   clean: { flags: { runs: boolean, 'derived-data': boolean, 'older-than': single, 'dry-run': boolean } },
 };

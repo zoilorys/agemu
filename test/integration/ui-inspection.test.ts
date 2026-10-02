@@ -80,6 +80,23 @@ describe.skipIf(!enabled)('ui inspection fixture', () => {
     expect(elements).toContainEqual(expect.objectContaining({ identifier: 'row', label: 'Item 24', visible: false }));
   }, 300_000);
 
+  // Relies on the app launched by the previous test; leaves it terminated (the next test launches it).
+  test('ui inspect reads the running fixture and asks for a launch when it is not running', async () => {
+    type Inspected = { elements: Array<Record<string, unknown>>; counts: { total: number; visible: number }; screenshot?: string };
+    const visible = data(await run(['ui', 'inspect', '--backend=xctest']), 'ui inspect') as unknown as Inspected;
+    expect(visible.elements).toContainEqual(expect.objectContaining({ identifier: 'saveButton', visible: true }));
+    expect(visible.elements).not.toContainEqual(expect.objectContaining({ label: 'Item 24' }));
+    expect(visible.screenshot).toEqual(expect.any(String));
+
+    const all = data(await run(['ui', 'inspect', '--backend=xctest', '--all']), 'ui inspect --all') as unknown as Inspected;
+    expect(all.elements).toContainEqual(expect.objectContaining({ label: 'Item 24', visible: false }));
+    expect(all.counts.total).toBeGreaterThan(all.counts.visible);
+
+    data(await run(['app', 'terminate']), 'app terminate');
+    const stopped = await run(['ui', 'inspect', '--backend=xctest']);
+    expect(stopped).toMatchObject({ ok: false, error: { code: 'UI_DELIVERY_FAILED', message: expect.stringContaining('Launch the app first') } });
+  }, 600_000);
+
   test('types, taps, and opens URLs in the fixture', async () => {
     const typed = data(await run(['ui', 'run', '--backend=xctest', '--plan-json=' + JSON.stringify({
       version: 1, actions: [

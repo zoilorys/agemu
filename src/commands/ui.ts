@@ -28,6 +28,8 @@ type Dependencies = {
   timeoutMs?: number;
   /** Internal: the single `ui run` deadline shared with the runner build. */
   deadline?: Deadline;
+  /** Internal: timeout cleanup terminates only the runner, never the app (`ui inspect`). */
+  preserveApp?: boolean;
 };
 
 export const defaultUiTimeoutMs = 900_000;
@@ -335,6 +337,52 @@ export async function runUiPlan(config: LoadedConfig, source: { file: string } |
   return { ...await runUiSegment(config, plan, udid, directory, run, backend, bounded), durationMs: Date.now() - runStarted };
 }
 
+export const inspectLaunchHint = 'Launch the app first (agemu app launch); ui inspect never launches it.';
+
+/** Reads the running app's current screen without launching, terminating, or interacting with it. */
+export async function inspectScreen(config: LoadedConfig, options: { backend?: 'auto' | 'idb' | 'xctest'; all?: boolean; timeoutMs?: number },
+  dependencies: Dependencies = {}) {
+  const capturedAt = (dependencies.now?.() ?? new Date()).toISOString();
+  const plan = { version: 1, actions: [{ inspect: {} }, { screenshot: { name: 'inspect' } }] };
+  const run = dependencies.run ?? runProcess;
+  const limit = dependencies.deadline ?? deadline(options.timeoutMs ?? defaultUiTimeoutMs);
+  if (options.backend !== 'xctest') {
+    // idb reads whatever is in the foreground, so confirm the configured app is running (read-only).
+    const udid = await (dependencies.resolveUdid?.(config)
+      ?? (config.simulator.udid || listDevices().then(devices => resolveDevice(devices, config.simulator).udid)));
+    const bundleId = targetBundleId(config);
+    let listed: ProcessResult;
+    try { listed = await run('xcrun', ['simctl', 'spawn', udid, 'launchctl', 'list'], { timeoutMs: Math.min(10_000, limit.remaining()) }); }
+    catch (error) { throw isTimeout(error) ? new CliError('PROCESS_TIMEOUT', `UI plan exceeded ${limit.ms / 1000} s`, { timeoutSeconds: limit.ms / 1000 }) : error; }
+    if (listed.exitCode !== 0 || !listed.stdout.includes(`UIKitApplication:${bundleId}[`)) {
+      const failedAction = { index: 0, kind: 'inspect', message: `${bundleId} is not running` };
+      throw new CliError('UI_DELIVERY_FAILED', redact(`${failureMessage(failedAction)}. ${inspectLaunchHint}`, config.redactions ?? []),
+        redactValue({ failedAction, completed: 0 }, config.redactions ?? []));
+    }
+  }
+  let result: Record<string, unknown>;
+  try {
+    result = await runUiPlan(config, { json: JSON.stringify(plan) },
+      { ...dependencies, backend: options.backend, deadline: limit, preserveApp: true }) as Record<string, unknown>;
+  } catch (error) {
+    const failed = error instanceof CliError ? error.details?.failedAction as FailedAction | undefined : undefined;
+    if (error instanceof CliError && error.code === 'UI_DELIVERY_FAILED' && failed?.kind === 'inspect') {
+      throw new CliError(error.code, `${error.message}. ${inspectLaunchHint}`, error.details);
+    }
+    throw error;
+  }
+  const inspections = (result.runnerResult as { inspections?: Inspection[] } | undefined)?.inspections ?? [];
+  const tree = inspections.find(inspection => inspection.index === 0)?.elements ?? [];
+  const visible = tree.filter(element => element.visible);
+  return {
+    run: result.run, udid: result.udid, bundleId: result.bundleId, backend: result.backend, capturedAt,
+    screenshot: (result.screenshots as string[] | undefined)?.[0],
+    elements: options.all ? tree : visible,
+    counts: { total: tree.length, visible: visible.length },
+    ...(typeof result.screenshotExportError === 'string' ? { screenshotExportError: result.screenshotExportError } : {}),
+  };
+}
+
 export type FailedAction = { index: number; kind: string; message: string };
 
 export function actionKind(action: unknown): string {
@@ -499,7 +547,7 @@ async function runUiSegment(config: LoadedConfig, plan: UiPlan, udid: string, di
     const stderr = typeof partial.stderr === 'string' ? partial.stderr : '';
     await writeFile(transcript, redact(`${stdout}${stderr}`, secrets), { mode: 0o600 });
     // SIGTERM leaves the runner host and the app running and the result bundle incomplete; no screenshot export.
-    for (const bundle of [runnerBundleId, targetBundleId(config)]) {
+    for (const bundle of dependencies.preserveApp ? [runnerBundleId] : [runnerBundleId, targetBundleId(config)]) {
       await run('xcrun', ['simctl', 'terminate', built.udid, bundle], { timeoutMs: 10_000 }).catch(() => undefined);
     }
     const lastStartedAction = lastStarted(stdout);

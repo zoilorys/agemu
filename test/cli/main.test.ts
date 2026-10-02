@@ -48,6 +48,16 @@ describe('agemu CLI', () => {
       });
   });
 
+  it.each([
+    [['--bogus'], 'COMMAND_INVALID', 'Unknown option --bogus for ui inspect'],
+    [['--all=yes'], 'COMMAND_INVALID', '--all does not take a value'],
+    [['--backend=fast'], 'UI_VALIDATION_FAILED', 'UI backend must be auto, idb, or xctest'],
+    [['--timeout=0'], 'COMMAND_INVALID', '--timeout must be whole seconds from 1 to 86400'],
+  ])('rejects ui inspect %j before loading configuration', async (flags, code, message) => {
+    await expect(run(process.execPath, [cli, 'ui', 'inspect', ...flags]))
+      .rejects.toMatchObject({ code: 1, stdout: expect.stringContaining(`"code":"${code}","message":"${message}"`) });
+  });
+
   it('documents timeout defaults in command help', async () => {
     expect(JSON.parse((await run(process.execPath, [cli, 'build', '--help'])).stdout).data.help).toContain('default 1800 s');
     const ui = JSON.parse((await run(process.execPath, [cli, 'ui', '--help'])).stdout).data.help as string;

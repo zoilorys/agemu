@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { readLaunchMarker } from '../../src/artifacts/launch-marker.js';
-import { buildUiRunner, injectEnvironment, runUiPlan } from '../../src/commands/ui.js';
+import { buildUiRunner, injectEnvironment, inspectScreen, runUiPlan } from '../../src/commands/ui.js';
 import { CliError } from '../../src/core/errors.js';
 import type { ProcessResult } from '../../src/process/run-process.js';
 
@@ -36,6 +36,132 @@ describe('XCTest run manifest', () => {
         run: async () => { throw new Error('xcodebuild must not run'); },
       });
       expect(result).toMatchObject({ manifest, cached: true, udid: 'PHONE' });
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+});
+
+describe('ui inspect', () => {
+  const inspectConfig = (root: string) => ({ version: 2 as const, platform: 'ios' as const, app: { type: 'native' as const,
+    project: path.join(root, 'App.xcodeproj'), scheme: 'App', configuration: 'Debug', bundleId: 'com.example.app' }, simulator: { udid: 'PHONE' }, root });
+  const tree = JSON.stringify([
+    { type: 'Application', AXLabel: 'App', frame: { x: 0, y: 0, width: 400, height: 800 } },
+    { type: 'Button', AXUniqueId: 'saveButton', AXLabel: 'Save', frame: { x: 10, y: 10, width: 80, height: 40 } },
+    { type: 'StaticText', AXLabel: 'Item 24', frame: { x: 0, y: 1600, width: 400, height: 44 } },
+  ]);
+  const recordingRun = (calls: string[][]) => async (executable: string, args: string[]) => {
+    calls.push([executable, ...args]);
+    if (executable === 'idb' && args[1] === 'describe-all') return result(tree);
+    if (args.includes('launchctl')) return result(running);
+    return result();
+  };
+  const running = '81859\t0\tUIKitApplication:com.example.app[0afb][rb-legacy]\n';
+
+  it('returns only on-screen elements by default and all elements with all, with counts', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-inspect-'));
+    try {
+      const visible = await inspectScreen(inspectConfig(root), { backend: 'idb' }, { run: recordingRun([]) });
+      expect(visible.elements.map(element => element.label)).toEqual(['App', 'Save']);
+      expect(visible.counts).toEqual({ total: 3, visible: 2 });
+      expect(visible.screenshot).toMatch(/screenshots\/1-inspect\.png$/);
+      expect(visible).toMatchObject({ udid: 'PHONE', bundleId: 'com.example.app', backend: 'idb' });
+
+      const all = await inspectScreen(inspectConfig(root), { backend: 'idb', all: true }, { run: recordingRun([]) });
+      expect(all.elements.find(element => element.label === 'Item 24')).toMatchObject({ visible: false });
+      expect(all.counts).toEqual({ total: 3, visible: 2 });
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('never launches, terminates, or taps the app', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-inspect-'));
+    const calls: string[][] = [];
+    try {
+      await inspectScreen(inspectConfig(root), { backend: 'idb', all: true }, { run: recordingRun(calls) });
+      expect(calls.length).toBeGreaterThan(0);
+      for (const call of calls) {
+        expect(call.slice(0, 3)).not.toEqual(['xcrun', 'simctl', 'launch']);
+        expect(call.slice(0, 3)).not.toEqual(['xcrun', 'simctl', 'terminate']);
+        expect(call[0] === 'idb' && call[1] === 'ui' && ['tap', 'swipe', 'text'].includes(call[2]!)).toBe(false);
+      }
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it.each([
+    ['only SpringBoard runs', '81000\t0\tUIKitApplication:com.apple.springboard[0afb][rb-legacy]\n'],
+    ['only an app with a longer id runs', '81859\t0\tUIKitApplication:com.example.app2[0afb][rb-legacy]\n'],
+  ])('reports the app as not running when %s', async (_case, listing) => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-inspect-'));
+    try {
+      await expect(inspectScreen(inspectConfig(root), { backend: 'idb' }, {
+        run: async (executable, args) => {
+          if (executable === 'idb' && args[1] === 'describe-all') return result(tree);
+          return args.includes('launchctl') ? result(listing) : result();
+        },
+      })).rejects.toMatchObject({ code: 'UI_DELIVERY_FAILED', message: expect.stringContaining('Launch the app first') });
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('refuses to report the foreground app on idb when the configured app is not running', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-inspect-'));
+    const calls: string[][] = [];
+    try {
+      const error = await inspectScreen(inspectConfig(root), { backend: 'idb' }, {
+        run: async (executable, args) => {
+          calls.push([executable, ...args]);
+          // SpringBoard is in the foreground: idb works, but the app is absent from launchctl.
+          if (executable === 'idb' && args[1] === 'describe-all') return result(tree);
+          if (args.includes('launchctl')) return result('81000\t0\tUIKitApplication:com.apple.springboard[0afb][rb-legacy]\n');
+          return result();
+        },
+      }).catch((caught: unknown) => caught);
+      expect(error).toBeInstanceOf(CliError);
+      expect(error).toMatchObject({ code: 'UI_DELIVERY_FAILED', details: { failedAction: { index: 0, kind: 'inspect' } } });
+      expect((error as CliError).message).toMatch(/Launch the app first/);
+      expect(calls.some(call => call[0] === 'idb' || call.includes('launch'))).toBe(false);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('keeps the app running when an XCTest inspect times out', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-inspect-'));
+    const manifest = path.join(root, '.agemu', 'RunnerDerivedData', 'Build', 'Runner.xctestrun');
+    await mkdir(path.dirname(manifest), { recursive: true });
+    await writeFile(manifest, 'fixture');
+    const calls: string[][] = [];
+    try {
+      const error = await inspectScreen(inspectConfig(root), { backend: 'xctest', timeoutMs: 60_000 }, {
+        runnerProject: path.join(root, 'missing.xcodeproj'),
+        run: async (executable, args) => {
+          calls.push([executable, ...args]);
+          if (executable === 'plutil' && args[1] === 'json') return result(JSON.stringify({ AgentRunner: { TestBundlePath: 'AgentRunner.xctest' } }));
+          if (executable === 'xcodebuild') throw new CliError('PROCESS_TIMEOUT', 'timed out', { result: { stdout: '', stderr: '' } });
+          return result();
+        },
+      }).catch((caught: unknown) => caught);
+      expect(error).toMatchObject({ code: 'PROCESS_TIMEOUT' });
+      expect(calls.some(call => call[1] === 'simctl' && call[2] === 'terminate' && call.includes('com.example.app'))).toBe(false);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('passes through a screenshot export error', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-inspect-'));
+    const manifest = path.join(root, '.agemu', 'RunnerDerivedData', 'Build', 'Runner.xctestrun');
+    await mkdir(path.dirname(manifest), { recursive: true });
+    await writeFile(manifest, 'fixture');
+    try {
+      const inspected = await inspectScreen(inspectConfig(root), { backend: 'xctest' }, {
+        runnerProject: path.join(root, 'missing.xcodeproj'),
+        run: async (executable, args) => {
+          if (executable === 'plutil' && args[1] === 'json') return result(JSON.stringify({ AgentRunner: { TestBundlePath: 'AgentRunner.xctest' } }));
+          if (executable === 'xcodebuild') {
+            await mkdir(args[args.indexOf('-resultBundlePath') + 1]!, { recursive: true });
+            const encoded = Buffer.from(JSON.stringify({ completed: 2, inspections: [{ index: 0, nodes: [] }] })).toString('base64');
+            return result(`AGEMU_RESULT:${encoded}\n`);
+          }
+          if (executable === 'xcrun' && args[0] === 'xcresulttool') return result('', 'export broke', 1);
+          return result();
+        },
+      });
+      expect(inspected.screenshotExportError).toBe('export broke');
+      expect(inspected.screenshot).toBeUndefined();
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 });
