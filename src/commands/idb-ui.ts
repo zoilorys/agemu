@@ -13,7 +13,9 @@ type Run = (executable: string, args: string[], options?: RunOptions) => Promise
 type Target = ElementTarget & { x?: number; y?: number };
 type Element = IdbElement;
 const operations = new Set(['launch', 'wait', 'type', 'tap', 'swipe', 'longPress', 'assertVisible', 'assertExists', 'assertNotVisible',
-  'assertValue', 'screenshot', 'inspect']);
+  'assertValue', 'screenshot', 'inspect', 'clear', 'pressKey', 'pressButton']);
+/** HID keyboard usage codes for `idb ui key`. */
+const keyCodes: Record<string, string> = { return: '40', delete: '42', tab: '43', space: '44' };
 
 /** Screenshot file-name stem shared by both backends; AgentRunner.swift applies the same rule. */
 export function screenshotName(name: unknown): string {
@@ -35,6 +37,8 @@ export function idbCompatible(plan: UiPlan): boolean {
       && (value.environment === undefined || (record(value.environment) && Object.values(value.environment).every(v => typeof v === 'string')));
     if (keys[0] === 'screenshot') return value.name === undefined || typeof value.name === 'string';
     if (keys[0] === 'inspect') return true;
+    if (keys[0] === 'pressKey') return typeof value.key === 'string' && keyCodes[value.key] !== undefined;
+    if (keys[0] === 'pressButton') return value.button === 'home';
     const targeted = typeof value.identifier === 'string' || typeof value.label === 'string' || typeof value.labelContains === 'string';
     if (keys[0] === 'swipe') return value.from !== undefined || targeted;
     if (keys[0] === 'longPress') return targeted || (Number.isFinite(value.x) && Number.isFinite(value.y));
@@ -125,6 +129,12 @@ export async function tryRunIdbPlan(config: LoadedConfig, plan: UiPlan, udid: st
     if (!element) throw new Error(`element not found: ${describeTarget(target)}`);
     return element;
   };
+  const pressKey = async (code: string, count: number) => {
+    for (let pressed = 0; pressed < count; pressed += 1) {
+      if (limit.expired()) throw expire();
+      await execute('idb', ['ui', 'key', code, '--udid', udid]);
+    }
+  };
 
   let current = 0;
   let currentKind = 'unknown';
@@ -161,13 +171,15 @@ export async function tryRunIdbPlan(config: LoadedConfig, plan: UiPlan, udid: st
             await sleep(Math.min(250, limit.remaining()));
           }
         }
-      } else if (kind === 'tap' || kind === 'type') {
+      } else if (kind === 'tap' || kind === 'type' || kind === 'clear') {
+        let deletions = 0;
         if (kind === 'tap' && Number.isFinite(value.x) && Number.isFinite(value.y)) {
           await execute('idb', ['ui', 'tap', String(value.x), String(value.y), '--udid', udid]);
         } else {
           const target = value as Target;
           const tree = await elements();
           const element = await targetElement(target, tree);
+          if (typeof element.AXValue === 'string') deletions = Array.from(element.AXValue).length;
           const identifier = typeof element.AXUniqueId === 'string' && element.AXUniqueId.length > 0 ? element.AXUniqueId : undefined;
           if (identifier !== undefined && tree.filter(candidate => candidate.AXUniqueId === identifier).length === 1) {
             // A unique identifier lets idb press the element through accessibility.
@@ -189,6 +201,12 @@ export async function tryRunIdbPlan(config: LoadedConfig, plan: UiPlan, udid: st
           }
         }
         if (kind === 'type') await execute('idb', ['ui', 'text', '--udid', udid, '--', value.text as string]);
+        if (kind === 'clear') await pressKey(keyCodes.delete!, deletions);
+      } else if (kind === 'pressKey') {
+        await pressKey(keyCodes[value.key as string]!, (value.count as number | undefined) ?? 1);
+      } else if (kind === 'pressButton') {
+        // Backgrounds the app; a later action on it needs `launch` first.
+        await execute('idb', ['ui', 'button', 'HOME', '--udid', udid]);
       } else if (kind === 'longPress') {
         const press = value as LongPress;
         const coordinates = Number.isFinite(press.x) && Number.isFinite(press.y)

@@ -142,4 +142,25 @@ describe.skipIf(!enabled)('ui inspection fixture', () => {
     })]), 'ui run after open-url');
     expect(opened).toMatchObject({ backend: 'xctest', runnerResult: { completed: 2 } });
   }, 300_000);
+
+  test('clears a field, presses return, and presses Home', async () => {
+    const edited = data(await run(['ui', 'run', '--backend=xctest', '--plan-json=' + JSON.stringify({
+      version: 1, actions: [
+        { launch: {} },
+        { type: { identifier: 'nameField', text: 'Ada' } },
+        { clear: { identifier: 'nameField' } },
+        { type: { identifier: 'nameField', text: 'Bo' } },
+        { pressKey: { key: 'return' } },
+        { tap: { identifier: 'saveButton' } },
+        { assertValue: { identifier: 'gestureStatus', value: 'saved:Bo' } },
+      ],
+    })]), 'ui run clear and return');
+    expect(edited).toMatchObject({ backend: 'xctest', runnerResult: { completed: 7 } });
+
+    // Home backgrounds the app; later tests must start with launch.
+    const home = data(await run(['ui', 'run', '--backend=xctest', '--plan-json=' + JSON.stringify({
+      version: 1, actions: [{ launch: {} }, { pressButton: { button: 'home' } }, { assertNotVisible: { identifier: 'saveButton' } }],
+    })]), 'ui run home');
+    expect(home).toMatchObject({ backend: 'xctest', runnerResult: { completed: 3 } });
+  }, 600_000);
 });

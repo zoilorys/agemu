@@ -75,8 +75,13 @@ const actionFields: Record<string, string[] | undefined> = {
   inspect: [],
   startVideoRecording: ['name'],
   stopVideoRecording: [],
+  clear: targetFields,
+  pressKey: ['key', 'count'],
+  pressButton: ['button'],
 };
-const targetedActions = new Set(['tap', 'type', 'assertVisible', 'assertExists', 'assertNotVisible', 'assertValue']);
+const targetedActions = new Set(['tap', 'type', 'assertVisible', 'assertExists', 'assertNotVisible', 'assertValue', 'clear']);
+export const pressKeys = ['return', 'delete', 'tab', 'space'];
+export const pressButtons = ['home'];
 
 function validatePlan(value: unknown): UiPlan {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new CliError('UI_VALIDATION_FAILED', 'The UI plan must be an object');
@@ -110,6 +115,13 @@ function validatePlan(value: unknown): UiPlan {
     if (kind === 'type' && typeof input.text !== 'string') fail('type needs string text');
     if (kind === 'assertValue' && typeof input.value !== 'string') fail('assertValue needs string value');
     if (kind === 'screenshot' && !optionalString('name')) fail('screenshot name must be a string');
+    if (kind === 'pressKey') {
+      if (!pressKeys.includes(input.key as string)) fail(`pressKey key must be one of ${pressKeys.join(', ')}`);
+      if (input.count !== undefined && !(Number.isSafeInteger(input.count) && (input.count as number) >= 1 && (input.count as number) <= 100)) {
+        fail('pressKey count must be an integer from 1 to 100');
+      }
+    }
+    if (kind === 'pressButton' && !pressButtons.includes(input.button as string)) fail(`pressButton button must be one of ${pressButtons.join(', ')}`);
     if (kind === 'launch') {
       if (input.arguments !== undefined && (!Array.isArray(input.arguments) || !input.arguments.every(item => typeof item === 'string'))) {
         fail('launch arguments must be an array of strings');

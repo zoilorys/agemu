@@ -35,7 +35,12 @@ final class AgentRunner: XCTestCase {
         let inspect: Empty?
         let startVideoRecording: VideoRecording?
         let stopVideoRecording: Empty?
+        let clear: Target?
+        let pressKey: KeyAction?
+        let pressButton: ButtonAction?
     }
+    private struct KeyAction: Decodable { let key: String; let count: Int? }
+    private struct ButtonAction: Decodable { let button: String }
     private struct Launch: Decodable { let arguments: [String]?; let environment: [String: String]? }
     private struct Target: Decodable, Targeting {
         let identifier: String?; let label: String?; let labelContains: String?; let type: String?; let index: Int?; let x: Double?; let y: Double?
@@ -89,6 +94,9 @@ final class AgentRunner: XCTestCase {
         if action.inspect != nil { return "inspect" }
         if action.startVideoRecording != nil { return "startVideoRecording" }
         if action.stopVideoRecording != nil { return "stopVideoRecording" }
+        if action.clear != nil { return "clear" }
+        if action.pressKey != nil { return "pressKey" }
+        if action.pressButton != nil { return "pressButton" }
         return "unknown"
     }
 
@@ -221,6 +229,23 @@ final class AgentRunner: XCTestCase {
                 try recordingRequest("/start?name=\((video.name ?? "video").addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? "video")")
             } else if action.stopVideoRecording != nil {
                 try recordingRequest("/stop")
+            } else if let target = action.clear {
+                let candidate = try element(target, in: app)
+                candidate.tap()
+                let old = candidate.value as? String ?? ""
+                // An empty field reports its placeholder as its value.
+                let length = old == (candidate.placeholderValue ?? "") ? 0 : old.count
+                if length > 0 {
+                    candidate.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: length))
+                    if (candidate.value as? String) == old { return "could not clear \(target.targetDescription)" }
+                }
+            } else if let press = action.pressKey {
+                guard let key = keyboardKey(press.key) else { return "unsupported key \(press.key)" }
+                app.typeText(String(repeating: key.rawValue, count: press.count ?? 1))
+            } else if let press = action.pressButton {
+                guard press.button == "home" else { return "unsupported button \(press.button)" }
+                // Backgrounds the app; a later action on it needs `launch` first.
+                XCUIDevice.shared.press(.home)
             } else {
                 return "action has no supported operation"
             }
@@ -303,6 +328,17 @@ final class AgentRunner: XCTestCase {
         }
         let query = app.descendants(matching: target.type.flatMap { elementType(for: $0) } ?? .any)
         return query.matching(NSCompoundPredicate(andPredicateWithSubpredicates: predicates)).element(boundBy: target.index ?? 0)
+    }
+
+    /// Plan key names (src/commands/ui.ts `pressKeys`) to keyboard keys.
+    private func keyboardKey(_ name: String) -> XCUIKeyboardKey? {
+        switch name {
+        case "return": return .return
+        case "delete": return .delete
+        case "tab": return .tab
+        case "space": return .space
+        default: return nil
+        }
     }
 
     /// Inverse of typeName(_:); nil for "other" and unknown names.

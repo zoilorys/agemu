@@ -137,6 +137,8 @@ agemu ui run (--plan=FILE | --plan-json=JSON) [--backend=auto|idb|xctest] [--tim
   Build and install the app first, except Expo Go, which uses an installed host. Swipe accepts duration in seconds; wait accepts a target with timeout or a duration-only pause. Actions include launch, wait, type, tap, swipe, longPress,
   assertVisible (on screen and hittable), assertExists (in the tree, even off screen), assertNotVisible (absent or off screen),
   assertValue, screenshot, inspect, startVideoRecording, and stopVideoRecording. Unknown actions or fields fail validation.
+  clear (a target) empties a text input. pressKey {key: return|delete|tab|space, count: 1-100} types into the focused element;
+  use pressKey return to dismiss the keyboard. pressButton {button: home} backgrounds the app; launch it again before acting on it.
   Pair each recording start with a stop. Repeated pairs create separate MP4 files.
 
 agemu ui inspect [--backend=auto|idb|xctest] [--all] [--timeout=SECONDS]

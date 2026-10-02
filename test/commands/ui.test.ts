@@ -839,6 +839,13 @@ describe('UI backend selection', () => {
     ['bad env name', { launch: { environment: { 'BAD-NAME': 'x' } } }, 'Action 1: launch environment must map valid variable names to strings'],
     ['non-string argument', { launch: { arguments: [1] } }, 'Action 1: launch arguments must be an array of strings'],
     ['non-string screenshot name', { screenshot: { name: 3 } }, 'Action 1: screenshot name must be a string'],
+    ['unknown key', { pressKey: { key: 'escape' } }, 'Action 1: pressKey key must be one of return, delete, tab, space'],
+    ['missing key', { pressKey: {} }, 'Action 1: pressKey key must be one of return, delete, tab, space'],
+    ['zero key count', { pressKey: { key: 'delete', count: 0 } }, 'Action 1: pressKey count must be an integer from 1 to 100'],
+    ['key count above 100', { pressKey: { key: 'delete', count: 101 } }, 'Action 1: pressKey count must be an integer from 1 to 100'],
+    ['fractional key count', { pressKey: { key: 'delete', count: 1.5 } }, 'Action 1: pressKey count must be an integer from 1 to 100'],
+    ['unknown button', { pressButton: { button: 'lock' } }, 'Action 1: pressButton button must be one of home'],
+    ['clear without target', { clear: {} }, 'Action 1: clear needs a string identifier, label, or labelContains'],
   ])('rejects a plan with %s before any process runs', async (_name, action, message) => {
     const root = await mkdtemp(path.join(tmpdir(), 'agemu-ui-validate-'));
     const commands: string[] = [];
@@ -850,6 +857,46 @@ describe('UI backend selection', () => {
       expect(commands).toEqual([]);
       await expect(stat(path.join(root, '.agemu'))).rejects.toMatchObject({ code: 'ENOENT' });
     } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  const runIdbKeys = async (actions: unknown[], value?: string) => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-idb-keys-'));
+    const commands: string[][] = [];
+    try {
+      const output = await runUiPlan(nativeConfig(root), { json: JSON.stringify({ version: 1, actions }) }, {
+        backend: 'idb',
+        run: async (executable, args) => {
+          commands.push([executable, ...args]);
+          return executable === 'idb' && args[1] === 'describe-all' ? result(JSON.stringify([
+            { AXUniqueId: 'nameField', ...(value === undefined ? {} : { AXValue: value }), frame: { x: 10, y: 100, width: 200, height: 40 } },
+          ])) : result();
+        },
+      });
+      return { output, inputs: commands.filter(command => command[0] === 'idb' && command[1] === 'ui' && command[2] !== 'describe-all') };
+    } finally { await rm(root, { recursive: true, force: true }); }
+  };
+  const tapNameField = ['idb', 'ui', 'tap', 'nameField', '--match-key', 'AXUniqueId', '--expected-key', 'AXUniqueId', '--expected-value', 'nameField',
+    '--api', 'axbridge', '--udid', 'PHONE'];
+  const deleteKey = ['idb', 'ui', 'key', '42', '--udid', 'PHONE'];
+
+  it('clears an idb field by tapping it and deleting each character of its value', async () => {
+    const { output, inputs } = await runIdbKeys([{ clear: { identifier: 'nameField' } }], 'abc');
+    expect(output).toMatchObject({ backend: 'idb', runnerResult: { completed: 1 } });
+    expect(inputs).toEqual([tapNameField, deleteKey, deleteKey, deleteKey]);
+  });
+
+  it.each([['an empty value', ''], ['no value', undefined]])('clears an idb field with %s without keystrokes', async (_case, value) => {
+    expect((await runIdbKeys([{ clear: { identifier: 'nameField' } }], value)).inputs).toEqual([tapNameField]);
+  });
+
+  it('presses keys and the Home button through idb', async () => {
+    const { inputs } = await runIdbKeys([{ pressKey: { key: 'return' } }, { pressKey: { key: 'space', count: 2 } }, { pressButton: { button: 'home' } }]);
+    expect(inputs).toEqual([
+      ['idb', 'ui', 'key', '40', '--udid', 'PHONE'],
+      ['idb', 'ui', 'key', '44', '--udid', 'PHONE'],
+      ['idb', 'ui', 'key', '44', '--udid', 'PHONE'],
+      ['idb', 'ui', 'button', 'HOME', '--udid', 'PHONE'],
+    ]);
   });
 
   const offscreenTree = JSON.stringify([
