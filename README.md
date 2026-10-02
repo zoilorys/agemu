@@ -259,7 +259,7 @@ The bundled XCTest runner needs no macOS Accessibility or Screen Recording permi
 agemu ui inspect [--backend=auto|idb|xctest] [--all] [--timeout=SECONDS]
 ```
 
-Reads the running app's current screen and returns the elements and a screenshot in one response, so you can find identifiers and labels before writing a plan. It is read-only: it never launches, terminates, or taps the app, even on timeout. The app must already be running (`agemu app launch`); otherwise it fails with `UI_DELIVERY_FAILED` and a hint to launch it. With `idb` or `auto`, agemu checks that the app is running with `launchctl` first.
+Reads the running app's current screen and returns the elements and a screenshot in one response, so you can find identifiers and labels before writing a plan. It is read-only: it never launches, terminates, or taps the app, even on timeout. The app must already be running (`agemu app launch`); otherwise it fails with `UI_DELIVERY_FAILED` and a hint to launch it. With `idb` or `auto`, agemu checks that the app is running with `launchctl` first. Because `idb` reads whichever app is in the foreground, an `idb` inspection also fails with `UI_DELIVERY_FAILED` ("is not in the foreground") when the foreground app's name differs from the configured app's display name (read with `simctl appinfo`); bring the app to the foreground first. When the display name cannot be read, this check is skipped.
 
 The result has `run`, `udid`, `bundleId`, `backend`, `capturedAt`, `screenshot` (a PNG path), `elements`, and `counts` (`total` and `visible`). `elements` lists only visible elements unless you pass `--all`, which also returns off-screen ones with `visible: false`. If XCTest screenshot export fails, the result keeps its elements and reports `screenshotExportError`.
 
@@ -298,7 +298,7 @@ Plans stop at the first failed action and are validated completely before runnin
 | --- | --- | --- | --- |
 | `launch` | `arguments`, `environment` | yes | yes |
 | `terminate` | none | yes | yes |
-| `openUrl` | `url`; `confirm` (boolean) | yes, on iOS 16.4 or newer (fails with "openUrl requires iOS 16.4 or newer"); presses SpringBoard's first-open "Open" prompt unless `confirm` is `false` | yes; presses the prompt only with `confirm: true` |
+| `openUrl` | `url`; `confirm` (boolean) | yes, on iOS 16.4 or newer (fails with "openUrl requires iOS 16.4 or newer"); presses SpringBoard's first-open "Open" prompt unless `confirm` is `false` | yes; presses the prompt only with `confirm: true`, and only when a new "Open in “App”?" title (naming the configured app when its display name is known) with Open and Cancel buttons appears |
 | `pressButton` | `button`: `home` | yes | yes |
 | `pressKey` | `key`: `return`, `delete`, `tab`, or `space`; `count` 1 to 100 (default 1) | yes | yes |
 | `tap` | target, or `x` and `y` | yes | yes |

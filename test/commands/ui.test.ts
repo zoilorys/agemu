@@ -120,6 +120,41 @@ describe('ui inspect', () => {
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 
+  const appinfo = (name?: string) => `{\n    CFBundleIdentifier = "com.example.app";\n${name ? `    CFBundleDisplayName = ${name};\n` : ''}}\n`;
+  const foregroundRun = (calls: string[][], foreground: string, info: string) => async (executable: string, args: string[]) => {
+    calls.push([executable, ...args]);
+    if (executable === 'idb' && args[1] === 'describe-all') {
+      return result(JSON.stringify([{ type: 'Application', AXLabel: foreground, frame: { x: 0, y: 0, width: 400, height: 800 } }]));
+    }
+    if (args.includes('launchctl')) return result(running);
+    if (args[1] === 'appinfo') return result(info);
+    return result();
+  };
+
+  it('fails on idb when the running app is backgrounded and another app is in the foreground', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-inspect-'));
+    const calls: string[][] = [];
+    try {
+      const error = await inspectScreen(inspectConfig(root), { backend: 'idb' }, { run: foregroundRun(calls, 'SpringBoard', appinfo('App')) })
+        .catch((caught: unknown) => caught);
+      expect(error).toMatchObject({ code: 'UI_DELIVERY_FAILED', details: { failedAction: {
+        index: 0, kind: 'inspect', message: 'com.example.app is not in the foreground (foreground: SpringBoard)' } } });
+      expect((error as CliError).message).toMatch(/agemu app launch/);
+      expect(calls.some(call => call[2] === 'launch' || call[2] === 'terminate')).toBe(false);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it.each([
+    ['the foreground app has the display name', 'App', appinfo('App')],
+    ['the display name is unknown', 'SpringBoard', appinfo()],
+  ])('inspects on idb when %s', async (_case, foreground, info) => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-inspect-'));
+    try {
+      const inspected = await inspectScreen(inspectConfig(root), { backend: 'idb' }, { run: foregroundRun([], foreground, info) });
+      expect(inspected.elements.map(element => element.label)).toEqual([foreground]);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
   it('keeps the app running when an XCTest inspect times out', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'agemu-inspect-'));
     const manifest = path.join(root, '.agemu', 'RunnerDerivedData', 'Build', 'Runner.xctestrun');
@@ -146,10 +181,12 @@ describe('ui inspect', () => {
     const manifest = path.join(root, '.agemu', 'RunnerDerivedData', 'Build', 'Runner.xctestrun');
     await mkdir(path.dirname(manifest), { recursive: true });
     await writeFile(manifest, 'fixture');
+    const calls: string[][] = [];
     try {
       const inspected = await inspectScreen(inspectConfig(root), { backend: 'xctest' }, {
         runnerProject: path.join(root, 'missing.xcodeproj'),
         run: async (executable, args) => {
+          calls.push([executable, ...args]);
           if (executable === 'plutil' && args[1] === 'json') return result(JSON.stringify({ AgentRunner: { TestBundlePath: 'AgentRunner.xctest' } }));
           if (executable === 'xcodebuild') {
             await mkdir(args[args.indexOf('-resultBundlePath') + 1]!, { recursive: true });
@@ -162,6 +199,8 @@ describe('ui inspect', () => {
       });
       expect(inspected.screenshotExportError).toBe('export broke');
       expect(inspected.screenshot).toBeUndefined();
+      // XCTest inspection is scoped to the app, so no foreground check runs.
+      expect(calls.some(call => call.includes('appinfo'))).toBe(false);
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 });
@@ -924,8 +963,11 @@ describe('UI backend selection', () => {
   const existingOpen = { type: 'Button', AXLabel: 'Open', frame: { x: 10, y: 10, width: 60, height: 40 } };
   const promptOpen = { type: 'Button', AXLabel: 'Open', frame: { x: 200, y: 400, width: 120, height: 44 } };
   const openText = { type: 'StaticText', AXLabel: 'Open', frame: { x: 0, y: 600, width: 100, height: 20 } };
+  const promptTitle = (app: string) => ({ type: 'StaticText', AXLabel: `Open in “${app}”?`, frame: { x: 60, y: 340, width: 270, height: 22 } });
+  const promptCancel = { type: 'Button', AXLabel: 'Cancel', frame: { x: 70, y: 400, width: 120, height: 44 } };
   /** Runs an idb plan whose tree is `before` until `simctl openurl` succeeds, then `before` plus `after`. */
-  const runIdbOpenUrl = async (actions: unknown[], options: { before?: object[]; after?: object[]; terminateStderr?: string; openurlStderr?: string } = {}) => {
+  const runIdbOpenUrl = async (actions: unknown[], options: { before?: object[]; after?: object[]; terminateStderr?: string; openurlStderr?: string;
+    appName?: string } = {}) => {
     const root = await mkdtemp(path.join(tmpdir(), 'agemu-idb-openurl-'));
     const commands: string[][] = [];
     let prompted = false;
@@ -942,6 +984,7 @@ describe('UI backend selection', () => {
             prompted = true;
           }
           if (executable === 'xcrun' && args[1] === 'terminate' && options.terminateStderr) return result('', options.terminateStderr, 3);
+          if (executable === 'xcrun' && args[1] === 'appinfo' && options.appName) return result(`{\n    CFBundleDisplayName = "${options.appName}";\n}\n`);
           return result();
         },
       }).catch((e: unknown) => e);
@@ -971,7 +1014,8 @@ describe('UI backend selection', () => {
   });
 
   it('presses a newly appeared Open prompt after openUrl with confirm: true', async () => {
-    const { output, taps, transcript } = await runIdbOpenUrl([{ openUrl: { url: 'agemufixture://deep/link', confirm: true } }], { after: [promptOpen] });
+    const { output, taps, transcript } = await runIdbOpenUrl([{ openUrl: { url: 'agemufixture://deep/link', confirm: true } }],
+      { after: [promptTitle('Fixture'), promptCancel, promptOpen], appName: 'Fixture' });
     expect(output).toMatchObject({ runnerResult: { completed: 1 } });
     expect(taps).toEqual([['idb', 'ui', 'tap', 'Open', '--match-key', 'AXLabel', '--expected-key', 'AXLabel', '--expected-value', 'Open',
       '--api', 'axbridge', '--udid', 'PHONE']]);
@@ -981,8 +1025,18 @@ describe('UI backend selection', () => {
   it('presses only the new Open button, never a new "Open" text or the one already on screen', async () => {
     // Duplicate labels force a tap at the new button's center (260,422).
     const { taps } = await runIdbOpenUrl([{ openUrl: { url: 'agemufixture://deep/link', confirm: true } }],
-      { before: [existingOpen], after: [openText, promptOpen] });
+      { before: [existingOpen], after: [openText, promptTitle('Fixture'), promptCancel, promptOpen] });
     expect(taps).toEqual([['idb', 'ui', 'tap', '260', '422', '--udid', 'PHONE']]);
+  });
+
+  it.each([
+    ['a new app Open button without the prompt title or Cancel', [promptOpen], undefined],
+    ['a prompt naming a different app', [promptTitle('Other'), promptCancel, promptOpen], 'Fixture'],
+  ])('does not press %s', async (_case, after, appName) => {
+    const { output, taps, transcript } = await runIdbOpenUrl([{ openUrl: { url: 'agemufixture://deep/link', confirm: true } }], { after, appName });
+    expect(output).toMatchObject({ runnerResult: { completed: 1 } });
+    expect(taps).toEqual([]);
+    expect(transcript).toContain('openUrl confirmation: no Open prompt appeared');
   });
 
   it('makes no tree reads or taps for openUrl without confirm', async () => {

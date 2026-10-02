@@ -1,5 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import { normalizeIdbElements, normalizeXctestNodes, resolveTarget, type ElementTarget, type UiElement } from '../../src/commands/ui-elements.js';
+import { normalizeIdbElements, normalizeXctestNodes, parseAppDisplayName, resolveTarget, type ElementTarget, type UiElement } from '../../src/commands/ui-elements.js';
+
+describe('simctl appinfo display name', () => {
+  it.each([
+    ['the display name over the bundle name', '{\n    CFBundleDisplayName = NativeFixture;\n    CFBundleIdentifier = "dev.x";\n    CFBundleName = Other;\n}', 'NativeFixture'],
+    ['a quoted bundle name when no display name exists', '{\n    CFBundleIdentifier = "dev.x";\n    CFBundleName = "My App";\n}', 'My App'],
+    ['nothing for an uninstalled app', '{\n    CFBundleIdentifier = "dev.x";\n}', undefined],
+  ])('returns %s', (_case, output, expected) => {
+    expect(parseAppDisplayName(output)).toBe(expected);
+  });
+});
 
 describe('target matching', () => {
   const frame = { x: 0, y: 0, width: 10, height: 10 };

@@ -116,6 +116,27 @@ export function normalizeIdbElements(raw: unknown[]): UiElement[] {
   });
 }
 
+/** Display name from `simctl appinfo` plist text: CFBundleDisplayName, else CFBundleName, else undefined. */
+export function parseAppDisplayName(output: string): string | undefined {
+  const field = (key: string) => {
+    const match = new RegExp(`^\\s*${key}\\s*=\\s*(?:"((?:[^"\\\\]|\\\\.)*)"|([^;\\s][^;]*?))\\s*;`, 'm').exec(output);
+    const value = match ? (match[1] !== undefined ? match[1].replace(/\\(.)/g, '$1') : match[2]) : undefined;
+    return value ? value : undefined;
+  };
+  return field('CFBundleDisplayName') ?? field('CFBundleName');
+}
+
+type AppInfoRun = (executable: string, args: string[], options?: { timeoutMs?: number }) =>
+  Promise<{ exitCode: number | null; stdout: string }>;
+
+/** The installed app's display name (read-only), or undefined when it cannot be determined. */
+export async function appDisplayName(run: AppInfoRun, udid: string, bundleId: string, timeoutMs = 10_000): Promise<string | undefined> {
+  try {
+    const info = await run('xcrun', ['simctl', 'appinfo', udid, bundleId], { timeoutMs });
+    return info.exitCode === 0 ? parseAppDisplayName(info.stdout) : undefined;
+  } catch { return undefined; }
+}
+
 export function normalizeXctestNodes(raw: unknown): UiElement[] {
   if (!Array.isArray(raw)) return [];
   const nodes = raw.filter(isRecord) as XctestNode[];

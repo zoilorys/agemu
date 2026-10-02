@@ -252,11 +252,12 @@ final class AgentRunner: XCTestCase {
                 let candidate = try element(target, in: app)
                 candidate.tap()
                 let old = candidate.value as? String ?? ""
-                // An empty field reports its placeholder as its value.
-                let length = old == (candidate.placeholderValue ?? "") ? 0 : old.count
-                if length > 0 {
-                    candidate.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: length))
-                    if (candidate.value as? String) == old { return "could not clear \(target.targetDescription)" }
+                // An empty field reports its placeholder as its value, so text equal to the placeholder is
+                // indistinguishable here; deleting in an empty field is a no-op, so always delete old.count.
+                if !old.isEmpty {
+                    candidate.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: old.count))
+                    let new = candidate.value as? String ?? ""
+                    if !new.isEmpty && new != (candidate.placeholderValue ?? "") { return "could not clear \(target.targetDescription)" }
                 }
             } else if let press = action.pressKey {
                 guard let key = keyboardKey(press.key) else { return "unsupported key \(press.key)" }

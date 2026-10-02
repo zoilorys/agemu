@@ -7,7 +7,7 @@ import { redactValue } from '../artifacts/runs.js';
 import { writeLaunchMarker } from '../artifacts/launch-marker.js';
 import { deadline, type Deadline, type ProcessResult, type RunOptions } from '../process/run-process.js';
 import type { LongPress, Point, Swipe, UiPlan } from './ui.js';
-import { describeTarget, elementVisible, matchingIndexes, normalizeIdbElements, type ElementTarget, type IdbElement, type Inspection } from './ui-elements.js';
+import { appDisplayName, describeTarget, elementVisible, matchingIndexes, normalizeIdbElements, type ElementTarget, type IdbElement, type Inspection } from './ui-elements.js';
 
 type Run = (executable: string, args: string[], options?: RunOptions) => Promise<ProcessResult>;
 type Target = ElementTarget & { x?: number; y?: number };
@@ -241,15 +241,21 @@ export async function tryRunIdbPlan(config: LoadedConfig, plan: UiPlan, udid: st
         await terminateApp();
       } else if (kind === 'openUrl') {
         const confirm = value.confirm === true;
-        // An Open button already on screen is not the first-open prompt, so only a newly appeared one is pressed.
-        const frameKey = (element: Element) => JSON.stringify(element.frame ?? null);
-        const before = confirm ? new Set(matchElements(await elements(), openPrompt).map(frameKey)) : undefined;
+        // Only the system prompt is pressed: a newly appeared "Open in “App”?" title with new Open and Cancel buttons.
+        // An app button labelled Open revealed by the deep link does not qualify.
+        const elementKey = (element: Element) => JSON.stringify([element.type ?? null, element.AXLabel ?? null, element.frame ?? null]);
+        const before = confirm ? new Set((await elements()).map(elementKey)) : undefined;
+        const appName = confirm ? await appDisplayName(run, udid, targetBundleId(config)) : undefined;
         await execute('xcrun', ['simctl', 'openurl', udid, value.url as string]);
         if (before) {
           const giveUp = Date.now() + openPromptWaitMs;
           while (true) {
             const tree = await elements();
-            const prompt = matchElements(tree, openPrompt).find(element => !before.has(frameKey(element)));
+            const fresh = tree.filter(element => !before.has(elementKey(element)));
+            const title = fresh.some(element => typeof element.AXLabel === 'string' && /^Open in [“"]/.test(element.AXLabel)
+              && (appName === undefined || element.AXLabel.includes(appName)));
+            const cancel = matchElements(fresh, { label: 'Cancel', type: 'button' }).length > 0;
+            const prompt = title && cancel ? matchElements(fresh, openPrompt)[0] : undefined;
             if (prompt) {
               await press(openPrompt, prompt, tree);
               lines.push('openUrl confirmation: pressed Open');

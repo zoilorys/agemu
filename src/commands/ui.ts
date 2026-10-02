@@ -10,7 +10,7 @@ import { buildFailureDetails, writeBuildLog } from '../native/build-errors.js';
 import { listDevices, resolveDevice } from '../native/simctl.js';
 import { deadline, runProcess, type Deadline, type ProcessResult, type RunOptions } from '../process/run-process.js';
 import { idbCompatible, screenshotName, tryRunIdbPlan } from './idb-ui.js';
-import { normalizeXctestNodes, targetTypes, type ElementTarget, type Inspection } from './ui-elements.js';
+import { appDisplayName, normalizeXctestNodes, targetTypes, type ElementTarget, type Inspection } from './ui-elements.js';
 import { createRecordingBridge, startVideoRecording, type Recording } from './video-recording.js';
 
 export type UiPlan = { version: 1; actions: unknown[] };
@@ -439,6 +439,18 @@ export async function inspectScreen(config: LoadedConfig, options: { backend?: '
   }
   const inspections = (result.runnerResult as { inspections?: Inspection[] } | undefined)?.inspections ?? [];
   const tree = inspections.find(inspection => inspection.index === 0)?.elements ?? [];
+  if (result.backend === 'idb') {
+    // idb reads whatever app is in the foreground; a running but backgrounded app would be misreported.
+    const bundleId = targetBundleId(config);
+    const name = await appDisplayName(run, String(result.udid), bundleId, Math.min(10_000, Math.max(1, limit.remaining())));
+    const foreground = tree.filter(element => element.type === 'application').map(element => element.label).filter(label => label !== undefined);
+    if (name !== undefined && foreground.length > 0 && !foreground.includes(name)) {
+      const failedAction = { index: 0, kind: 'inspect', message: `${bundleId} is not in the foreground (foreground: ${foreground[0]})` };
+      throw new CliError('UI_DELIVERY_FAILED',
+        redact(`${failureMessage(failedAction)}. Bring the app to the foreground first (agemu app launch); ui inspect never launches it.`, config.redactions ?? []),
+        redactValue({ failedAction, completed: 0 }, config.redactions ?? []));
+    }
+  }
   const visible = tree.filter(element => element.visible);
   return {
     run: result.run, udid: result.udid, bundleId: result.bundleId, backend: result.backend, capturedAt,

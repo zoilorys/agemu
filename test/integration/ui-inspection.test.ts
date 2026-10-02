@@ -176,6 +176,21 @@ describe.skipIf(!enabled)('ui inspection fixture', () => {
     } } } });
   }, 600_000);
 
+  test('clears a field whose text equals its placeholder', async () => {
+    const cleared = data(await run(['ui', 'run', '--backend=xctest', '--plan-json=' + JSON.stringify({
+      version: 1, actions: [
+        { launch: {} },
+        { type: { identifier: 'nameField', text: 'Name' } },
+        { clear: { identifier: 'nameField' } },
+        { type: { identifier: 'nameField', text: 'Bo' } },
+        { pressKey: { key: 'return' } },
+        { tap: { identifier: 'saveButton' } },
+        { assertValue: { identifier: 'gestureStatus', value: 'saved:Bo' } },
+      ],
+    })]), 'ui run clear placeholder text');
+    expect(cleared).toMatchObject({ backend: 'xctest', runnerResult: { completed: 7 } });
+  }, 300_000);
+
   // Must stay last: it leaves the app backgrounded.
   test('clears a field, presses return, and presses Home', async () => {
     const edited = data(await run(['ui', 'run', '--backend=xctest', '--plan-json=' + JSON.stringify({
