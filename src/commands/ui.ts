@@ -10,6 +10,7 @@ import { buildFailureDetails, writeBuildLog } from '../native/build-errors.js';
 import { listDevices, resolveDevice } from '../native/simctl.js';
 import { deadline, runProcess, type Deadline, type ProcessResult, type RunOptions } from '../process/run-process.js';
 import { idbCompatible, screenshotName, tryRunIdbPlan } from './idb-ui.js';
+import { normalizeXctestNodes, type Inspection } from './ui-elements.js';
 import { createRecordingBridge, startVideoRecording, type Recording } from './video-recording.js';
 
 export type UiPlan = { version: 1; actions: unknown[] };
@@ -317,7 +318,8 @@ export async function runUiPlan(config: LoadedConfig, source: { file: string } |
           const location = path.join(directory, `segment-${index}`);
           await mkdir(location, { recursive: true });
           try {
-            outputs.push(await runUiSegment(config, { version: 1, actions: segment.actions }, udid, location, run, 'idb', bounded));
+            outputs.push(offsetInspections(await runUiSegment(config, { version: 1, actions: segment.actions }, udid, location, run, 'idb', bounded),
+              segment.offset));
           } catch (error) {
             throw offsetFailure(error, segment.offset);
           }
@@ -353,6 +355,14 @@ function offsetFailure(error: unknown, offset: number): unknown {
   return new CliError(error.code, error.code === 'PROCESS_TIMEOUT' ? error.message : failureMessage(failedAction), {
     ...error.details, failedAction, completed: (typeof error.details.completed === 'number' ? error.details.completed : failed.index) + offset,
   });
+}
+
+/** Maps segment-relative inspection indexes in a segment result to their indexes in the submitted plan. */
+function offsetInspections(output: Record<string, unknown>, offset: number): Record<string, unknown> {
+  const runnerResult = output.runnerResult as { inspections?: Inspection[] } | undefined;
+  if (!runnerResult || !Array.isArray(runnerResult.inspections)) return output;
+  return { ...output, runnerResult: { ...runnerResult,
+    inspections: runnerResult.inspections.map(inspection => ({ ...inspection, index: inspection.index + offset })) } };
 }
 
 /** Index from the last `AGEMU_ACTION:<n>` marker the runner printed, if any. */
@@ -511,7 +521,13 @@ async function runUiSegment(config: LoadedConfig, plan: UiPlan, udid: string, di
       redactValue(details, secrets));
   }
   const marker = result.stdout.split(/\r?\n/).find(line => line.includes('AGEMU_RESULT:'));
-  const runnerResult = marker ? JSON.parse(Buffer.from(marker.slice(marker.indexOf('AGEMU_RESULT:') + 13), 'base64').toString('utf8')) : undefined;
+  const decoded = marker ? JSON.parse(Buffer.from(marker.slice(marker.indexOf('AGEMU_RESULT:') + 13), 'base64').toString('utf8')) as unknown : undefined;
+  const runnerResult = decoded && typeof decoded === 'object' && !Array.isArray(decoded) && Array.isArray((decoded as { inspections?: unknown }).inspections)
+    ? { ...decoded, inspections: ((decoded as { inspections: unknown[] }).inspections).map((entry) => {
+      const inspection = (entry ?? {}) as { index?: unknown; nodes?: unknown };
+      return { index: inspection.index, elements: normalizeXctestNodes(inspection.nodes) };
+    }) }
+    : decoded;
   return redactValue({
     run: path.relative(config.root, directory), udid: built.udid, bundleId: targetBundleId(config),
     backend: 'xctest', runnerCached: built.cached,

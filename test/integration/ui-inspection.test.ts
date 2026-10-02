@@ -69,6 +69,17 @@ describe.skipIf(!enabled)('ui inspection fixture', () => {
     }
   }, 120_000);
 
+  test('inspects the fixture as a normalized element list through XCTest', async () => {
+    const inspected = data(await run(['ui', 'run', '--backend=xctest', '--plan-json=' + JSON.stringify({
+      version: 1, actions: [{ launch: {} }, { inspect: {} }],
+    })]), 'ui run inspect');
+    const inspections = (inspected.runnerResult as { inspections: Array<{ index: number; elements: Array<Record<string, unknown>> }> }).inspections;
+    expect(inspections.map(inspection => inspection.index)).toEqual([1]);
+    const elements = inspections[0]!.elements;
+    expect(elements).toContainEqual(expect.objectContaining({ type: 'textField', identifier: 'nameField', visible: true }));
+    expect(elements).toContainEqual(expect.objectContaining({ identifier: 'row', label: 'Item 24', visible: false }));
+  }, 300_000);
+
   test('types, taps, and opens URLs in the fixture', async () => {
     const typed = data(await run(['ui', 'run', '--backend=xctest', '--plan-json=' + JSON.stringify({
       version: 1, actions: [

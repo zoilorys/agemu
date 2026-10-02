@@ -7,31 +7,13 @@ import { redactValue } from '../artifacts/runs.js';
 import { writeLaunchMarker } from '../artifacts/launch-marker.js';
 import { deadline, type Deadline, type ProcessResult, type RunOptions } from '../process/run-process.js';
 import type { LongPress, Point, Swipe, UiPlan } from './ui.js';
+import { elementVisible, normalizeIdbElements, type IdbElement, type Inspection } from './ui-elements.js';
 
 type Run = (executable: string, args: string[], options?: RunOptions) => Promise<ProcessResult>;
 type Target = { identifier?: string; label?: string; x?: number; y?: number };
-type Frame = { x?: number; y?: number; width?: number; height?: number };
-type Element = { AXUniqueId?: unknown; AXLabel?: unknown; AXValue?: unknown; type?: unknown; frame?: Frame };
+type Element = IdbElement;
 const operations = new Set(['launch', 'wait', 'type', 'tap', 'swipe', 'longPress', 'assertVisible', 'assertExists', 'assertNotVisible',
   'assertValue', 'screenshot', 'inspect']);
-
-function finiteFrame(frame: Frame | undefined): frame is Required<Frame> {
-  return !!frame && [frame.x, frame.y, frame.width, frame.height].every(Number.isFinite);
-}
-
-/**
- * Mirrors XCTest `exists && isHittable` as closely as the AX tree allows: a positive-size frame that intersects the
- * screen. The screen is the first `type === 'Application'` element's frame; if idb names that element differently
- * (the field varies by idb version), the intersection check is skipped.
- */
-function elementVisible(elements: Element[], element: Element | undefined): boolean {
-  if (!element || !finiteFrame(element.frame) || element.frame.width <= 0 || element.frame.height <= 0) return false;
-  const screen = elements.find(candidate => candidate.type === 'Application')?.frame;
-  if (!finiteFrame(screen)) return true;
-  const frame = element.frame;
-  return frame.x < screen.x + screen.width && frame.x + frame.width > screen.x
-    && frame.y < screen.y + screen.height && frame.y + frame.height > screen.y;
-}
 
 /** Screenshot file-name stem shared by both backends; AgentRunner.swift applies the same rule. */
 export function screenshotName(name: unknown): string {
@@ -126,7 +108,7 @@ export async function tryRunIdbPlan(config: LoadedConfig, plan: UiPlan, udid: st
 
   const transcript = path.join(directory, 'idb.log');
   const lines: string[] = [];
-  const trees: string[] = [];
+  const inspections: Inspection[] = [];
   const screenshots: string[] = [];
   const execute = async (executable: string, args: string[], options?: RunOptions): Promise<ProcessResult> => {
     const result = await run(executable, args, options);
@@ -222,12 +204,12 @@ export async function tryRunIdbPlan(config: LoadedConfig, plan: UiPlan, udid: st
         await execute('idb', ['screenshot', file, '--udid', udid]);
         screenshots.push(path.relative(config.root, file));
       } else if (kind === 'inspect') {
-        trees.push(JSON.stringify(await elements()));
+        inspections.push({ index, elements: normalizeIdbElements(await elements()) });
       }
     }
     return redactValue({
       run: path.relative(config.root, directory), udid, bundleId: targetBundleId(config),
-      backend: 'idb', actions: plan.actions.length, runnerResult: { completed: plan.actions.length, bundleId: targetBundleId(config), trees },
+      backend: 'idb', actions: plan.actions.length, runnerResult: { completed: plan.actions.length, bundleId: targetBundleId(config), inspections },
       screenshots, transcript: path.relative(config.root, transcript),
     }, config.redactions ?? []);
   } catch (error) {

@@ -29,7 +29,13 @@ final class AgentRunner: XCTestCase {
     private struct Screenshot: Decodable { let name: String? }
     private struct Empty: Decodable {}
     private struct VideoRecording: Decodable { let name: String? }
-    private struct Result: Encodable { let completed: Int; let bundleId: String; let trees: [String] }
+    private struct Node: Encodable {
+        let type: String; let identifier: String; let label: String; let value: String
+        let x, y, width, height: Double
+        let enabled: Bool; let selected: Bool; let depth: Int
+    }
+    private struct Inspection: Encodable { let index: Int; let nodes: [Node] }
+    private struct Result: Encodable { let completed: Int; let bundleId: String; let inspections: [Inspection] }
     private struct Failure: Encodable { let index: Int; let kind: String; let message: String }
 
     override func setUp() {
@@ -104,7 +110,7 @@ final class AgentRunner: XCTestCase {
         let data = try XCTUnwrap(Data(base64Encoded: encoded))
         let plan = try JSONDecoder().decode(Plan.self, from: data)
         let app = XCUIApplication(bundleIdentifier: plan.bundleId)
-        var trees: [String] = []
+        var inspections: [Inspection] = []
         var completed = 0
 
         for (index, action) in plan.actions.enumerated() {
@@ -112,7 +118,7 @@ final class AgentRunner: XCTestCase {
             print("AGEMU_ACTION:\(index)")
             fflush(stdout)
             do {
-                if let message = try perform(action, index: index, in: app, trees: &trees) {
+                if let message = try perform(action, index: index, in: app, inspections: &inspections) {
                     reportFailure(index: index, kind: kind, message: message)
                     return
                 }
@@ -123,14 +129,14 @@ final class AgentRunner: XCTestCase {
             completed += 1
         }
 
-        let output = try JSONEncoder().encode(Result(completed: completed, bundleId: plan.bundleId, trees: trees))
+        let output = try JSONEncoder().encode(Result(completed: completed, bundleId: plan.bundleId, inspections: inspections))
         print("AGEMU_RESULT:\(output.base64EncodedString())")
         fflush(stdout)
     }
 
     /// Executes one action. Returns a failure message for a failed check, nil on success.
     @MainActor
-    private func perform(_ action: Action, index: Int, in app: XCUIApplication, trees: inout [String]) throws -> String? {
+    private func perform(_ action: Action, index: Int, in app: XCUIApplication, inspections: inout [Inspection]) throws -> String? {
             if let launch = action.launch {
                 app.launchArguments = launch.arguments ?? []
                 app.launchEnvironment = launch.environment ?? [:]
@@ -181,7 +187,9 @@ final class AgentRunner: XCTestCase {
                 attachment.lifetime = .keepAlways
                 add(attachment)
             } else if action.inspect != nil {
-                trees.append(app.debugDescription)
+                var nodes: [Node] = []
+                flatten(try app.snapshot(), depth: 0, into: &nodes)
+                inspections.append(Inspection(index: index, nodes: nodes))
             } else if let video = action.startVideoRecording {
                 try recordingRequest("/start?name=\((video.name ?? "video").addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? "video")")
             } else if action.stopVideoRecording != nil {
@@ -190,6 +198,47 @@ final class AgentRunner: XCTestCase {
                 return "action has no supported operation"
             }
             return nil
+    }
+
+    /// Normalized type names shared with the idb backend (src/commands/ui-elements.ts).
+    private func typeName(_ type: XCUIElement.ElementType) -> String {
+        switch type {
+        case .application: return "application"
+        case .window: return "window"
+        case .button: return "button"
+        case .staticText: return "staticText"
+        case .textField: return "textField"
+        case .secureTextField: return "secureTextField"
+        case .searchField: return "searchField"
+        case .textView: return "textView"
+        case .image: return "image"
+        case .cell: return "cell"
+        case .switch: return "switch"
+        case .slider: return "slider"
+        case .link: return "link"
+        case .scrollView: return "scrollView"
+        case .table: return "table"
+        case .collectionView: return "collectionView"
+        case .navigationBar: return "navigationBar"
+        case .tabBar: return "tabBar"
+        case .alert: return "alert"
+        case .keyboard: return "keyboard"
+        default: return "other"
+        }
+    }
+
+    /// Pre-order (document order) flattening of a snapshot tree.
+    @MainActor
+    private func flatten(_ snapshot: XCUIElementSnapshot, depth: Int, into nodes: inout [Node]) {
+        let frame = snapshot.frame
+        // JSONEncoder rejects non-finite values (e.g. CGRect.null); a zero frame is reported as not visible.
+        let finite = { (value: CGFloat) -> Double in value.isFinite ? Double(value) : 0 }
+        nodes.append(Node(
+            type: typeName(snapshot.elementType), identifier: snapshot.identifier, label: snapshot.label,
+            value: snapshot.value.map { String(describing: $0) } ?? "",
+            x: finite(frame.origin.x), y: finite(frame.origin.y), width: finite(frame.size.width), height: finite(frame.size.height),
+            enabled: snapshot.isEnabled, selected: snapshot.isSelected, depth: depth))
+        for child in snapshot.children { flatten(child, depth: depth + 1, into: &nodes) }
     }
 
     private func recordingRequest(_ path: String) throws {

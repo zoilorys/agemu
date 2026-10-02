@@ -184,7 +184,7 @@ describe('UI backend selection', () => {
             expect((await fetch(`${url}/start?name=flow`, { method: 'POST' })).status).toBe(200);
             events.push('tap');
             expect((await fetch(`${url}/stop`, { method: 'POST' })).status).toBe(200);
-            return result(`AGEMU_RESULT:${Buffer.from(JSON.stringify({ completed: 5, trees: [] })).toString('base64')}\n`);
+            return result(`AGEMU_RESULT:${Buffer.from(JSON.stringify({ completed: 5, inspections: [] })).toString('base64')}\n`);
           }
           return result();
         },
@@ -284,7 +284,7 @@ describe('UI backend selection', () => {
     project: path.join(root, 'App.xcodeproj'), scheme: 'App', configuration: 'Debug', bundleId: 'com.secret-app.x' },
   simulator: { udid: 'PHONE' }, root, redactions: ['secret-app'] });
 
-  it('redacts configured secrets from idb runner results and trees', async () => {
+  it('redacts configured secrets from idb runner results and inspections', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'agemu-idb-redact-'));
     try {
       const output = await runUiPlan(secretConfig(root), { json: JSON.stringify({ version: 1, actions: [{ inspect: {} }] }) }, {
@@ -295,7 +295,22 @@ describe('UI backend selection', () => {
       const json = JSON.stringify(output);
       expect(json).not.toContain('secret-app');
       expect(json).toContain('com.[REDACTED].x');
-      expect(json).toContain('Welcome to [REDACTED]');
+      expect(output.runnerResult).toMatchObject({ inspections: [{ index: 0, elements: [{ label: 'Welcome to [REDACTED]' }] }] });
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('reports an idb inspection after a recording boundary by its submitted plan index', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-idb-inspect-offset-'));
+    try {
+      const output = await runUiPlan(nativeConfig(root), { json: JSON.stringify({ version: 1, actions: [
+        { inspect: {} }, { startVideoRecording: {} }, { tap: { x: 1, y: 2 } }, { inspect: {} }, { stopVideoRecording: {} },
+      ] }) }, {
+        backend: 'idb',
+        startRecording: async () => ({ stop: async () => undefined }),
+        run: async (executable, args) => executable === 'idb' && args[1] === 'describe-all'
+          ? result(JSON.stringify([{ type: 'Button', AXLabel: 'Go', frame: { x: 0, y: 0, width: 10, height: 10 } }])) : result(),
+      }) as { segments: Array<{ runnerResult: { inspections: Array<{ index: number }> } }> };
+      expect(output.segments.map(segment => segment.runnerResult.inspections.map(inspection => inspection.index))).toEqual([[0], [3]]);
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 
@@ -310,7 +325,10 @@ describe('UI backend selection', () => {
         run: async (executable, args) => {
           if (executable === 'plutil' && args[1] === 'json') return result(JSON.stringify({ AgentRunner: { TestBundlePath: 'Runner.xctest' } }));
           if (executable === 'xcodebuild' && args[0] === 'test-without-building') {
-            const payload = { completed: 1, bundleId: 'com.secret-app.x', trees: ['Application com.secret-app.x'] };
+            const payload = { completed: 1, bundleId: 'com.secret-app.x', inspections: [{ index: 0, nodes: [{
+              type: 'application', identifier: '', label: 'Application com.secret-app.x', value: '',
+              x: 0, y: 0, width: 390, height: 844, enabled: true, selected: false, depth: 0,
+            }] }] };
             return result(`AGEMU_RESULT:${Buffer.from(JSON.stringify(payload)).toString('base64')}\n`);
           }
           return result();
@@ -318,7 +336,10 @@ describe('UI backend selection', () => {
       });
       const json = JSON.stringify(output);
       expect(json).not.toContain('secret-app');
-      expect(output.runnerResult).toEqual({ completed: 1, bundleId: 'com.[REDACTED].x', trees: ['Application com.[REDACTED].x'] });
+      expect(output.runnerResult).toEqual({ completed: 1, bundleId: 'com.[REDACTED].x', inspections: [{ index: 0, elements: [{
+        type: 'application', label: 'Application com.[REDACTED].x', frame: { x: 0, y: 0, width: 390, height: 844 },
+        visible: true, enabled: true, selected: false, depth: 0,
+      }] }] });
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 
@@ -504,7 +525,7 @@ describe('UI backend selection', () => {
       if (executable === 'plutil' && args[1] === 'json') return result(JSON.stringify({ AgentRunner: { TestBundlePath: 'Runner.xctest' } }));
       if (executable === 'xcodebuild' && args[0] === 'test-without-building') {
         await mkdir(args[args.indexOf('-resultBundlePath') + 1], { recursive: true });
-        return result(`AGEMU_RESULT:${Buffer.from(JSON.stringify({ completed: 4, trees: [] })).toString('base64')}\n`);
+        return result(`AGEMU_RESULT:${Buffer.from(JSON.stringify({ completed: 4, inspections: [] })).toString('base64')}\n`);
       }
       if (executable === 'xcrun' && args[0] === 'xcresulttool') return exportAttachments(args[args.indexOf('--output-path') + 1]);
       return result();
@@ -695,7 +716,7 @@ describe('UI backend selection', () => {
         run: async (executable, args) => {
           if (executable === 'idb') throw new Error('idb is not installed');
           if (executable === 'plutil' && args[1] === 'json') return result(JSON.stringify({ AgentRunner: { TestBundlePath: 'Runner.xctest' } }));
-          if (executable === 'xcodebuild' && args[0] === 'test-without-building') return result(`AGEMU_RESULT:${Buffer.from(JSON.stringify({ completed: 1, trees: [] })).toString('base64')}\n`);
+          if (executable === 'xcodebuild' && args[0] === 'test-without-building') return result(`AGEMU_RESULT:${Buffer.from(JSON.stringify({ completed: 1, inspections: [] })).toString('base64')}\n`);
           if (executable === 'xcodebuild') throw new Error('The cached runner must be reused');
           return result();
         },
