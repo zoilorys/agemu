@@ -1,4 +1,6 @@
+import { redact } from '../core/redact.js';
 import { CliError } from '../core/errors.js';
+import { connectWebSocket } from './websocket.js';
 
 // CDP client for Metro's inspector proxy. Observe-only: the only request sent is Runtime.enable.
 // Never send Runtime.getProperties (runs Proxy traps), Runtime.evaluate, Page.reload, or debugger domains.
@@ -22,12 +24,8 @@ export type WebSocketFactory = (url: string, init: { headers: Record<string, str
 export const nonFuseboxNotice = 'You are using an unsupported debugging client';
 const maxText = 4_000;
 
-const defaultWebSocket: WebSocketFactory = (url, init) => {
-  // Node 24's global WebSocket (undici) accepts { headers } as the second argument.
-  const Constructor = (globalThis as unknown as { WebSocket?: new (url: string, init: unknown) => WebSocketLike }).WebSocket;
-  if (!Constructor) throw new CliError('TOOL_NOT_FOUND', 'This Node.js runtime has no global WebSocket; use Node 22 or later');
-  return new Constructor(url, init);
-};
+// Not the global WebSocket: its close() waits for the peer indefinitely (see websocket.ts).
+const defaultWebSocket: WebSocketFactory = (url, init) => connectWebSocket(url, init);
 
 const message = (error: unknown) => error instanceof Error ? error.message : String(error);
 
@@ -88,9 +86,10 @@ function renderArg(arg: RemoteObject): string {
 // eslint-disable-next-line no-control-regex
 const ansi = /\u001b\[[0-9;?]*[ -/]*[@-~]/g;
 
-export function renderArgs(args: unknown): string {
+// Redacts before the cap so a secret cut at the boundary cannot survive as a partial match.
+export function renderArgs(args: unknown, secrets: string[] = []): string {
   const list = Array.isArray(args) ? args as RemoteObject[] : [];
-  return list.map((arg) => renderArg(arg ?? {})).join(' ').replace(ansi, '').slice(0, maxText);
+  return redact(list.map((arg) => renderArg(arg ?? {})).join(' ').replace(ansi, ''), secrets).slice(0, maxText);
 }
 
 type ConsoleParams = {
@@ -99,9 +98,9 @@ type ConsoleParams = {
 };
 
 /** Maps one Runtime.consoleAPICalled to a message, or undefined when it predates startMs or is React Native's injected notice. */
-export function mapConsoleEvent(params: ConsoleParams, startMs: number): JsConsoleMessage | undefined {
+export function mapConsoleEvent(params: ConsoleParams, startMs: number, secrets: string[] = []): JsConsoleMessage | undefined {
   if (typeof params.timestamp !== 'number' || !Number.isFinite(params.timestamp) || params.timestamp < startMs) return undefined;
-  const rendered = renderArgs(params.args);
+  const rendered = renderArgs(params.args, secrets);
   if (rendered.includes(nonFuseboxNotice)) return undefined;
   const frame = params.stackTrace?.callFrames?.[0];
   const stack = frame ? `${frame.functionName || 'anonymous'} ${frame.url ?? ''}:${frame.lineNumber ?? 0}:${frame.columnNumber ?? 0}` : undefined;
@@ -119,6 +118,8 @@ export type CaptureOptions = {
   WebSocketImpl?: WebSocketFactory;
   clock?: () => number;
   openTimeoutMs?: number;
+  /** Redacted from message text before it is capped. */
+  secrets?: string[];
 };
 export type CaptureResult = { stoppedBy: 'duration' | 'until' | 'disconnected'; closeCode?: number; closeReason?: string };
 
@@ -158,7 +159,7 @@ export function captureConsole(url: string, options: CaptureOptions): Promise<Ca
         payload = JSON.parse(raw) as typeof payload;
       } catch { return; }
       if (payload.method !== 'Runtime.consoleAPICalled' || !payload.params) return;
-      const mapped = mapConsoleEvent(payload.params, options.startMs);
+      const mapped = mapConsoleEvent(payload.params, options.startMs, options.secrets);
       if (!mapped) return;
       try { if (options.onMessage(mapped) === true) settle({ result: { stoppedBy: 'until' } }); }
       catch (error) { settle({ error }); }

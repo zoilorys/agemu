@@ -70,7 +70,7 @@ export async function captureJsLogs(config: LoadedConfig, options: JsLogOptions 
     const targets = await listTargets(port, Math.min(5_000, deadlineMs - clock()), dependencies.fetch);
     target = selectTarget(targets, bundleId, device.name);
     outcome = await captureConsole(target.webSocketDebuggerUrl, {
-      port, startMs, deadlineMs, clock, WebSocketImpl: dependencies.WebSocketImpl,
+      port, startMs, deadlineMs, clock, secrets, WebSocketImpl: dependencies.WebSocketImpl,
       onMessage: (raw) => {
         const message: JsConsoleMessage = { ...raw, text: redact(raw.text, secrets), ...(raw.stack !== undefined ? { stack: redact(raw.stack, secrets) } : {}) };
         total += 1;

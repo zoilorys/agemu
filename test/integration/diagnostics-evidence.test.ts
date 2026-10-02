@@ -13,9 +13,12 @@ const udid = process.env.AGEMU_NATIVE_SIMULATOR_UDID;
 const enabled = process.env.AGEMU_NATIVE === '1' && Boolean(udid);
 const root = path.join(repository, '.agemu', 'diagnostics-evidence', udid ?? 'unset');
 
+// Vitest sets NODE_ENV=test; a Metro server started under it refuses to run React Native's dev middleware.
+const { NODE_ENV: _testEnvironment, ...cliEnvironment } = process.env;
+
 function run(args: string[], cwd = root): Promise<CliResult> {
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [cli, ...args], { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(process.execPath, [cli, ...args], { cwd, env: cliEnvironment, stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '';
     let stderr = '';
     child.stdout.setEncoding('utf8').on('data', (chunk) => { stdout += chunk; });

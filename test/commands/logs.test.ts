@@ -220,6 +220,17 @@ describe('logs show command', () => {
       } finally { await rm(root, { recursive: true, force: true }); }
     });
 
+    it('redacts a secret that straddles the 4000-character cap', async () => {
+      const root = await mkdtemp(path.join(tmpdir(), 'agemu-js-'));
+      const start = Date.now();
+      try {
+        const result = await captureJsLogs(goConfig(root), { duration: '10s', until: 'x' }, dependencies([consoleFrame('log', start + 1, `${'x'.repeat(3990)}secret-value`)], start));
+        expect(result.messages[0].text).toBe(`${'x'.repeat(3990)}[REDACTED]`);
+        const artifact = await readFile(path.join(root, result.artifact), 'utf8');
+        expect(artifact).not.toContain('secret-val');
+      } finally { await rm(root, { recursive: true, force: true }); }
+    });
+
     it('records a redacted error event with run and artifact when no JavaScript target exists', async () => {
       const root = await mkdtemp(path.join(tmpdir(), 'agemu-js-'));
       const secretConfig: LoadedConfig = { ...goConfig(root), redactions: ['Exponent'] };

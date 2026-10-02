@@ -63,7 +63,7 @@ export async function listCrashes(config: LoadedConfig, options: CrashOptions = 
   const window = await resolveSince(options.since, config.root, now, sinceMs, { bundleId, udid });
   const since = window.start;
   const [run, executable] = await Promise.all([createRun(config.root, now), executableName(config, dependencies)]);
-  const found = await findCrashReports({ directory: dependencies.directory ?? defaultCrashDirectory(), since, bundleId, executableName: executable, limit });
+  const found = await findCrashReports({ directory: dependencies.directory ?? defaultCrashDirectory(), since, bundleId, executableName: executable, limit, secrets });
   const directory = path.join(run.directory, 'crashes');
   const crashes: Array<CrashSummary & { source: string }> = [];
   if (found.crashes.length > 0) await mkdir(directory, { recursive: true });

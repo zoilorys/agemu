@@ -62,6 +62,18 @@ describe('crashes list command', () => {
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 
+  it('redacts a secret that straddles the 2000-character message cap', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-crashes-cap-'));
+    const reports = path.join(root, 'reports');
+    await mkdir(reports);
+    const header = JSON.stringify({ app_name: 'App', timestamp: '2026-09-30 11:00:00.00 +0000', bug_type: '309', incident_id: 'cap', bundleID: 'com.example.app' });
+    await writeFile(path.join(reports, 'App-cap.ips'), `${header}\n${JSON.stringify({ asi: { lib: [`${'x'.repeat(1990)}secret-value`] } })}`);
+    try {
+      const result = await listCrashes(configFor(root), {}, { directory: reports, now: () => now, readState: async () => { throw new Error('not built'); } });
+      expect(result.crashes[0].message).toBe(`${'x'.repeat(1990)}[REDACTED]`);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
   it('returns only crashes after the latest agemu launch with since=launch', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'agemu-crashes-launch-'));
     const reports = path.join(root, 'reports');

@@ -1,3 +1,4 @@
+import { redact } from '../core/redact.js';
 import { readdir, readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 
@@ -8,7 +9,7 @@ export type CrashSummary = {
   exceptionType: string | null; signal: string | null; termination: string | null; message: string | null; frames: CrashFrame[];
 };
 export type FoundCrash = { path: string; text: string; summary: CrashSummary };
-export type CrashQuery = { directory: string; since: Date; bundleId: string; executableName?: string; limit: number };
+export type CrashQuery = { directory: string; since: Date; bundleId: string; executableName?: string; limit: number; secrets?: string[] };
 
 const maxFrames = 15;
 const maxMessage = 2_000;
@@ -72,7 +73,8 @@ function frames(body: Record<string, unknown> | undefined): CrashFrame[] {
   });
 }
 
-export function summarizeCrash(file: string, parsed: ParsedIps, fallbackTimestamp?: Date): CrashSummary {
+// Redacts before the cap so a secret cut at the boundary cannot survive as a partial match.
+export function summarizeCrash(file: string, parsed: ParsedIps, fallbackTimestamp?: Date, secrets: string[] = []): CrashSummary {
   const { header, body } = parsed;
   const exception = record(body?.exception);
   const message = strings(body?.asi).join('\n');
@@ -85,7 +87,7 @@ export function summarizeCrash(file: string, parsed: ParsedIps, fallbackTimestam
     exceptionType: text(exception?.type),
     signal: text(exception?.signal),
     termination: termination(body?.termination),
-    message: message ? message.slice(0, maxMessage) : null,
+    message: message ? redact(message, secrets).slice(0, maxMessage) : null,
     frames: frames(body),
   };
 }
@@ -121,7 +123,7 @@ export async function findCrashReports(query: CrashQuery): Promise<{ crashes: Fo
       const contents = await readFile(file, 'utf8');
       const parsed = parseIpsReport(contents);
       if (String(parsed.header.bug_type) !== '309' || !matches(parsed, query.bundleId, query.executableName)) continue;
-      const summary = summarizeCrash(name, parsed, info.mtime);
+      const summary = summarizeCrash(name, parsed, info.mtime, query.secrets);
       if (Date.parse(summary.timestamp) < since) continue;
       found.push({ path: file, text: contents, summary });
     } catch { skipped += 1; }
