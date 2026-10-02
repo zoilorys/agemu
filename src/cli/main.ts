@@ -16,9 +16,11 @@ import { push } from '../commands/push.js';
 import { location, type LocationAction } from '../commands/location.js';
 import { addMedia, simulatorUi, statusBar } from '../commands/simulator-settings.js';
 import { createSimulator, deleteSimulator, eraseSimulator } from '../commands/simulator-lifecycle.js';
-import { diagnose, observe, showLogs } from '../commands/diagnostics.js';
+import { diagnose, observe, showLogs, streamLogs } from '../commands/diagnostics.js';
+import { captureJsLogs } from '../commands/js-logs.js';
 import { buildUiRunner, runUiPlan } from '../commands/ui.js';
 import { clean } from '../commands/clean.js';
+import { listCrashes } from '../commands/crashes.js';
 import { helpFor } from './help.js';
 import { setup } from '../commands/setup.js';
 import { server } from '../commands/server.js';
@@ -58,6 +60,7 @@ const recorded = new Set([
   'privacy grant', 'privacy revoke', 'privacy reset', 'push',
   'location set', 'location clear', 'location run',
   'server start', 'server status', 'server stop', 'simulator boot', 'simulator shutdown', 'simulator ui', 'simulator status-bar', 'simulator add-media', 'simulator erase', 'ui build-runner', 'ui run', 'clean',
+  'crashes list',
 ]);
 const durationUnits: Record<string, number> = { s: 1_000, m: 60_000, h: 3_600_000, d: 86_400_000 };
 const summaryKeys = ['run', 'udid', 'bundleId', 'backend', 'action'];
@@ -216,6 +219,12 @@ try {
         environment: values(parsed, 'env'),
         url: value(parsed, 'url'),
       }));
+    } else if (command === 'logs' && subcommand === 'stream') {
+      const options = { duration: value(parsed, 'duration'), until: value(parsed, 'until'), level: value(parsed, 'level'), limit: limitOption(parsed) };
+      data = await streamLogs(await configured(), options);
+    } else if (command === 'logs' && subcommand === 'js') {
+      const options = { duration: value(parsed, 'duration'), until: value(parsed, 'until'), limit: limitOption(parsed) };
+      data = await captureJsLogs(await configured(), options);
     } else if (command === 'privacy') {
       const service = nonEmpty(parsed, 'service', 'COMMAND_INVALID');
       data = await withConfig(key, (config) => privacy(config, subcommand as PrivacyAction, { service, allApps: parsed.flags.has('all-apps') }));
@@ -228,11 +237,17 @@ try {
       const scenario = nonEmpty(parsed, 'scenario', 'COMMAND_INVALID');
       data = await withConfig(key, (config) => location(config, subcommand as LocationAction, { coordinate, scenario }));
     } else if (command === 'logs') {
-      const options = { last: value(parsed, 'last'), level: value(parsed, 'level'), limit: limitOption(parsed) };
+      const options = { last: value(parsed, 'last'), since: value(parsed, 'since'), level: value(parsed, 'level'), limit: limitOption(parsed) };
       data = await showLogs(await configured(), options);
     } else if (command === 'diagnose') {
-      const options = { last: value(parsed, 'last'), level: value(parsed, 'level'), limit: limitOption(parsed) };
+      const options = { last: value(parsed, 'last'), since: value(parsed, 'since'), level: value(parsed, 'level'), limit: limitOption(parsed) };
       data = await diagnose(await configured(), options);
+    } else if (command === 'crashes') {
+      const since = value(parsed, 'since');
+      const limit = value(parsed, 'limit');
+      if (limit !== undefined && !/^\d+$/.test(limit)) throw new CliError('COMMAND_INVALID', '--limit must be an integer from 1 to 100');
+      const options = { since, limit: limit === undefined ? undefined : Number(limit) };
+      data = await withConfig(key, (config) => listCrashes(config, options));
     } else if (command === 'clean') {
       const runs = parsed.flags.has('runs');
       const derivedData = parsed.flags.has('derived-data');

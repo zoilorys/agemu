@@ -4,6 +4,7 @@ import { targetBundleId, type LoadedConfig } from '../config/config.js';
 import { CliError } from '../core/errors.js';
 import { redact } from '../core/redact.js';
 import { redactValue } from '../artifacts/runs.js';
+import { writeLaunchMarker } from '../artifacts/launch-marker.js';
 import { deadline, type Deadline, type ProcessResult, type RunOptions } from '../process/run-process.js';
 import type { LongPress, Point, Swipe, UiPlan } from './ui.js';
 
@@ -157,6 +158,7 @@ export async function tryRunIdbPlan(config: LoadedConfig, plan: UiPlan, udid: st
         }
         const environment = { ...process.env };
         for (const [key, entry] of Object.entries(value.environment ?? {})) environment[`SIMCTL_CHILD_${key}`] = String(entry);
+        await writeLaunchMarker(config.root, { at: new Date(), udid, bundleId: targetBundleId(config), source: 'ui run' });
         await execute('xcrun', ['simctl', 'launch', udid, targetBundleId(config), ...((value.arguments as string[] | undefined) ?? [])], { env: environment });
       } else if (kind === 'wait') {
         if (typeof value.duration === 'number') {

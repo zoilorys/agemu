@@ -3,6 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { targetBundleId, type LoadedConfig } from '../config/config.js';
 import { createRun, redactValue } from '../artifacts/runs.js';
+import { writeLaunchMarker } from '../artifacts/launch-marker.js';
 import { CliError } from '../core/errors.js';
 import { redact } from '../core/redact.js';
 import { buildFailureDetails, writeBuildLog } from '../native/build-errors.js';
@@ -472,6 +473,8 @@ async function runUiSegment(config: LoadedConfig, plan: UiPlan, udid: string, di
   await checked(run, 'plutil', ['-convert', 'xml1', manifest], 'Unable to write the XCTest run manifest', config.redactions ?? [], limit);
   const resultBundle = path.join(directory, 'AgentRunner.xcresult');
   const transcript = path.join(directory, 'xcodebuild.log');
+  // The runner launches inside xcodebuild, so the whole run is the narrowest launch window agemu can observe.
+  if (plan.actions.some(action => actionKind(action) === 'launch')) await writeLaunchMarker(config.root, { at: new Date(), udid: built.udid, bundleId: targetBundleId(config), source: 'ui run' });
   let result: ProcessResult;
   try {
     result = await run('xcodebuild', [

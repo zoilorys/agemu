@@ -15,4 +15,8 @@ Use the installed `agemu` CLI from the app root.
 6. Terminate the app used for this run. For React Native or Expo, run `agemu server stop`; it stops only agemu-owned servers. Shut down the selected Simulator. Preserve `.agemu/` evidence unless the task calls for removal; for housekeeping use `agemu clean --runs --older-than=7d` or `agemu clean --derived-data` (add `--dry-run` to preview).
 7. Use `agemu privacy grant` instead of tapping permission prompts; use `simulator status-bar --preset=clean` and `simulator ui --appearance` before screenshots; destructive commands need `--yes` and explicit user intent.
 
+After a crash or unexpected exit, run `agemu crashes list --since=launch`; to wait for a log line, use `agemu logs stream --duration=30s --until=<regex>` instead of sleeping.
+
+For React Native or Expo JavaScript console output (`console.log`, `warn`, `error`), run `agemu logs js --duration=30s --until=<regex>` while the server is running and the app is loaded; it returns only messages logged during the capture.
+
 Keep one run ID in launch arguments, environment, and notes when a task needs correlation. `agemu server status` reports readiness and ownership; resolve any port collision before launch. For Expo, `app launch` requires a running project server and opens its URL in the configured development build or Expo Go host.

@@ -1,0 +1,100 @@
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { describe, expect, it } from 'vitest';
+import { writeLaunchMarker } from '../../src/artifacts/launch-marker.js';
+import { listCrashes } from '../../src/commands/crashes.js';
+import type { LoadedConfig } from '../../src/config/config.js';
+
+const now = new Date('2026-09-30T12:00:00Z');
+const configFor = (root: string): LoadedConfig => ({
+  version: 2, platform: 'ios', app: { type: 'native', project: `${root}/App.xcodeproj`, scheme: 'App', configuration: 'Debug', bundleId: 'com.example.app' },
+  simulator: { udid: 'PHONE' }, redactions: ['secret-value'], root,
+});
+const crash = (incident: string, timestamp: string) => `${JSON.stringify({ app_name: 'App', timestamp, bug_type: '309', incident_id: incident, bundleID: 'com.example.app' })}\n${JSON.stringify({
+  procName: 'App', asi: { 'libswiftCore.dylib': ['Fatal error: token secret-value leaked'] },
+})}`;
+
+describe('crashes list command', () => {
+  it('copies each matching report with redactions and returns redacted summaries', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-crashes-cmd-'));
+    const reports = path.join(root, 'reports');
+    await mkdir(reports);
+    await writeFile(path.join(reports, 'App-recent.ips'), crash('recent', '2026-09-30 11:00:00.00 +0000'));
+    await writeFile(path.join(reports, 'App-old.ips'), crash('old', '2026-09-29 11:00:00.00 +0000'));
+    try {
+      const result = await listCrashes(configFor(root), { sinceMs: 3_600_000 * 2 }, { directory: reports, now: () => now, readState: async () => { throw new Error('not built'); } });
+      expect(result).toMatchObject({ bundleId: 'com.example.app', since: '2026-09-30T10:00:00.000Z', skipped: 0 });
+      expect(result.crashes).toHaveLength(1);
+      const [summary] = result.crashes;
+      expect(summary).toMatchObject({ source: 'App-recent.ips', incidentId: 'recent', message: 'Fatal error: token [REDACTED] leaked' });
+      expect(summary.file).toBe(path.join(result.run, 'crashes', 'App-recent.ips'));
+      const copy = path.join(root, summary.file);
+      const copied = await readFile(copy, 'utf8');
+      expect(copied).toContain('token [REDACTED] leaked');
+      expect(copied).not.toContain('secret-value');
+      expect((await stat(copy)).mode & 0o777).toBe(0o600);
+      expect(JSON.stringify(result)).not.toContain('secret-value');
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('redacts secrets that JSON escapes in the saved copy, including a body that does not parse', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-crashes-escaped-'));
+    const reports = path.join(root, 'reports');
+    await mkdir(reports);
+    const secrets = ['foo"bar', 'C:\\vault', 'line1\nline2'];
+    const header = JSON.stringify({ app_name: 'App', timestamp: '2026-09-30 11:00:00.00 +0000', bug_type: '309', incident_id: 'escaped', bundleID: 'com.example.app' });
+    await writeFile(path.join(reports, 'App-parsed.ips'), `${header}\n${JSON.stringify({ procName: 'App', asi: { lib: [`token ${secrets.join(' and ')}`] } }, null, 2)}`);
+    await writeFile(path.join(reports, 'App-truncated.ips'), `${header.replace('escaped', 'truncated')}\n{"asi": {"lib": ["token ${JSON.stringify(secrets[0]).slice(1, -1)}`);
+    try {
+      const result = await listCrashes({ ...configFor(root), redactions: secrets }, {}, { directory: reports, now: () => now, readState: async () => { throw new Error('not built'); } });
+      expect(result.crashes.map((crash) => crash.incidentId).sort()).toEqual(['escaped', 'truncated']);
+      const parsed = await readFile(path.join(root, result.crashes.find((crash) => crash.incidentId === 'escaped')!.file), 'utf8');
+      expect(JSON.parse(parsed.slice(parsed.indexOf('\n') + 1))).toMatchObject({ asi: { lib: ['token [REDACTED] and [REDACTED] and [REDACTED]'] } });
+      const truncated = await readFile(path.join(root, result.crashes.find((crash) => crash.incidentId === 'truncated')!.file), 'utf8');
+      expect(truncated).toContain('token [REDACTED]');
+      for (const text of [parsed, truncated]) {
+        for (const secret of secrets) {
+          expect(text).not.toContain(secret);
+          expect(text).not.toContain(JSON.stringify(secret).slice(1, -1));
+        }
+      }
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('redacts a secret that straddles the 2000-character message cap', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-crashes-cap-'));
+    const reports = path.join(root, 'reports');
+    await mkdir(reports);
+    const header = JSON.stringify({ app_name: 'App', timestamp: '2026-09-30 11:00:00.00 +0000', bug_type: '309', incident_id: 'cap', bundleID: 'com.example.app' });
+    await writeFile(path.join(reports, 'App-cap.ips'), `${header}\n${JSON.stringify({ asi: { lib: [`${'x'.repeat(1990)}secret-value`] } })}`);
+    try {
+      const result = await listCrashes(configFor(root), {}, { directory: reports, now: () => now, readState: async () => { throw new Error('not built'); } });
+      expect(result.crashes[0].message).toBe(`${'x'.repeat(1990)}[REDACTED]`);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('returns only crashes after the latest agemu launch with since=launch', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-crashes-launch-'));
+    const reports = path.join(root, 'reports');
+    await mkdir(reports);
+    await writeFile(path.join(reports, 'App-before.ips'), crash('before', '2026-09-30 11:29:59.00 +0000'));
+    await writeFile(path.join(reports, 'App-after.ips'), crash('after', '2026-09-30 11:30:05.00 +0000'));
+    try {
+      await writeLaunchMarker(root, { at: new Date('2026-09-30T11:30:00Z'), udid: 'PHONE', bundleId: 'com.example.app', source: 'app launch' });
+      const result = await listCrashes(configFor(root), { since: 'launch' }, {
+        directory: reports, now: () => now, readState: async () => { throw new Error('not built'); },
+        resolveDevice: async () => ({ udid: 'PHONE', name: 'iPhone', runtime: 'iOS-18-0', state: 'Booted', isAvailable: true }),
+      });
+      expect(result.since).toBe('2026-09-30T11:30:00.000Z');
+      expect(result.crashes.map((item) => item.incidentId)).toEqual(['after']);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it.each([0, 101])('rejects limit %i', async (limit) => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-crashes-cmd-'));
+    try {
+      await expect(listCrashes(configFor(root), { limit }, { directory: root })).rejects.toMatchObject({ code: 'COMMAND_INVALID' });
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+});

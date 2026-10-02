@@ -193,7 +193,9 @@ agemu simulator shutdown
 
 Expo Go uses its installed host: `agemu build` and `agemu app install` do not apply. `app launch` opens the running project's Expo URL in the host.
 
-For React Native and Expo, `diagnose` includes server status, the last server output, detected bundling errors, a screenshot, and Simulator logs. The saved server log may be from an earlier run. JavaScript console messages inside the app and React Native DevTools output are not captured. `logs show` reads Simulator unified logs for the built app or Expo Go host. Inspect `partial` and `failures` when evidence collection fails.
+For React Native and Expo, `diagnose` includes server status, the last server output, detected bundling errors, a screenshot, and Simulator logs. The saved server log may be from an earlier run. It does not include JavaScript console messages from inside the app; capture them with `agemu logs js` (see [JavaScript console](#javascript-console)). `logs show` reads Simulator unified logs for the built app or Expo Go host. Inspect `partial` and `failures` when evidence collection fails.
+
+`diagnose` also returns `evidence.crashes` (see [Investigate failures](#investigate-failures)) and `window`, which reports the start and source of the `logs` and `crashes` windows. Without `--since` or `--last`, both start at the latest agemu launch of the configured app when one is recorded.
 
 `agemu` writes build state, logs, screenshots, and test results to `.agemu/`. Add that directory to the app repository's `.gitignore`. Each `build`, `app`, `server`, `simulator boot|shutdown`, `ui`, `observe`, `logs show`, `diagnose`, and `clean` run appends one redacted event to `.agemu/events.jsonl`; `diagnose` reports recent failures from it. The file is append-only and is never trimmed.
 
@@ -308,6 +310,48 @@ agemu app uninstall --yes
 ```
 
 `simulator create` returns the new Simulator. `simulator erase` shuts a booted Simulator down first and wipes its content and settings, so installed apps are removed: run `agemu app install` again. Without `.agemu.json`, `erase` needs `--udid`. `simulator delete` permanently removes the Simulator and its data, and always needs an explicit `--udid`; it never infers the device. `app uninstall` removes the configured app and its data; an app that is not installed reports `alreadyUninstalled: true`, and Expo Go projects are refused because the host is shared. Without `--yes`, none of these change anything.
+
+## Investigate failures
+
+### Crash reports
+
+```sh
+agemu crashes list --since=launch
+agemu crashes list --since=24h --limit=5
+```
+
+`crashes list` reads `.ips` reports from `~/Library/Logs/DiagnosticReports`, where Simulator apps write them. Only crash reports (`bug_type` 309) are considered. A report matches when its header `bundleID` equals the configured bundle ID. Only a report without a `bundleID` falls back to matching the executable name (`app_name` or `procName`), and only when agemu knows that name from the last build or the Expo Go host. `--since` takes a duration or `launch` (default `24h`); `--limit` takes 1 to 100 (default 10).
+
+Each result has the exception type and signal, `termination`, and the faulting thread's frames (up to 15, with `sourceFile` and `sourceLine` when the report has them). `message` comes from the report's `asi` section and is `null` when absent, which is usual for Simulator reports such as a Swift `fatalError`; read the frames instead. Redacted copies are saved under `.agemu/runs/<run>/crashes/`, named like the source report. Reports are not symbolicated, and ones that cannot be read are counted in `skipped`.
+
+### Launch windows
+
+`app launch`, `app restart`, and each `launch` action in a `ui run` plan record the launch time in `.agemu/launch.json`. With the `idb` backend each launch is recorded as it runs; with XCTest the time is recorded when the runner starts the plan. `--since=launch` on `logs show`, `crashes list`, and `diagnose` starts at the latest record. It fails with `COMMAND_INVALID` when nothing was recorded or the record is for another app or Simulator. For `logs show`, lines timestamped before the launch are dropped from the response; the saved artifact keeps the full output. Do not combine `--since` with `--last`.
+
+### Live capture
+
+```sh
+agemu logs stream --duration=30s --until='Login succeeded'
+```
+
+`logs stream` captures live Simulator logs for the app and returns one JSON response when `--duration` (required, 1s to 10m) elapses or a line matches `--until`. `--until` is a JavaScript regular expression tested against each redacted line. The result reports `stoppedBy`, `matched` (and `matchedLine`), the last `--limit` lines, and the full capture in `logs-stream.txt` under the run. Stopping can add up to 3 s. The log stream takes a moment to start, so begin the capture a few seconds before triggering the behavior.
+
+`crashes list` and `logs stream` also append an event to `.agemu/events.jsonl`.
+
+### JavaScript console
+
+```sh
+agemu logs js --duration=30s --until='Login failed'
+```
+
+For React Native and Expo apps, `logs js` captures in-app `console.*` messages through the running Metro/Expo server (`agemu server start`) and returns one JSON response when `--duration` (required, 1s to 10m) elapses, a message matches `--until`, or the app disconnects. The app must be loaded on the configured Simulator; otherwise it fails with `PROCESS_FAILED`. A shut-down Simulator fails with `SIMULATOR_NOT_BOOTED`. Metro identifies apps only by device name, so `logs js` refuses to run while another booted Simulator has the same name. Native apps return `WORKFLOW_UNSUPPORTED`.
+
+- Each message has `level` (the console method name; observed: `log`, `info`, `warn`, `error`), `text`, an ISO `timestamp`, and `stack` (first call frame, bundle positions, not source-mapped). Objects render from the preview React Native sends, capped at 4000 characters per message.
+- React Native replays messages logged before the command starts; they are filtered out, so only messages logged during the capture are returned.
+- `--until` is tested against each redacted message text. The result reports `target`, `stoppedBy` (`duration`, `until`, or `disconnected` with the close `disconnect` reason when the app process restarts or another debugger replaces the connection; a JavaScript reload does not end the capture), `matched` (and `matchedMessage`), the last `--limit` messages, and the full capture in `js-console.jsonl` under the run. Each capture appends an event to `.agemu/events.jsonl`.
+- Tested alongside a second inspector client; not tested with the React Native DevTools frontend. Targets that would disconnect an existing debugger are refused.
+- `logs js` sends no code to the app. While it is connected, Hermes may run getters or Proxy traps of objects the app logs to build previews, as React Native DevTools does.
+- Verified with Expo Go (SDK 57, React Native 0.86, Metro 0.84). Development builds and bare React Native are expected to work the same way but are unverified.
 
 ## Clean up
 
