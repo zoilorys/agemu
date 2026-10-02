@@ -13,7 +13,10 @@ type Run = (executable: string, args: string[], options?: RunOptions) => Promise
 type Target = ElementTarget & { x?: number; y?: number };
 type Element = IdbElement;
 const operations = new Set(['launch', 'wait', 'type', 'tap', 'swipe', 'longPress', 'assertVisible', 'assertExists', 'assertNotVisible',
-  'assertValue', 'screenshot', 'inspect', 'clear', 'pressKey', 'pressButton']);
+  'assertValue', 'screenshot', 'inspect', 'clear', 'pressKey', 'pressButton', 'openUrl', 'terminate']);
+/** SpringBoard's first-open "Open in …?" prompt button, confirmed by `openUrl` with `confirm: true`. */
+const openPrompt: Target = { label: 'Open', type: 'button' };
+const openPromptWaitMs = 2_000;
 /** HID keyboard usage codes for `idb ui key`. */
 const keyCodes: Record<string, string> = { return: '40', delete: '42', tab: '43', space: '44' };
 
@@ -36,7 +39,8 @@ export function idbCompatible(plan: UiPlan): boolean {
     if (keys[0] === 'launch') return (value.arguments === undefined || (Array.isArray(value.arguments) && value.arguments.every(v => typeof v === 'string')))
       && (value.environment === undefined || (record(value.environment) && Object.values(value.environment).every(v => typeof v === 'string')));
     if (keys[0] === 'screenshot') return value.name === undefined || typeof value.name === 'string';
-    if (keys[0] === 'inspect') return true;
+    if (keys[0] === 'inspect' || keys[0] === 'terminate') return true;
+    if (keys[0] === 'openUrl') return typeof value.url === 'string' && (value.confirm === undefined || typeof value.confirm === 'boolean');
     if (keys[0] === 'pressKey') return typeof value.key === 'string' && keyCodes[value.key] !== undefined;
     if (keys[0] === 'pressButton') return value.button === 'home';
     const targeted = typeof value.identifier === 'string' || typeof value.label === 'string' || typeof value.labelContains === 'string';
@@ -129,6 +133,36 @@ export async function tryRunIdbPlan(config: LoadedConfig, plan: UiPlan, udid: st
     if (!element) throw new Error(`element not found: ${describeTarget(target)}`);
     return element;
   };
+  /** Taps a resolved element: through accessibility when its id or label is unique in `tree`, else at its center. */
+  const press = async (target: Target, element: Element, tree: Element[]) => {
+    const identifier = typeof element.AXUniqueId === 'string' && element.AXUniqueId.length > 0 ? element.AXUniqueId : undefined;
+    if (identifier !== undefined && tree.filter(candidate => candidate.AXUniqueId === identifier).length === 1) {
+      // A unique identifier lets idb press the element through accessibility.
+      const [expectedKey, expectedValue] = target.identifier !== undefined ? ['AXUniqueId', target.identifier]
+        : target.label !== undefined ? ['AXLabel', target.label] : ['AXUniqueId', identifier];
+      await execute('idb', ['ui', 'tap', identifier, '--match-key', 'AXUniqueId',
+        '--expected-key', expectedKey, '--expected-value', expectedValue, '--api', 'axbridge', '--udid', udid]);
+    } else if (typeof element.AXLabel === 'string' && element.AXLabel.length > 0
+      && tree.filter(candidate => candidate.AXLabel === element.AXLabel).length === 1) {
+      const label = element.AXLabel;
+      const [expectedKey, expectedValue] = target.identifier !== undefined ? ['AXUniqueId', target.identifier] : ['AXLabel', label];
+      await execute('idb', ['ui', 'tap', label, '--match-key', 'AXLabel',
+        '--expected-key', expectedKey, '--expected-value', expectedValue, '--api', 'axbridge', '--udid', udid]);
+    } else {
+      // idb's --match-key presses the first match, which may not be the resolved element; tap its center instead.
+      const [x, y] = center(element);
+      lines.push(`coordinate fallback: ${describeTarget(target)} at ${x},${y}`);
+      await execute('idb', ['ui', 'tap', String(x), String(y), '--udid', udid]);
+    }
+  };
+  /** Stops the configured app; an app that is not running counts as stopped (src/commands/app.ts `stopped()`). */
+  const terminateApp = async () => {
+    const stopped = await run('xcrun', ['simctl', 'terminate', udid, targetBundleId(config)]);
+    lines.push(`xcrun simctl terminate: exit ${stopped.exitCode}, ${stopped.durationMs} ms`);
+    if (stopped.exitCode !== 0 && !/not running|no such process|found nothing to terminate/i.test(stopped.stderr)) {
+      throw new Error(stopped.stderr.trim() || 'Unable to terminate the app');
+    }
+  };
   const pressKey = async (code: string, count: number) => {
     for (let pressed = 0; pressed < count; pressed += 1) {
       if (limit.expired()) throw expire();
@@ -147,10 +181,7 @@ export async function tryRunIdbPlan(config: LoadedConfig, plan: UiPlan, udid: st
       if (limit.expired()) throw expire();
       const value = action[kind];
       if (kind === 'launch') {
-        const stopped = await run('xcrun', ['simctl', 'terminate', udid, targetBundleId(config)]);
-        if (stopped.exitCode !== 0 && !/not running|no such process|found nothing to terminate/i.test(stopped.stderr)) {
-          throw new Error(stopped.stderr.trim() || 'Unable to terminate the app');
-        }
+        await terminateApp();
         const environment = { ...process.env };
         for (const [key, entry] of Object.entries(value.environment ?? {})) environment[`SIMCTL_CHILD_${key}`] = String(entry);
         await writeLaunchMarker(config.root, { at: new Date(), udid, bundleId: targetBundleId(config), source: 'ui run' });
@@ -180,25 +211,7 @@ export async function tryRunIdbPlan(config: LoadedConfig, plan: UiPlan, udid: st
           const tree = await elements();
           const element = await targetElement(target, tree);
           if (typeof element.AXValue === 'string') deletions = Array.from(element.AXValue).length;
-          const identifier = typeof element.AXUniqueId === 'string' && element.AXUniqueId.length > 0 ? element.AXUniqueId : undefined;
-          if (identifier !== undefined && tree.filter(candidate => candidate.AXUniqueId === identifier).length === 1) {
-            // A unique identifier lets idb press the element through accessibility.
-            const [expectedKey, expectedValue] = target.identifier !== undefined ? ['AXUniqueId', target.identifier]
-              : target.label !== undefined ? ['AXLabel', target.label] : ['AXUniqueId', identifier];
-            await execute('idb', ['ui', 'tap', identifier, '--match-key', 'AXUniqueId',
-              '--expected-key', expectedKey, '--expected-value', expectedValue, '--api', 'axbridge', '--udid', udid]);
-          } else if (typeof element.AXLabel === 'string' && element.AXLabel.length > 0
-            && tree.filter(candidate => candidate.AXLabel === element.AXLabel).length === 1) {
-            const label = element.AXLabel;
-            const [expectedKey, expectedValue] = target.identifier !== undefined ? ['AXUniqueId', target.identifier] : ['AXLabel', label];
-            await execute('idb', ['ui', 'tap', label, '--match-key', 'AXLabel',
-              '--expected-key', expectedKey, '--expected-value', expectedValue, '--api', 'axbridge', '--udid', udid]);
-          } else {
-            // idb's --match-key presses the first match, which may not be the resolved element; tap its center instead.
-            const [x, y] = center(element);
-            lines.push(`coordinate fallback: ${describeTarget(target)} at ${x},${y}`);
-            await execute('idb', ['ui', 'tap', String(x), String(y), '--udid', udid]);
-          }
+          await press(target, element, tree);
         }
         if (kind === 'type') await execute('idb', ['ui', 'text', '--udid', udid, '--', value.text as string]);
         if (kind === 'clear') await pressKey(keyCodes.delete!, deletions);
@@ -207,6 +220,31 @@ export async function tryRunIdbPlan(config: LoadedConfig, plan: UiPlan, udid: st
       } else if (kind === 'pressButton') {
         // Backgrounds the app; a later action on it needs `launch` first.
         await execute('idb', ['ui', 'button', 'HOME', '--udid', udid]);
+      } else if (kind === 'terminate') {
+        await terminateApp();
+      } else if (kind === 'openUrl') {
+        const confirm = value.confirm === true;
+        // An Open button already on screen is not the first-open prompt, so only a newly appeared one is pressed.
+        const frameKey = (element: Element) => JSON.stringify(element.frame ?? null);
+        const before = confirm ? new Set(matchElements(await elements(), openPrompt).map(frameKey)) : undefined;
+        await execute('xcrun', ['simctl', 'openurl', udid, value.url as string]);
+        if (before) {
+          const giveUp = Date.now() + openPromptWaitMs;
+          while (true) {
+            const tree = await elements();
+            const prompt = matchElements(tree, openPrompt).find(element => !before.has(frameKey(element)));
+            if (prompt) {
+              await press(openPrompt, prompt, tree);
+              lines.push('openUrl confirmation: pressed Open');
+              break;
+            }
+            if (Date.now() >= giveUp || limit.expired()) {
+              lines.push('openUrl confirmation: no Open prompt appeared');
+              break;
+            }
+            await sleep(Math.min(250, limit.remaining()));
+          }
+        }
       } else if (kind === 'longPress') {
         const press = value as LongPress;
         const coordinates = Number.isFinite(press.x) && Number.isFinite(press.y)

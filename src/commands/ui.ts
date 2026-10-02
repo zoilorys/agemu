@@ -78,6 +78,8 @@ const actionFields: Record<string, string[] | undefined> = {
   clear: targetFields,
   pressKey: ['key', 'count'],
   pressButton: ['button'],
+  openUrl: ['url', 'confirm'],
+  terminate: [],
 };
 const targetedActions = new Set(['tap', 'type', 'assertVisible', 'assertExists', 'assertNotVisible', 'assertValue', 'clear']);
 export const pressKeys = ['return', 'delete', 'tab', 'space'];
@@ -122,6 +124,11 @@ function validatePlan(value: unknown): UiPlan {
       }
     }
     if (kind === 'pressButton' && !pressButtons.includes(input.button as string)) fail(`pressButton button must be one of ${pressButtons.join(', ')}`);
+    if (kind === 'openUrl') {
+      const parses = (url: string) => { try { new URL(url); return true; } catch { return false; } };
+      if (typeof input.url !== 'string' || !parses(input.url)) fail('openUrl needs a valid url string');
+      if (input.confirm !== undefined && typeof input.confirm !== 'boolean') fail('openUrl confirm must be a boolean');
+    }
     if (kind === 'launch') {
       if (input.arguments !== undefined && (!Array.isArray(input.arguments) || !input.arguments.every(item => typeof item === 'string'))) {
         fail('launch arguments must be an array of strings');

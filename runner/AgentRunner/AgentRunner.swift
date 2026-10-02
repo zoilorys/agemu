@@ -38,7 +38,10 @@ final class AgentRunner: XCTestCase {
         let clear: Target?
         let pressKey: KeyAction?
         let pressButton: ButtonAction?
+        let openUrl: OpenUrl?
+        let terminate: Empty?
     }
+    private struct OpenUrl: Decodable { let url: String; let confirm: Bool? }
     private struct KeyAction: Decodable { let key: String; let count: Int? }
     private struct ButtonAction: Decodable { let button: String }
     private struct Launch: Decodable { let arguments: [String]?; let environment: [String: String]? }
@@ -97,6 +100,8 @@ final class AgentRunner: XCTestCase {
         if action.clear != nil { return "clear" }
         if action.pressKey != nil { return "pressKey" }
         if action.pressButton != nil { return "pressButton" }
+        if action.openUrl != nil { return "openUrl" }
+        if action.terminate != nil { return "terminate" }
         return "unknown"
     }
 
@@ -246,6 +251,19 @@ final class AgentRunner: XCTestCase {
                 guard press.button == "home" else { return "unsupported button \(press.button)" }
                 // Backgrounds the app; a later action on it needs `launch` first.
                 XCUIDevice.shared.press(.home)
+            } else if let open = action.openUrl {
+                guard let url = URL(string: open.url) else { return "invalid url \(open.url)" }
+                // system.open does not wait for the app's accessibility, which a pending SpringBoard prompt would block.
+                if #available(iOS 16.4, *) { XCUIDevice.shared.system.open(url) } else { return "openUrl requires iOS 16.4 or newer" }
+                if open.confirm != false {
+                    // iOS shows SpringBoard's "Open in …?" prompt the first time a scheme is opened; the app's own UI is never touched.
+                    let prompt = XCUIApplication(bundleIdentifier: "com.apple.springboard").buttons["Open"]
+                    if prompt.waitForExistence(timeout: 2) { prompt.tap() }
+                }
+                // Best effort: the URL may target another app; later plan steps assert the outcome.
+                _ = app.wait(for: .runningForeground, timeout: 5)
+            } else if action.terminate != nil {
+                app.terminate()
             } else {
                 return "action has no supported operation"
             }

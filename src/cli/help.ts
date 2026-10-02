@@ -139,6 +139,8 @@ agemu ui run (--plan=FILE | --plan-json=JSON) [--backend=auto|idb|xctest] [--tim
   assertValue, screenshot, inspect, startVideoRecording, and stopVideoRecording. Unknown actions or fields fail validation.
   clear (a target) empties a text input. pressKey {key: return|delete|tab|space, count: 1-100} types into the focused element;
   use pressKey return to dismiss the keyboard. pressButton {button: home} backgrounds the app; launch it again before acting on it.
+  openUrl {url, confirm?} opens a URL; XCTest presses SpringBoard's first-open "Open" prompt unless confirm is false,
+  idb only with confirm: true. terminate {} stops the configured app (succeeds if it is not running).
   Pair each recording start with a stop. Repeated pairs create separate MP4 files.
 
 agemu ui inspect [--backend=auto|idb|xctest] [--all] [--timeout=SECONDS]

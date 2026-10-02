@@ -846,6 +846,10 @@ describe('UI backend selection', () => {
     ['fractional key count', { pressKey: { key: 'delete', count: 1.5 } }, 'Action 1: pressKey count must be an integer from 1 to 100'],
     ['unknown button', { pressButton: { button: 'lock' } }, 'Action 1: pressButton button must be one of home'],
     ['clear without target', { clear: {} }, 'Action 1: clear needs a string identifier, label, or labelContains'],
+    ['openUrl without url', { openUrl: {} }, 'Action 1: openUrl needs a valid url string'],
+    ['unparsable url', { openUrl: { url: 'not a url' } }, 'Action 1: openUrl needs a valid url string'],
+    ['non-boolean confirm', { openUrl: { url: 'app://x', confirm: 'yes' } }, 'Action 1: openUrl confirm must be a boolean'],
+    ['terminate with fields', { terminate: { bundleId: 'other.app' } }, 'Action 1: terminate does not accept bundleId'],
   ])('rejects a plan with %s before any process runs', async (_name, action, message) => {
     const root = await mkdtemp(path.join(tmpdir(), 'agemu-ui-validate-'));
     const commands: string[] = [];
@@ -897,6 +901,84 @@ describe('UI backend selection', () => {
       ['idb', 'ui', 'key', '44', '--udid', 'PHONE'],
       ['idb', 'ui', 'button', 'HOME', '--udid', 'PHONE'],
     ]);
+  });
+
+  const existingOpen = { type: 'Button', AXLabel: 'Open', frame: { x: 10, y: 10, width: 60, height: 40 } };
+  const promptOpen = { type: 'Button', AXLabel: 'Open', frame: { x: 200, y: 400, width: 120, height: 44 } };
+  const openText = { type: 'StaticText', AXLabel: 'Open', frame: { x: 0, y: 600, width: 100, height: 20 } };
+  /** Runs an idb plan whose tree is `before` until `simctl openurl` succeeds, then `before` plus `after`. */
+  const runIdbOpenUrl = async (actions: unknown[], options: { before?: object[]; after?: object[]; terminateStderr?: string; openurlStderr?: string } = {}) => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-idb-openurl-'));
+    const commands: string[][] = [];
+    let prompted = false;
+    try {
+      const output = await runUiPlan(nativeConfig(root), { json: JSON.stringify({ version: 1, actions }) }, {
+        backend: 'idb',
+        run: async (executable, args) => {
+          commands.push([executable, ...args]);
+          if (executable === 'idb' && args[1] === 'describe-all') {
+            return result(JSON.stringify([...(options.before ?? []), ...(prompted ? options.after ?? [] : [])]));
+          }
+          if (executable === 'xcrun' && args[1] === 'openurl') {
+            if (options.openurlStderr) return result('', options.openurlStderr, 1);
+            prompted = true;
+          }
+          if (executable === 'xcrun' && args[1] === 'terminate' && options.terminateStderr) return result('', options.terminateStderr, 3);
+          return result();
+        },
+      }).catch((e: unknown) => e);
+      const transcript = await readFile(path.join(root, (output as { transcript?: string; details?: { transcript?: string } }).transcript
+        ?? (output as { details: { transcript: string } }).details.transcript), 'utf8');
+      return { output, commands, transcript, taps: commands.filter(command => command[0] === 'idb' && command[2] === 'tap') };
+    } finally { await rm(root, { recursive: true, force: true }); }
+  };
+
+  it('opens a URL and terminates the app through simctl, tolerating an app that is not running', async () => {
+    const { output, commands } = await runIdbOpenUrl([{ openUrl: { url: 'agemufixture://deep/link' } }, { terminate: {} }],
+      { terminateStderr: 'found nothing to terminate' });
+    expect(output).toMatchObject({ backend: 'idb', runnerResult: { completed: 2 } });
+    expect(commands).toContainEqual(['xcrun', 'simctl', 'openurl', 'PHONE', 'agemufixture://deep/link']);
+    expect(commands).toContainEqual(['xcrun', 'simctl', 'terminate', 'PHONE', 'com.example.app']);
+  });
+
+  it('fails openUrl with the simctl error when no app handles the URL', async () => {
+    const { output } = await runIdbOpenUrl([{ openUrl: { url: 'nohandler://x' } }], { openurlStderr: 'no application registered for nohandler' });
+    expect(output).toMatchObject({ code: 'UI_DELIVERY_FAILED',
+      details: { failedAction: { index: 0, kind: 'openUrl', message: 'no application registered for nohandler' } } });
+  });
+
+  it('fails terminate when simctl reports another error', async () => {
+    const { output } = await runIdbOpenUrl([{ terminate: {} }], { terminateStderr: 'device is not booted' });
+    expect(output).toMatchObject({ details: { failedAction: { index: 0, kind: 'terminate', message: 'device is not booted' } } });
+  });
+
+  it('presses a newly appeared Open prompt after openUrl with confirm: true', async () => {
+    const { output, taps, transcript } = await runIdbOpenUrl([{ openUrl: { url: 'agemufixture://deep/link', confirm: true } }], { after: [promptOpen] });
+    expect(output).toMatchObject({ runnerResult: { completed: 1 } });
+    expect(taps).toEqual([['idb', 'ui', 'tap', 'Open', '--match-key', 'AXLabel', '--expected-key', 'AXLabel', '--expected-value', 'Open',
+      '--api', 'axbridge', '--udid', 'PHONE']]);
+    expect(transcript).toContain('openUrl confirmation: pressed Open');
+  });
+
+  it('presses only the new Open button, never a new "Open" text or the one already on screen', async () => {
+    // Duplicate labels force a tap at the new button's center (260,422).
+    const { taps } = await runIdbOpenUrl([{ openUrl: { url: 'agemufixture://deep/link', confirm: true } }],
+      { before: [existingOpen], after: [openText, promptOpen] });
+    expect(taps).toEqual([['idb', 'ui', 'tap', '260', '422', '--udid', 'PHONE']]);
+  });
+
+  it('makes no tree reads or taps for openUrl without confirm', async () => {
+    const { commands } = await runIdbOpenUrl([{ openUrl: { url: 'agemufixture://deep/link' } }]);
+    // Only the backend probe reads the tree.
+    expect(commands.filter(command => command[0] === 'idb' && command[2] === 'describe-all')).toHaveLength(1);
+    expect(commands.filter(command => command[0] === 'idb' && command[2] === 'tap')).toEqual([]);
+  });
+
+  it('does not press an Open button that was on screen before openUrl', async () => {
+    const { output, taps, transcript } = await runIdbOpenUrl([{ openUrl: { url: 'agemufixture://deep/link', confirm: true } }], { before: [existingOpen], after: [openText] });
+    expect(output).toMatchObject({ runnerResult: { completed: 1 } });
+    expect(taps).toEqual([]);
+    expect(transcript).toContain('openUrl confirmation: no Open prompt appeared');
   });
 
   const offscreenTree = JSON.stringify([

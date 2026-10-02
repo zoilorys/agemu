@@ -143,6 +143,20 @@ describe.skipIf(!enabled)('ui inspection fixture', () => {
     expect(opened).toMatchObject({ backend: 'xctest', runnerResult: { completed: 2 } });
   }, 300_000);
 
+  test('opens a deep link and terminates the app within a plan', async () => {
+    const opened = data(await run(['ui', 'run', '--backend=xctest', '--plan-json=' + JSON.stringify({
+      version: 1, actions: [
+        { launch: {} },
+        { openUrl: { url: 'agemufixture://deep/link' } },
+        { wait: { duration: 1 } },
+        { assertValue: { identifier: 'gestureStatus', value: 'opened:deep/link' } },
+        { terminate: {} },
+        { assertNotVisible: { identifier: 'saveButton' } },
+      ],
+    })]), 'ui run openUrl and terminate');
+    expect(opened).toMatchObject({ backend: 'xctest', runnerResult: { completed: 6 } });
+  }, 300_000);
+
   test('clears a field, presses return, and presses Home', async () => {
     const edited = data(await run(['ui', 'run', '--backend=xctest', '--plan-json=' + JSON.stringify({
       version: 1, actions: [
