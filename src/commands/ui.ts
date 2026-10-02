@@ -10,13 +10,13 @@ import { buildFailureDetails, writeBuildLog } from '../native/build-errors.js';
 import { listDevices, resolveDevice } from '../native/simctl.js';
 import { deadline, runProcess, type Deadline, type ProcessResult, type RunOptions } from '../process/run-process.js';
 import { idbCompatible, screenshotName, tryRunIdbPlan } from './idb-ui.js';
-import { normalizeXctestNodes, type Inspection } from './ui-elements.js';
+import { normalizeXctestNodes, targetTypes, type ElementTarget, type Inspection } from './ui-elements.js';
 import { createRecordingBridge, startVideoRecording, type Recording } from './video-recording.js';
 
 export type UiPlan = { version: 1; actions: unknown[] };
 export type Point = { x: number; y: number };
-export type Swipe = ({ direction: 'up' | 'down' | 'left' | 'right'; identifier?: string; label?: string } | { from: Point; to: Point }) & { duration?: number };
-export type LongPress = { identifier?: string; label?: string; x?: number; y?: number; duration?: number };
+export type Swipe = ({ direction: 'up' | 'down' | 'left' | 'right' } & ElementTarget | { from: Point; to: Point }) & { duration?: number };
+export type LongPress = ElementTarget & { x?: number; y?: number; duration?: number };
 type Dependencies = {
   run?: (executable: string, args: string[], options?: RunOptions) => Promise<ProcessResult>;
   resolveUdid?: (config: LoadedConfig) => Promise<string>;
@@ -39,7 +39,26 @@ const isTimeout = (error: unknown): error is CliError => error instanceof CliErr
 
 const bundledRunner = fileURLToPath(new URL('../../runner/AgentRunner.xcodeproj', import.meta.url));
 
-const targetFields = ['identifier', 'label'];
+const targetFields = ['identifier', 'label', 'labelContains', 'type', 'index'];
+
+const hasTargetFields = (input: Record<string, unknown>) => targetFields.some(field => input[field] !== undefined);
+
+/** Why a target is invalid, or undefined. Shared by every action that accepts a target. */
+function targetProblem(input: Record<string, unknown>): string | undefined {
+  for (const field of ['identifier', 'label', 'labelContains']) {
+    if (input[field] !== undefined && typeof input[field] !== 'string') return `${field} must be a string`;
+  }
+  if (input.labelContains === '') return 'labelContains must not be empty';
+  if (input.identifier !== undefined && input.label !== undefined) return 'accepts identifier or label, not both';
+  if (input.identifier === undefined && input.label === undefined && input.labelContains === undefined) {
+    return 'needs a string identifier, label, or labelContains';
+  }
+  if (input.type !== undefined && !(typeof input.type === 'string' && targetTypes.has(input.type))) {
+    return `type must be one of ${[...targetTypes].join(', ')}`;
+  }
+  if (input.index !== undefined && !(Number.isSafeInteger(input.index) && (input.index as number) >= 0)) return 'index must be a non-negative integer';
+  return undefined;
+}
 /** Accepted fields per action kind; every plan action must use exactly one of these kinds. */
 const actionFields: Record<string, string[] | undefined> = {
   launch: ['arguments', 'environment'],
@@ -78,14 +97,16 @@ function validatePlan(value: unknown): UiPlan {
     if (!object(input)) throw new CliError('UI_VALIDATION_FAILED', `Action ${index}: ${kind} must be an object`);
     for (const field of Object.keys(input)) if (!fields.includes(field)) fail(`${kind} does not accept ${field}`);
     const optionalString = (field: string) => input[field] === undefined || typeof input[field] === 'string';
+    const checkTarget = () => { const problem = targetProblem(input); if (problem) fail(`${kind} ${problem}`); };
     if (targetedActions.has(kind)) {
-      const targets = ['identifier', 'label'].filter(field => input[field] !== undefined);
-      const targetValid = targets.length === 1 && typeof input[targets[0]] === 'string';
       const coordinates = input.x !== undefined || input.y !== undefined;
       if (kind === 'tap' && coordinates) {
-        if (targets.length > 0 || !Number.isFinite(input.x) || !Number.isFinite(input.y)) fail('tap needs one string identifier or label, or finite x and y, not both');
-      } else if (!targetValid) fail(`${kind} needs exactly one string identifier or label`);
+        if (hasTargetFields(input) || !Number.isFinite(input.x) || !Number.isFinite(input.y)) fail('tap needs a target or finite x and y, not both');
+      } else checkTarget();
     }
+    if (kind === 'wait' && hasTargetFields(input)) checkTarget();
+    if (kind === 'swipe' && input.direction !== undefined && hasTargetFields(input)) checkTarget();
+    if (kind === 'longPress' && hasTargetFields(input)) checkTarget();
     if (kind === 'type' && typeof input.text !== 'string') fail('type needs string text');
     if (kind === 'assertValue' && typeof input.value !== 'string') fail('assertValue needs string value');
     if (kind === 'screenshot' && !optionalString('name')) fail('screenshot name must be a string');
@@ -116,10 +137,8 @@ function validatePlan(value: unknown): UiPlan {
     if ('swipe' in raw) {
       const swipe = raw.swipe;
       const directional = object(swipe) && ['up', 'down', 'left', 'right'].includes(String(swipe.direction))
-        && swipe.from === undefined && swipe.to === undefined
-        && (swipe.identifier === undefined || typeof swipe.identifier === 'string')
-        && (swipe.label === undefined || typeof swipe.label === 'string');
-      const coordinates = object(swipe) && swipe.direction === undefined && swipe.identifier === undefined && swipe.label === undefined
+        && swipe.from === undefined && swipe.to === undefined;
+      const coordinates = object(swipe) && swipe.direction === undefined && !hasTargetFields(swipe)
         && point(swipe.from) && point(swipe.to)
         && (swipe.from.x !== swipe.to.x || swipe.from.y !== swipe.to.y);
       if ((!directional && !coordinates) || (object(swipe) && swipe.duration !== undefined && (!Number.isFinite(swipe.duration) || Number(swipe.duration) <= 0))) {
@@ -128,8 +147,8 @@ function validatePlan(value: unknown): UiPlan {
     }
     if ('wait' in raw) {
       const wait = raw.wait;
-      const target = object(wait) && (typeof wait.identifier === 'string' || typeof wait.label === 'string');
-      const pause = object(wait) && wait.identifier === undefined && wait.label === undefined && wait.timeout === undefined
+      const target = object(wait) && hasTargetFields(wait);
+      const pause = object(wait) && !target && wait.timeout === undefined
         && typeof wait.duration === 'number' && Number.isFinite(wait.duration) && wait.duration >= 0;
       if (!object(wait) || (!target && !pause) || (target && (wait.duration !== undefined || (wait.timeout !== undefined
         && (typeof wait.timeout !== 'number' || !Number.isFinite(wait.timeout) || wait.timeout < 0))))) {
@@ -138,7 +157,7 @@ function validatePlan(value: unknown): UiPlan {
     }
     if ('longPress' in raw) {
       const press = raw.longPress;
-      const target = object(press) && (typeof press.identifier === 'string' || typeof press.label === 'string');
+      const target = object(press) && hasTargetFields(press);
       const coordinates = object(press) && Number.isFinite(press.x) && Number.isFinite(press.y);
       if (!object(press) || (!target && !coordinates) || (press.duration !== undefined && (!Number.isFinite(press.duration) || Number(press.duration) <= 0))) {
         throw new CliError('UI_VALIDATION_FAILED', `Action ${index}: longPress needs a target or coordinates and a positive duration`);

@@ -7,10 +7,10 @@ import { redactValue } from '../artifacts/runs.js';
 import { writeLaunchMarker } from '../artifacts/launch-marker.js';
 import { deadline, type Deadline, type ProcessResult, type RunOptions } from '../process/run-process.js';
 import type { LongPress, Point, Swipe, UiPlan } from './ui.js';
-import { elementVisible, normalizeIdbElements, type IdbElement, type Inspection } from './ui-elements.js';
+import { describeTarget, elementVisible, matchingIndexes, normalizeIdbElements, type ElementTarget, type IdbElement, type Inspection } from './ui-elements.js';
 
 type Run = (executable: string, args: string[], options?: RunOptions) => Promise<ProcessResult>;
-type Target = { identifier?: string; label?: string; x?: number; y?: number };
+type Target = ElementTarget & { x?: number; y?: number };
 type Element = IdbElement;
 const operations = new Set(['launch', 'wait', 'type', 'tap', 'swipe', 'longPress', 'assertVisible', 'assertExists', 'assertNotVisible',
   'assertValue', 'screenshot', 'inspect']);
@@ -35,7 +35,7 @@ export function idbCompatible(plan: UiPlan): boolean {
       && (value.environment === undefined || (record(value.environment) && Object.values(value.environment).every(v => typeof v === 'string')));
     if (keys[0] === 'screenshot') return value.name === undefined || typeof value.name === 'string';
     if (keys[0] === 'inspect') return true;
-    const targeted = typeof value.identifier === 'string' || typeof value.label === 'string';
+    const targeted = typeof value.identifier === 'string' || typeof value.label === 'string' || typeof value.labelContains === 'string';
     if (keys[0] === 'swipe') return value.from !== undefined || targeted;
     if (keys[0] === 'longPress') return targeted || (Number.isFinite(value.x) && Number.isFinite(value.y));
     if (keys[0] === 'tap') return targeted || (Number.isFinite(value.x) && Number.isFinite(value.y));
@@ -54,10 +54,13 @@ function parseElements(output: string): Element[] {
   return value.filter(record) as Element[];
 }
 
+/** Raw elements matching the target's fields, compared in normalized form; `elements` must contain only records. */
+function matchElements(elements: Element[], target: Target): Element[] {
+  return matchingIndexes(normalizeIdbElements(elements), target).map(position => elements[position]!);
+}
+
 function findElement(elements: Element[], target: Target): Element | undefined {
-  return target.identifier !== undefined
-    ? elements.find(element => element.AXUniqueId === target.identifier)
-    : elements.find(element => element.AXLabel === target.label);
+  return matchElements(elements, target)[target.index ?? 0];
 }
 
 function center(element: Element): [number, number] {
@@ -117,9 +120,9 @@ export async function tryRunIdbPlan(config: LoadedConfig, plan: UiPlan, udid: st
     return result;
   };
   const elements = async (): Promise<Element[]> => parseElements((await execute('idb', ['ui', 'describe-all', '--api', 'axbridge', '--udid', udid])).stdout);
-  const targetElement = async (target: Target): Promise<Element> => {
-    const element = findElement(await elements(), target);
-    if (!element) throw new Error(`element not found: ${target.identifier ?? target.label}`);
+  const targetElement = async (target: Target, tree?: Element[]): Promise<Element> => {
+    const element = findElement(tree ?? await elements(), target);
+    if (!element) throw new Error(`element not found: ${describeTarget(target)}`);
     return element;
   };
 
@@ -153,7 +156,7 @@ export async function tryRunIdbPlan(config: LoadedConfig, plan: UiPlan, udid: st
           const giveUp = Date.now() + timeout * 1000;
           while (true) {
             if (findElement(await elements(), value as Target)) break;
-            if (Date.now() >= giveUp) throw new Error(`element did not appear: ${value.identifier ?? value.label}`);
+            if (Date.now() >= giveUp) throw new Error(`element did not appear: ${describeTarget(value as Target)}`);
             if (limit.expired()) throw expire();
             await sleep(Math.min(250, limit.remaining()));
           }
@@ -163,12 +166,27 @@ export async function tryRunIdbPlan(config: LoadedConfig, plan: UiPlan, udid: st
           await execute('idb', ['ui', 'tap', String(value.x), String(value.y), '--udid', udid]);
         } else {
           const target = value as Target;
-          const element = await targetElement(target);
+          const tree = await elements();
+          const element = await targetElement(target, tree);
           const identifier = typeof element.AXUniqueId === 'string' && element.AXUniqueId.length > 0 ? element.AXUniqueId : undefined;
-          const matchKey = identifier ? 'AXUniqueId' : 'AXLabel';
-          const expectedKey = target.identifier !== undefined ? 'AXUniqueId' : 'AXLabel';
-          await execute('idb', ['ui', 'tap', identifier ?? target.label!, '--match-key', matchKey,
-            '--expected-key', expectedKey, '--expected-value', target.identifier ?? target.label!, '--api', 'axbridge', '--udid', udid]);
+          if (identifier !== undefined && tree.filter(candidate => candidate.AXUniqueId === identifier).length === 1) {
+            // A unique identifier lets idb press the element through accessibility.
+            const [expectedKey, expectedValue] = target.identifier !== undefined ? ['AXUniqueId', target.identifier]
+              : target.label !== undefined ? ['AXLabel', target.label] : ['AXUniqueId', identifier];
+            await execute('idb', ['ui', 'tap', identifier, '--match-key', 'AXUniqueId',
+              '--expected-key', expectedKey, '--expected-value', expectedValue, '--api', 'axbridge', '--udid', udid]);
+          } else if (typeof element.AXLabel === 'string' && element.AXLabel.length > 0
+            && tree.filter(candidate => candidate.AXLabel === element.AXLabel).length === 1) {
+            const label = element.AXLabel;
+            const [expectedKey, expectedValue] = target.identifier !== undefined ? ['AXUniqueId', target.identifier] : ['AXLabel', label];
+            await execute('idb', ['ui', 'tap', label, '--match-key', 'AXLabel',
+              '--expected-key', expectedKey, '--expected-value', expectedValue, '--api', 'axbridge', '--udid', udid]);
+          } else {
+            // idb's --match-key presses the first match, which may not be the resolved element; tap its center instead.
+            const [x, y] = center(element);
+            lines.push(`coordinate fallback: ${describeTarget(target)} at ${x},${y}`);
+            await execute('idb', ['ui', 'tap', String(x), String(y), '--udid', udid]);
+          }
         }
         if (kind === 'type') await execute('idb', ['ui', 'text', '--udid', udid, '--', value.text as string]);
       } else if (kind === 'longPress') {
@@ -187,11 +205,11 @@ export async function tryRunIdbPlan(config: LoadedConfig, plan: UiPlan, udid: st
         const tree = await elements();
         const element = findElement(tree, value as Target);
         const visible = elementVisible(tree, element);
-        const name = value.identifier ?? value.label;
+        const name = describeTarget(value as Target);
         if (kind === 'assertVisible' && !visible) throw new Error(`element is not visible: ${name}${element ? ' (exists but not hittable)' : ''}`);
         if (kind === 'assertNotVisible' && visible) throw new Error(`element is visible: ${name}`);
       } else if (kind === 'assertExists') {
-        if (!findElement(await elements(), value as Target)) throw new Error(`element does not exist: ${value.identifier ?? value.label}`);
+        if (!findElement(await elements(), value as Target)) throw new Error(`element does not exist: ${describeTarget(value as Target)}`);
       } else if (kind === 'assertValue') {
         const element = await targetElement(value as Target);
         if (element.AXValue !== value.value) {

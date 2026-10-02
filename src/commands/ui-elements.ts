@@ -25,6 +25,38 @@ export type XctestNode = {
 const knownTypes = new Set(['application', 'window', 'button', 'staticText', 'textField', 'secureTextField', 'searchField', 'textView',
   'image', 'cell', 'switch', 'slider', 'link', 'scrollView', 'table', 'collectionView', 'navigationBar', 'tabBar', 'alert', 'keyboard']);
 
+/** Type names a target may filter on. `other` is excluded: it groups different XCTest types, so it cannot match identically on both backends. */
+export const targetTypes: ReadonlySet<string> = new Set([...knownTypes].filter(type => type !== 'application'));
+
+/** Element target shared by every targeted action; both backends resolve it with the same rules. */
+export type ElementTarget = { identifier?: string; label?: string; labelContains?: string; type?: string; index?: number };
+
+/** Indexes (document order) of elements matching every given target field; `index` is not applied. */
+export function matchingIndexes(elements: UiElement[], target: ElementTarget): number[] {
+  const indexes: number[] = [];
+  elements.forEach((element, position) => {
+    // XCTest queries descendants of the application, never the application itself.
+    if (element.type === 'application') return;
+    if (target.identifier !== undefined && element.identifier !== target.identifier) return;
+    if (target.label !== undefined && element.label !== target.label) return;
+    if (target.labelContains !== undefined && !(element.label ?? '').includes(target.labelContains)) return;
+    if (target.type !== undefined && element.type !== target.type) return;
+    indexes.push(position);
+  });
+  return indexes;
+}
+
+/** The element a target resolves to: the `index`th match (default 0), or undefined. */
+export function resolveTarget(elements: UiElement[], target: ElementTarget): number | undefined {
+  return matchingIndexes(elements, target)[target.index ?? 0];
+}
+
+export function describeTarget(target: ElementTarget): string {
+  const name = target.identifier ?? target.label ?? target.labelContains ?? '<no target>';
+  const details = [target.type === undefined ? '' : `type ${target.type}`, target.index === undefined ? '' : `index ${target.index}`].filter(Boolean);
+  return details.length ? `${name} (${details.join(', ')})` : name;
+}
+
 export function finiteFrame(frame: Frame | undefined): frame is Required<Frame> {
   return !!frame && [frame.x, frame.y, frame.width, frame.height].every(Number.isFinite);
 }

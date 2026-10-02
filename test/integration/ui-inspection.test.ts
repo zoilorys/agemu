@@ -97,6 +97,23 @@ describe.skipIf(!enabled)('ui inspection fixture', () => {
     expect(stopped).toMatchObject({ ok: false, error: { code: 'UI_DELIVERY_FAILED', message: expect.stringContaining('Launch the app first') } });
   }, 600_000);
 
+  test('targets elements by labelContains and index', async () => {
+    const targeted = data(await run(['ui', 'run', '--backend=xctest', '--plan-json=' + JSON.stringify({
+      version: 1, actions: [
+        { launch: {} },
+        { tap: { labelContains: 'Save', index: 1 } },
+        { assertValue: { identifier: 'gestureStatus', value: 'draft' } },
+        { assertExists: { identifier: 'row', index: 24 } },
+      ],
+    })]), 'ui run targeting');
+    expect(targeted).toMatchObject({ backend: 'xctest', runnerResult: { completed: 4 } });
+
+    const offscreen = await run(['ui', 'run', '--backend=xctest', '--plan-json=' + JSON.stringify({
+      version: 1, actions: [{ assertVisible: { identifier: 'row', index: 24 } }],
+    })]);
+    expect(offscreen).toMatchObject({ ok: false, error: { code: 'UI_DELIVERY_FAILED', details: { failedAction: { index: 0, kind: 'assertVisible', message: expect.stringContaining('exists but not hittable') } } } });
+  }, 300_000);
+
   test('types, taps, and opens URLs in the fixture', async () => {
     const typed = data(await run(['ui', 'run', '--backend=xctest', '--plan-json=' + JSON.stringify({
       version: 1, actions: [

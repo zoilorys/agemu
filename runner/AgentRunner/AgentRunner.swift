@@ -1,5 +1,23 @@
 import XCTest
 
+/// Element target fields shared by every targeted action (see src/commands/ui-elements.ts `ElementTarget`).
+private protocol Targeting {
+    var identifier: String? { get }
+    var label: String? { get }
+    var labelContains: String? { get }
+    var type: String? { get }
+    var index: Int? { get }
+}
+
+extension Targeting {
+    var hasTarget: Bool { identifier != nil || label != nil || labelContains != nil }
+    var targetDescription: String {
+        let name = identifier ?? label ?? labelContains ?? "<no target>"
+        let details = [type.map { "type \($0)" }, index.map { "index \($0)" }].compactMap { $0 }
+        return details.isEmpty ? name : "\(name) (\(details.joined(separator: ", ")))"
+    }
+}
+
 final class AgentRunner: XCTestCase {
     private struct Plan: Decodable { let bundleId: String; let actions: [Action] }
     private struct Action: Decodable {
@@ -19,13 +37,26 @@ final class AgentRunner: XCTestCase {
         let stopVideoRecording: Empty?
     }
     private struct Launch: Decodable { let arguments: [String]?; let environment: [String: String]? }
-    private struct Target: Decodable { let identifier: String?; let label: String?; let x: Double?; let y: Double? }
+    private struct Target: Decodable, Targeting {
+        let identifier: String?; let label: String?; let labelContains: String?; let type: String?; let index: Int?; let x: Double?; let y: Double?
+    }
     private struct Point: Decodable { let x: Double; let y: Double }
-    private struct Swipe: Decodable { let direction: String?; let identifier: String?; let label: String?; let from: Point?; let to: Point?; let duration: Double? }
-    private struct LongPress: Decodable { let identifier: String?; let label: String?; let x: Double?; let y: Double?; let duration: Double? }
-    private struct TypeAction: Decodable { let identifier: String?; let label: String?; let text: String }
-    private struct WaitAction: Decodable { let identifier: String?; let label: String?; let timeout: Double?; let duration: Double? }
-    private struct ValueAssertion: Decodable { let identifier: String?; let label: String?; let value: String }
+    private struct Swipe: Decodable, Targeting {
+        let direction: String?; let identifier: String?; let label: String?; let labelContains: String?; let type: String?; let index: Int?
+        let from: Point?; let to: Point?; let duration: Double?
+    }
+    private struct LongPress: Decodable, Targeting {
+        let identifier: String?; let label: String?; let labelContains: String?; let type: String?; let index: Int?; let x: Double?; let y: Double?; let duration: Double?
+    }
+    private struct TypeAction: Decodable, Targeting {
+        let identifier: String?; let label: String?; let labelContains: String?; let type: String?; let index: Int?; let text: String
+    }
+    private struct WaitAction: Decodable, Targeting {
+        let identifier: String?; let label: String?; let labelContains: String?; let type: String?; let index: Int?; let timeout: Double?; let duration: Double?
+    }
+    private struct ValueAssertion: Decodable, Targeting {
+        let identifier: String?; let label: String?; let labelContains: String?; let type: String?; let index: Int?; let value: String
+    }
     private struct Screenshot: Decodable { let name: String? }
     private struct Empty: Decodable {}
     private struct VideoRecording: Decodable { let name: String? }
@@ -59,10 +90,6 @@ final class AgentRunner: XCTestCase {
         if action.startVideoRecording != nil { return "startVideoRecording" }
         if action.stopVideoRecording != nil { return "stopVideoRecording" }
         return "unknown"
-    }
-
-    private func describe(_ identifier: String?, _ label: String?) -> String {
-        identifier ?? label ?? "<no target>"
     }
 
     /// Matches the idb backend: UTF-16 units outside [A-Za-z0-9_-] become "_", capped at 80, default "screen".
@@ -148,35 +175,35 @@ final class AgentRunner: XCTestCase {
             } else if let press = action.longPress {
                 try longPressGesture(press, in: app)
             } else if let type = action.type {
-                let element = try element(Target(identifier: type.identifier, label: type.label, x: nil, y: nil), in: app)
+                let element = try element(type, in: app)
                 element.tap()
                 element.typeText(type.text)
             } else if let wait = action.wait {
                 if let duration = wait.duration {
                     Thread.sleep(forTimeInterval: duration)
                 } else {
-                    let candidate = try element(Target(identifier: wait.identifier, label: wait.label, x: nil, y: nil), in: app)
+                    let candidate = try element(wait, in: app)
                     if !candidate.waitForExistence(timeout: wait.timeout ?? 5) {
-                        return "element did not appear: \(describe(wait.identifier, wait.label))"
+                        return "element did not appear: \(wait.targetDescription)"
                     }
                 }
             } else if let target = action.assertVisible {
                 let candidate = try element(target, in: app)
                 let exists = candidate.exists
                 if !(exists && candidate.isHittable) {
-                    return "element is not visible: \(describe(target.identifier, target.label))\(exists ? " (exists but not hittable)" : "")"
+                    return "element is not visible: \(target.targetDescription)\(exists ? " (exists but not hittable)" : "")"
                 }
             } else if let target = action.assertExists {
                 if !(try element(target, in: app).exists) {
-                    return "element does not exist: \(describe(target.identifier, target.label))"
+                    return "element does not exist: \(target.targetDescription)"
                 }
             } else if let target = action.assertNotVisible {
                 let candidate = try element(target, in: app)
                 if candidate.exists && candidate.isHittable {
-                    return "element is visible: \(describe(target.identifier, target.label))"
+                    return "element is visible: \(target.targetDescription)"
                 }
             } else if let assertion = action.assertValue {
-                let candidate = try element(Target(identifier: assertion.identifier, label: assertion.label, x: nil, y: nil), in: app)
+                let candidate = try element(assertion, in: app)
                 let actual = candidate.value as? String
                 if actual != assertion.value {
                     return "element value does not match: expected \(assertion.value), got \(actual ?? "nil")"
@@ -265,10 +292,44 @@ final class AgentRunner: XCTestCase {
     }
 
     @MainActor
-    private func element(_ target: Target, in app: XCUIApplication) throws -> XCUIElement {
-        if let identifier = target.identifier { return app.descendants(matching: .any)[identifier] }
-        if let label = target.label { return app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", label)).firstMatch }
-        throw NSError(domain: "AgentRunner", code: 1, userInfo: [NSLocalizedDescriptionKey: "Element target requires identifier or label"])
+    /// Filters by every given field, then picks the `index`th match (default 0) in the query's order. Mirrors idb-ui.ts.
+    private func element(_ target: any Targeting, in app: XCUIApplication) throws -> XCUIElement {
+        var predicates: [NSPredicate] = []
+        if let identifier = target.identifier { predicates.append(NSPredicate(format: "identifier == %@", identifier)) }
+        if let label = target.label { predicates.append(NSPredicate(format: "label == %@", label)) }
+        if let fragment = target.labelContains { predicates.append(NSPredicate(format: "label CONTAINS %@", fragment)) }
+        guard !predicates.isEmpty else {
+            throw NSError(domain: "AgentRunner", code: 1, userInfo: [NSLocalizedDescriptionKey: "Element target requires identifier, label, or labelContains"])
+        }
+        let query = app.descendants(matching: target.type.flatMap { elementType(for: $0) } ?? .any)
+        return query.matching(NSCompoundPredicate(andPredicateWithSubpredicates: predicates)).element(boundBy: target.index ?? 0)
+    }
+
+    /// Inverse of typeName(_:); nil for "other" and unknown names.
+    private func elementType(for name: String) -> XCUIElement.ElementType? {
+        switch name {
+        case "application": return .application
+        case "window": return .window
+        case "button": return .button
+        case "staticText": return .staticText
+        case "textField": return .textField
+        case "secureTextField": return .secureTextField
+        case "searchField": return .searchField
+        case "textView": return .textView
+        case "image": return .image
+        case "cell": return .cell
+        case "switch": return .switch
+        case "slider": return .slider
+        case "link": return .link
+        case "scrollView": return .scrollView
+        case "table": return .table
+        case "collectionView": return .collectionView
+        case "navigationBar": return .navigationBar
+        case "tabBar": return .tabBar
+        case "alert": return .alert
+        case "keyboard": return .keyboard
+        default: return nil
+        }
     }
 
     @MainActor
@@ -291,7 +352,7 @@ final class AgentRunner: XCTestCase {
         if let x = press.x, let y = press.y {
             coordinate(x: x, y: y, in: app).press(forDuration: duration)
         } else {
-            try element(Target(identifier: press.identifier, label: press.label, x: nil, y: nil), in: app).press(forDuration: duration)
+            try element(press, in: app).press(forDuration: duration)
         }
     }
 
@@ -309,8 +370,7 @@ final class AgentRunner: XCTestCase {
             }
             return
         }
-        let target = Target(identifier: swipe.identifier, label: swipe.label, x: nil, y: nil)
-        let surface = swipe.identifier != nil || swipe.label != nil ? try element(target, in: app) : app
+        let surface = swipe.hasTarget ? try element(swipe, in: app) : app
         let distance = (swipe.direction == "up" || swipe.direction == "down") ? surface.frame.height : surface.frame.width
         let velocity = swipe.duration.map { XCUIGestureVelocity(CGFloat(distance * 0.3 / $0)) }
         switch swipe.direction {

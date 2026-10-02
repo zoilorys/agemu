@@ -406,6 +406,68 @@ describe('UI backend selection', () => {
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 
+  it('taps a non-unique idb target at its frame center and a unique one through accessibility', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-idb-fallback-tap-'));
+    const commands: string[][] = [];
+    const config = { version: 2 as const, platform: 'ios' as const, app: { type: 'native' as const, project: path.join(root, 'App.xcodeproj'), scheme: 'App', configuration: 'Debug',
+      bundleId: 'com.example.app' }, simulator: { udid: 'PHONE' }, root };
+    try {
+      const output = await runUiPlan(config, { json: JSON.stringify({ version: 1, actions: [
+        { tap: { identifier: 'row', index: 1 } }, { tap: { labelContains: 'Save', index: 1 } },
+      ] }) }, { backend: 'idb', run: async (executable, args) => {
+        commands.push([executable, ...args]);
+        if (executable === 'idb' && args[1] === 'describe-all') return result(JSON.stringify([
+          // Neither the id nor the label is unique, so only a coordinate tap reaches the second row.
+          { AXUniqueId: 'row', AXLabel: 'Item', frame: { x: 0, y: 100, width: 300, height: 40 } },
+          { AXUniqueId: 'row', AXLabel: 'Item', frame: { x: 0, y: 140, width: 300, height: 40 } },
+          { AXUniqueId: 'saveButton', AXLabel: 'Save', frame: { x: 10, y: 10, width: 40, height: 40 } },
+          { AXUniqueId: 'draftButton', AXLabel: 'Save draft', frame: { x: 60, y: 10, width: 40, height: 40 } },
+        ]));
+        return result();
+      } });
+      const taps = commands.filter(command => command[0] === 'idb' && command[2] === 'tap');
+      expect(taps).toEqual([
+        ['idb', 'ui', 'tap', '150', '160', '--udid', 'PHONE'],
+        ['idb', 'ui', 'tap', 'draftButton', '--match-key', 'AXUniqueId', '--expected-key', 'AXUniqueId', '--expected-value', 'draftButton',
+          '--api', 'axbridge', '--udid', 'PHONE'],
+      ]);
+      const transcript = await readFile(path.join(root, (output as { transcript: string }).transcript), 'utf8');
+      expect(transcript).toContain('coordinate fallback: row (index 1) at 150,160');
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('presses an id-less element with a unique label through accessibility', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-idb-label-tap-'));
+    const commands: string[][] = [];
+    try {
+      await runUiPlan(nativeConfig(root), { json: JSON.stringify({ version: 1, actions: [{ tap: { label: 'Save' } }] }) }, {
+        backend: 'idb',
+        run: async (executable, args) => {
+          commands.push([executable, ...args]);
+          return executable === 'idb' && args[1] === 'describe-all' ? result(JSON.stringify([
+            { AXLabel: 'Save draft', frame: { x: 60, y: 10, width: 40, height: 40 } },
+            { AXLabel: 'Save', frame: { x: 10, y: 10, width: 40, height: 40 } },
+          ])) : result();
+        },
+      });
+      expect(commands.filter(command => command[0] === 'idb' && command[2] === 'tap')).toEqual([
+        ['idb', 'ui', 'tap', 'Save', '--match-key', 'AXLabel', '--expected-key', 'AXLabel', '--expected-value', 'Save', '--api', 'axbridge', '--udid', 'PHONE'],
+      ]);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('fails an idb action whose index is beyond the matches', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-idb-index-'));
+    try {
+      const error = await runUiPlan(nativeConfig(root), { json: JSON.stringify({ version: 1, actions: [{ tap: { labelContains: 'Save', index: 1 } }] }) }, {
+        backend: 'idb',
+        run: async (executable, args) => executable === 'idb' && args[1] === 'describe-all'
+          ? result(JSON.stringify([{ AXUniqueId: 'saveButton', AXLabel: 'Save', frame: { x: 10, y: 10, width: 40, height: 40 } }])) : result(),
+      }).catch((e: unknown) => e);
+      expect(error).toMatchObject({ code: 'UI_DELIVERY_FAILED', details: { failedAction: { index: 0, kind: 'tap', message: 'element not found: Save (index 1)' } } });
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
   const secretConfig = (root: string) => ({ version: 2 as const, platform: 'ios' as const, app: { type: 'native' as const,
     project: path.join(root, 'App.xcodeproj'), scheme: 'App', configuration: 'Debug', bundleId: 'com.secret-app.x' },
   simulator: { udid: 'PHONE' }, root, redactions: ['secret-app'] });
@@ -755,9 +817,21 @@ describe('UI backend selection', () => {
     ['unknown kind', { tapp: {} }, 'Action 1: unknown action tapp'],
     ['two kinds', { tap: { label: 'Go' }, inspect: {} }, 'Action 1: must contain exactly one action'],
     ['non-object action', 'tap', 'Action 1: must contain exactly one action'],
-    ['tap without target', { tap: {} }, 'Action 1: tap needs exactly one string identifier or label'],
-    ['tap with target and coordinates', { tap: { label: 'Go', x: 1, y: 2 } }, 'Action 1: tap needs one string identifier or label, or finite x and y, not both'],
-    ['assertVisible with both targets', { assertVisible: { identifier: 'a', label: 'b' } }, 'Action 1: assertVisible needs exactly one string identifier or label'],
+    ['tap without target', { tap: {} }, 'Action 1: tap needs a string identifier, label, or labelContains'],
+    ['tap with target and coordinates', { tap: { label: 'Go', x: 1, y: 2 } }, 'Action 1: tap needs a target or finite x and y, not both'],
+    ['tap with index and coordinates', { tap: { index: 0, x: 1, y: 2 } }, 'Action 1: tap needs a target or finite x and y, not both'],
+    ['assertVisible with both targets', { assertVisible: { identifier: 'a', label: 'b' } }, 'Action 1: assertVisible accepts identifier or label, not both'],
+    ['type alone', { tap: { type: 'button' } }, 'Action 1: tap needs a string identifier, label, or labelContains'],
+    ['type alone on wait', { wait: { type: 'button', timeout: 1 } }, 'Action 1: wait needs a string identifier, label, or labelContains'],
+    ['negative index', { assertExists: { identifier: 'row', index: -1 } }, 'Action 1: assertExists index must be a non-negative integer'],
+    ['fractional index', { assertExists: { identifier: 'row', index: 1.5 } }, 'Action 1: assertExists index must be a non-negative integer'],
+    ['negative index on a swipe target', { swipe: { direction: 'up', identifier: 'list', index: -1 } }, 'Action 1: swipe index must be a non-negative integer'],
+    ['non-string labelContains', { longPress: { labelContains: 3 } }, 'Action 1: longPress labelContains must be a string'],
+    ['unknown type', { assertExists: { label: 'Go', type: 'widget' } }, expect.stringMatching(/^Action 1: assertExists type must be one of .*button/)],
+    ['application type', { assertExists: { label: 'Go', type: 'application' } }, expect.stringMatching(/^Action 1: assertExists type must be one of/)],
+    ['empty labelContains', { assertExists: { labelContains: '' } }, 'Action 1: assertExists labelContains must not be empty'],
+    ['unsafe index', { assertExists: { identifier: 'row', index: 1e300 } }, 'Action 1: assertExists index must be a non-negative integer'],
+    ['the catch-all other type', { assertExists: { label: 'Go', type: 'other' } }, expect.stringMatching(/^Action 1: assertExists type must be one of/)],
     ['type without text', { type: { identifier: 'email' } }, 'Action 1: type needs string text'],
     ['assertValue without value', { assertValue: { identifier: 'email' } }, 'Action 1: assertValue needs string value'],
     ['unknown field', { assertExists: { label: 'Go', timeout: 2 } }, 'Action 1: assertExists does not accept timeout'],

@@ -1,5 +1,35 @@
 import { describe, expect, it } from 'vitest';
-import { normalizeIdbElements, normalizeXctestNodes } from '../../src/commands/ui-elements.js';
+import { normalizeIdbElements, normalizeXctestNodes, resolveTarget, type ElementTarget, type UiElement } from '../../src/commands/ui-elements.js';
+
+describe('target matching', () => {
+  const frame = { x: 0, y: 0, width: 10, height: 10 };
+  const tree: UiElement[] = [
+    // XCTest never matches the application root, so neither backend does.
+    { type: 'application', label: 'Save app', frame, visible: true },
+    { type: 'button', identifier: 'saveButton', label: 'Save', frame, visible: true },
+    { type: 'button', label: 'Save draft', frame, visible: true },
+    { type: 'staticText', label: 'Save status', frame, visible: true },
+    ...[0, 1, 2, 3].map((n): UiElement => ({ type: 'staticText', identifier: 'row', label: `Item ${n}`, frame, visible: true })),
+  ];
+
+  it.each<[ElementTarget, string | undefined]>([
+    [{ identifier: 'row', index: 3 }, 'Item 3'],
+    [{ identifier: 'row' }, 'Item 0'],
+    [{ labelContains: 'Save' }, 'Save'],
+    [{ labelContains: 'Save', index: 1 }, 'Save draft'],
+    [{ labelContains: 'save' }, undefined],
+    [{ label: 'Save' }, 'Save'],
+    [{ label: 'Save', index: 1 }, undefined],
+    [{ labelContains: 'Save', type: 'staticText' }, 'Save status'],
+    [{ labelContains: 'Item', type: 'button' }, undefined],
+    [{ identifier: 'row', labelContains: '2' }, 'Item 2'],
+    [{ identifier: 'row', index: 4 }, undefined],
+    [{ label: 'Save app' }, undefined],
+  ])('%j resolves to %s', (target, label) => {
+    const position = resolveTarget(tree, target);
+    expect(position === undefined ? undefined : tree[position]!.label).toBe(label);
+  });
+});
 
 describe('idb element normalization', () => {
   it('maps idb fields, falls back to other, and applies the screen visibility rule', () => {
