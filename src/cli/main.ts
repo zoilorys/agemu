@@ -1,15 +1,21 @@
 #!/usr/bin/env node
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { errorResult, writeResult, type Result } from '../core/output.js';
 import { redact } from '../core/redact.js';
 import { CliError } from '../core/errors.js';
-import { loadConfig, type LoadedConfig } from '../config/config.js';
+import { loadConfig, targetBundleId, type LoadedConfig } from '../config/config.js';
 import { appendEvent, redactValue } from '../artifacts/runs.js';
 import { doctor } from '../doctor/doctor.js';
 import { bootDevice, listDevices, resolveDevice, shutdownDevice } from '../native/simctl.js';
 import { buildApp } from '../commands/build.js';
-import { controlApp, type AppAction } from '../commands/app.js';
+import { controlApp, requireUninstallable, type AppAction } from '../commands/app.js';
+import { requireYes } from '../native/simctl-commands.js';
+import { privacy, type PrivacyAction } from '../commands/privacy.js';
+import { push } from '../commands/push.js';
+import { location, type LocationAction } from '../commands/location.js';
+import { addMedia, simulatorUi, statusBar } from '../commands/simulator-settings.js';
+import { createSimulator, deleteSimulator, eraseSimulator } from '../commands/simulator-lifecycle.js';
 import { diagnose, observe, showLogs, streamLogs } from '../commands/diagnostics.js';
 import { captureJsLogs } from '../commands/js-logs.js';
 import { buildUiRunner, runUiPlan } from '../commands/ui.js';
@@ -50,8 +56,10 @@ const nonEmpty =(parsed: ParsedArgs, name: string, code: 'COMMAND_INVALID' | 'UI
 
 // Commands whose invocations are recorded here; observe, logs show, and diagnose record their own events.
 const recorded = new Set([
-  'build', 'app install', 'app launch', 'app terminate', 'app restart', 'app open-url',
-  'server start', 'server status', 'server stop', 'simulator boot', 'simulator shutdown', 'ui build-runner', 'ui run', 'clean',
+  'build', 'app install', 'app launch', 'app terminate', 'app restart', 'app open-url', 'app uninstall',
+  'privacy grant', 'privacy revoke', 'privacy reset', 'push',
+  'location set', 'location clear', 'location run',
+  'server start', 'server status', 'server stop', 'simulator boot', 'simulator shutdown', 'simulator ui', 'simulator status-bar', 'simulator add-media', 'simulator erase', 'ui build-runner', 'ui run', 'clean',
   'crashes list',
 ]);
 const durationUnits: Record<string, number> = { s: 1_000, m: 60_000, h: 3_600_000, d: 86_400_000 };
@@ -134,6 +142,15 @@ try {
       data = safe;
     } else if (command === 'simulator' && subcommand === 'list') {
       data = { devices: await listDevices() };
+    } else if (command === 'simulator' && subcommand === 'create') {
+      data = await createSimulator({ name: value(parsed, 'name'), deviceType: value(parsed, 'device-type'), runtime: value(parsed, 'runtime') }, []);
+    } else if (command === 'simulator' && subcommand === 'delete') {
+      // Config is optional: it is read only to warn when the configured Simulator is deleted.
+      const config = await configured().catch(() => undefined);
+      data = await deleteSimulator(nonEmpty(parsed, 'udid', 'COMMAND_INVALID'), parsed.flags.has('yes'), config?.redactions ?? [], {}, config?.simulator.udid);
+    } else if (command === 'simulator' && subcommand === 'erase' && value(parsed, 'udid') && !existsSync(path.join(process.cwd(), '.agemu.json'))) {
+      // Without config, an explicit --udid is the only selector; with config, erase is recorded below.
+      data = await eraseSimulator(resolveDevice(await listDevices(), { udid: value(parsed, 'udid') }), parsed.flags.has('yes'), []);
     } else if (command === 'simulator') {
       const explicitUdid = nonEmpty(parsed, 'udid', 'COMMAND_INVALID');
       const explicitName = nonEmpty(parsed, 'name', 'COMMAND_INVALID');
@@ -148,6 +165,22 @@ try {
               ? { name: explicitName, ...(explicitRuntime ? { runtime: explicitRuntime } : {}) }
               : config.simulator;
         const device = resolveDevice(await listDevices(), selector);
+        const secretValues = config.redactions ?? [];
+        if (subcommand === 'ui') {
+          return simulatorUi(device, {
+            appearance: value(parsed, 'appearance'), contentSize: value(parsed, 'content-size'), increaseContrast: value(parsed, 'increase-contrast'),
+          }, secretValues);
+        }
+        if (subcommand === 'status-bar') {
+          return statusBar(device, {
+            clear: parsed.flags.has('clear'), preset: value(parsed, 'preset'), time: value(parsed, 'time'),
+            dataNetwork: value(parsed, 'data-network'), wifiMode: value(parsed, 'wifi-mode'), wifiBars: value(parsed, 'wifi-bars'),
+            cellularMode: value(parsed, 'cellular-mode'), cellularBars: value(parsed, 'cellular-bars'), operatorName: value(parsed, 'operator-name'),
+            batteryState: value(parsed, 'battery-state'), batteryLevel: value(parsed, 'battery-level'),
+          }, secretValues);
+        }
+        if (subcommand === 'add-media') return addMedia(device, values(parsed, 'file'), secretValues);
+        if (subcommand === 'erase') return eraseSimulator(device, parsed.flags.has('yes'), secretValues);
         const action = subcommand === 'boot' ? 'boot' : 'shutdown';
         const controlled = action === 'boot' ? await bootDevice(device) : await shutdownDevice(device);
         return { action, device: controlled };
@@ -174,6 +207,12 @@ try {
       data = await withConfig(key, (config) => buildApp(config, { timeoutMs }));
     } else if (command === 'server') {
       data = await withConfig(key, (config) => server(config, subcommand as 'start' | 'status' | 'stop'));
+    } else if (command === 'app' && subcommand === 'uninstall') {
+      data = await withConfig(key, async (config) => {
+        requireUninstallable(config);
+        requireYes(parsed.flags.has('yes'), `This removes ${targetBundleId(config)} and its data from Simulator ${config.simulator.udid ?? config.simulator.name}`);
+        return controlApp(config, 'uninstall');
+      });
     } else if (command === 'app') {
       data = await withConfig(key, (config) => controlApp(config, subcommand as AppAction, {
         arguments: values(parsed, 'arg'),
@@ -186,6 +225,17 @@ try {
     } else if (command === 'logs' && subcommand === 'js') {
       const options = { duration: value(parsed, 'duration'), until: value(parsed, 'until'), limit: limitOption(parsed) };
       data = await captureJsLogs(await configured(), options);
+    } else if (command === 'privacy') {
+      const service = nonEmpty(parsed, 'service', 'COMMAND_INVALID');
+      data = await withConfig(key, (config) => privacy(config, subcommand as PrivacyAction, { service, allApps: parsed.flags.has('all-apps') }));
+    } else if (command === 'push') {
+      const payload = value(parsed, 'payload');
+      const payloadJson = value(parsed, 'payload-json');
+      data = await withConfig(key, (config) => push(config, { payload, payloadJson }));
+    } else if (command === 'location') {
+      const coordinate = nonEmpty(parsed, 'coordinate', 'COMMAND_INVALID');
+      const scenario = nonEmpty(parsed, 'scenario', 'COMMAND_INVALID');
+      data = await withConfig(key, (config) => location(config, subcommand as LocationAction, { coordinate, scenario }));
     } else if (command === 'logs') {
       const options = { last: value(parsed, 'last'), since: value(parsed, 'since'), level: value(parsed, 'level'), limit: limitOption(parsed) };
       data = await showLogs(await configured(), options);

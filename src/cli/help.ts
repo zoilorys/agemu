@@ -17,7 +17,37 @@ const commands: Record<string, string> = {
 agemu simulator boot [--udid=ID | --name=NAME [--runtime=RUNTIME]]
 agemu simulator shutdown [--udid=ID | --name=NAME [--runtime=RUNTIME]]
   Boot or shut down a simulator. A configured UDID takes precedence over --name;
-  --udid overrides the configured selection.`,
+  --udid overrides the configured selection.
+
+agemu simulator ui [--appearance=light|dark] [--content-size=SIZE] [--increase-contrast=enabled|disabled] [selector]
+  Set any given options on the booted simulator, then return the current appearance, contentSize, and increaseContrast.
+  SIZE: increment, decrement, extra-small, small, medium, large, extra-large, extra-extra-large, extra-extra-extra-large,
+  accessibility-medium, accessibility-large, accessibility-extra-large, accessibility-extra-extra-large, accessibility-extra-extra-extra-large.
+  Values read from older runtimes (for example, unsupported) are returned as-is.
+
+agemu simulator status-bar (--clear | [--preset=clean] [override options]) [selector]
+  Override or clear the booted simulator's status bar, then return the active override lines (empty after --clear).
+  --preset=clean: time 9:41, Wi-Fi active 3 bars, cellular active 4 bars, empty operator name, battery charged 100.
+  Explicit options override preset values: --time=TEXT, --data-network=hide|wifi|3g|4g|lte|lte-a|lte+|5g|5g+|5g-uwb|5g-uc,
+  --wifi-mode=searching|failed|active, --wifi-bars=0-3, --cellular-mode=notSupported|searching|failed|active, --cellular-bars=0-4,
+  --operator-name=TEXT (may be empty), --battery-state=charging|charged|discharging, --battery-level=0-100.
+  [selector] is --udid=ID | --name=NAME [--runtime=RUNTIME], as for boot.
+
+agemu simulator add-media --file=PATH [--file=PATH ...] [selector]
+  Import photos, videos, live photos, or vCard contacts into the booted simulator. Paths are relative to the current directory.
+  Extensions: .jpg .jpeg .png .heic .gif .mov .mp4 .m4v .vcf. Missing files or other types fail before simctl runs.
+  Imported media stays on the Simulator; there is no removal command. Returns the added paths.
+
+agemu simulator create --name=NAME --device-type=TYPE [--runtime=RUNTIME]
+  Create a Simulator and return it. TYPE is a device type name or identifier (for example, "iPhone SE (3rd generation)");
+  RUNTIME is an available iOS runtime identifier, name, or version (default: simctl's choice). Needs no .agemu.json.
+
+agemu simulator delete --udid=ID --yes
+  Permanently delete the Simulator with that UDID and all its data, shutting it down first. Never infers the device; needs no .agemu.json.
+
+agemu simulator erase --yes [selector]
+  Shut down the selected Simulator if needed and erase all its content and settings (installed apps are removed;
+  run "app install" again). Without .agemu.json, --udid is required. Without --yes nothing is changed.`,
   build: `agemu build [--timeout=SECONDS]
   Build native, bare React Native, or Expo development apps for the selected Simulator.
   --timeout limits the whole build (default 1800 s, 1 to 86400); a timeout fails with PROCESS_TIMEOUT and keeps the log.
@@ -36,7 +66,33 @@ agemu app restart [--arg=VALUE ...] [--env=KEY=VALUE ...]
   Stop and launch the app with optional launch arguments and environment values.
 
 agemu app open-url --url=URL
-  Open a URL on the selected simulator.`,
+  Open a URL on the selected simulator.
+
+agemu app uninstall --yes
+  Remove the configured app and all of its data from the selected booted Simulator.
+  Without --yes nothing is removed. An app that is not installed reports alreadyUninstalled: true.
+  Expo Go projects are refused because the host is shared. Build state is kept for "app install".`,
+  privacy: `agemu privacy grant --service=NAME
+agemu privacy revoke --service=NAME
+agemu privacy reset --service=NAME [--all-apps]
+  Change the configured app's permission for a service on the selected booted Simulator.
+  Services: all, calendar, contacts-limited, contacts, location, location-always, photos-add, photos, media-library, microphone, motion, reminders, siri.
+  reset --all-apps resets the service for every app instead of only the configured one.
+  The change may terminate the running app. The current permission state cannot be read.`,
+  push: `agemu push (--payload=FILE | --payload-json=JSON)
+  Deliver a simulated remote notification to the configured app on the selected booted Simulator.
+  Example: agemu push --payload-json='{"aps":{"alert":"Hello"}}'
+  The payload must be a JSON object with an "aps" object and at most 4096 bytes. Delivery is not confirmed.
+  A "Simulator Target Bundle" key is ignored; the configured bundle ID is always used.
+  The payload is saved as .agemu/runs/<run>/push.json (mode 0600) and is NOT redacted; it may contain secrets.`,
+  location: `agemu location set --coordinate=LAT,LON
+agemu location clear
+agemu location list
+agemu location run --scenario=NAME
+  Control the selected booted Simulator's simulated location (device-wide, not per app).
+  set takes one coordinate without spaces (latitude -90 to 90, longitude -180 to 180), for example 37.3349,-122.0090.
+  list returns scenario names; run starts one of them (names may contain spaces, quote them).
+  The current location cannot be read back. Waypoint routes and speed are not supported.`,
   observe: `agemu observe
   Capture a simulator screenshot under .agemu/runs/ and return its path.`,
   logs: `agemu logs show [--last=30s | --since=launch|DURATION] [--level=default] [--limit=100]
@@ -104,6 +160,10 @@ Commands:
   simulator list       List available simulators.
   simulator boot       Boot the selected simulator.
   simulator shutdown   Shut down the selected simulator.
+  simulator ui         Read or set appearance, content size, and contrast.
+  simulator status-bar Override or clear the status bar.
+  simulator add-media  Import photos, videos, or contacts.
+  simulator create     Create a Simulator (also delete, erase; these require --yes).
   build                Build the configured iOS app.
   server start         Start or reuse this project's Metro or Expo server.
   server status        Inspect server readiness and ownership.
@@ -113,6 +173,10 @@ Commands:
   app terminate        Stop the configured app.
   app restart          Stop and relaunch the app.
   app open-url         Open a URL in Simulator.
+  app uninstall        Remove the app and its data (requires --yes).
+  privacy grant        Grant the app a permission (also revoke, reset).
+  push                 Send a simulated remote notification to the app.
+  location set         Set the simulated location (also clear, list, run).
   observe              Capture a simulator screenshot.
   logs show            Read recent app logs.
   logs stream          Capture live app logs for a bounded time.
