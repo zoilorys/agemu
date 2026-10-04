@@ -442,7 +442,9 @@ export async function inspectScreen(config: LoadedConfig, options: { backend?: '
   if (result.backend === 'idb') {
     // idb reads whatever app is in the foreground; a running but backgrounded app would be misreported.
     const bundleId = targetBundleId(config);
-    const name = await appDisplayName(run, String(result.udid), bundleId, Math.min(10_000, Math.max(1, limit.remaining())));
+    const displayName = await appDisplayName(run, String(result.udid), bundleId, Math.min(10_000, Math.max(1, limit.remaining())));
+    // The tree is already redacted, so compare against the redacted display name.
+    const name = displayName === undefined ? undefined : redact(displayName, config.redactions ?? []);
     const foreground = tree.filter(element => element.type === 'application').map(element => element.label).filter(label => label !== undefined);
     if (name !== undefined && foreground.length > 0 && !foreground.includes(name)) {
       const failedAction = { index: 0, kind: 'inspect', message: `${bundleId} is not in the foreground (foreground: ${foreground[0]})` };

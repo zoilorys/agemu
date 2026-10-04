@@ -155,6 +155,15 @@ describe('ui inspect', () => {
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 
+  it('inspects on idb when a redaction matches part of the display name', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-inspect-'));
+    try {
+      const inspected = await inspectScreen({ ...inspectConfig(root), redactions: ['Secret'] }, { backend: 'idb' },
+        { run: foregroundRun([], 'Secret App', appinfo('"Secret App"')) });
+      expect(inspected.elements.map(element => element.label)).toEqual(['[REDACTED] App']);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
   it('keeps the app running when an XCTest inspect times out', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'agemu-inspect-'));
     const manifest = path.join(root, '.agemu', 'RunnerDerivedData', 'Build', 'Runner.xctestrun');
