@@ -1,0 +1,16 @@
+{
+  "name": "agemu-expo-fixture",
+  "version": "1.0.0",
+  "private": true,
+  "main": "index.js",
+  "scripts": {
+    "start": "expo start --dev-client --port 8088",
+    "start:go": "expo start --go --port 8088"
+  },
+  "dependencies": {
+    "expo": "57.0.26",
+    "expo-dev-client": "57.0.19",
+    "react": "19.2.3",
+    "react-native": "0.86.3"
+  }
+}
