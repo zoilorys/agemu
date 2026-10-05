@@ -7,31 +7,35 @@ import { redactValue } from '../artifacts/runs.js';
 import { writeLaunchMarker } from '../artifacts/launch-marker.js';
 import { deadline, type Deadline, type ProcessResult, type RunOptions } from '../process/run-process.js';
 import type { LongPress, Point, Swipe, UiPlan } from './ui.js';
+import { appDisplayName, describeTarget, elementVisible, matchingIndexes, normalizeIdbElements, type ElementTarget, type IdbElement, type Inspection } from './ui-elements.js';
 
 type Run = (executable: string, args: string[], options?: RunOptions) => Promise<ProcessResult>;
-type Target = { identifier?: string; label?: string; x?: number; y?: number };
-type Frame = { x?: number; y?: number; width?: number; height?: number };
-type Element = { AXUniqueId?: unknown; AXLabel?: unknown; AXValue?: unknown; type?: unknown; frame?: Frame };
+type Target = ElementTarget & { x?: number; y?: number };
+type Element = IdbElement;
 const operations = new Set(['launch', 'wait', 'type', 'tap', 'swipe', 'longPress', 'assertVisible', 'assertExists', 'assertNotVisible',
-  'assertValue', 'screenshot', 'inspect']);
+  'assertValue', 'screenshot', 'inspect', 'clear', 'pressKey', 'pressButton', 'openUrl', 'terminate', 'scrollUntilVisible', 'assertText']);
+/** Pause after each scrollUntilVisible swipe so scrolling settles; AgentRunner.swift uses the same pause. */
+const scrollSettleMs = 300;
 
-function finiteFrame(frame: Frame | undefined): frame is Required<Frame> {
-  return !!frame && [frame.x, frame.y, frame.width, frame.height].every(Number.isFinite);
+/** Text compared by assertText: the value when it is a non-empty string, else the label. Mirrors AgentRunner.swift. */
+function elementText(element: { AXValue?: unknown; AXLabel?: unknown }): string {
+  if (typeof element.AXValue === 'string' && element.AXValue !== '') return element.AXValue;
+  return typeof element.AXLabel === 'string' ? element.AXLabel : '';
 }
 
-/**
- * Mirrors XCTest `exists && isHittable` as closely as the AX tree allows: a positive-size frame that intersects the
- * screen. The screen is the first `type === 'Application'` element's frame; if idb names that element differently
- * (the field varies by idb version), the intersection check is skipped.
- */
-function elementVisible(elements: Element[], element: Element | undefined): boolean {
-  if (!element || !finiteFrame(element.frame) || element.frame.width <= 0 || element.frame.height <= 0) return false;
-  const screen = elements.find(candidate => candidate.type === 'Application')?.frame;
-  if (!finiteFrame(screen)) return true;
-  const frame = element.frame;
-  return frame.x < screen.x + screen.width && frame.x + frame.width > screen.x
-    && frame.y < screen.y + screen.height && frame.y + frame.height > screen.y;
+/** Failure message for assertText, or undefined when `text` satisfies the one given mode. */
+function textMismatch(assertion: { equals?: string; contains?: string; matches?: string }, text: string): string | undefined {
+  const [mode, expected]: [string, string] = assertion.equals !== undefined ? ['equals', assertion.equals]
+    : assertion.contains !== undefined ? ['contains', assertion.contains] : ['matches', assertion.matches ?? ''];
+  const passed = mode === 'equals' ? text === expected : mode === 'contains' ? text.includes(expected) : new RegExp(expected).test(text);
+  return passed ? undefined : `text does not match: expected ${mode} ${expected}, got ${text}`;
 }
+/** SpringBoard's first-open "Open in …?" prompt button, confirmed by `openUrl` with `confirm: true`. */
+const openPrompt: Target = { label: 'Open', type: 'button' };
+const openPromptWaitMs = 2_000;
+/** HID keyboard usage codes for `idb ui key`. */
+const keyCodes: Record<string, string> = { return: '40', delete: '42', tab: '43', space: '44' };
+const rightArrowKey = '79';
 
 /** Screenshot file-name stem shared by both backends; AgentRunner.swift applies the same rule. */
 export function screenshotName(name: unknown): string {
@@ -52,8 +56,12 @@ export function idbCompatible(plan: UiPlan): boolean {
     if (keys[0] === 'launch') return (value.arguments === undefined || (Array.isArray(value.arguments) && value.arguments.every(v => typeof v === 'string')))
       && (value.environment === undefined || (record(value.environment) && Object.values(value.environment).every(v => typeof v === 'string')));
     if (keys[0] === 'screenshot') return value.name === undefined || typeof value.name === 'string';
-    if (keys[0] === 'inspect') return true;
-    const targeted = typeof value.identifier === 'string' || typeof value.label === 'string';
+    if (keys[0] === 'inspect' || keys[0] === 'terminate') return true;
+    if (keys[0] === 'openUrl') return typeof value.url === 'string' && (value.confirm === undefined || typeof value.confirm === 'boolean');
+    if (keys[0] === 'pressKey') return typeof value.key === 'string' && keyCodes[value.key] !== undefined;
+    if (keys[0] === 'pressButton') return value.button === 'home';
+    if (keys[0] === 'scrollUntilVisible') return record(value.target) && (value.in === undefined || record(value.in));
+    const targeted = typeof value.identifier === 'string' || typeof value.label === 'string' || typeof value.labelContains === 'string';
     if (keys[0] === 'swipe') return value.from !== undefined || targeted;
     if (keys[0] === 'longPress') return targeted || (Number.isFinite(value.x) && Number.isFinite(value.y));
     if (keys[0] === 'tap') return targeted || (Number.isFinite(value.x) && Number.isFinite(value.y));
@@ -72,10 +80,13 @@ function parseElements(output: string): Element[] {
   return value.filter(record) as Element[];
 }
 
+/** Raw elements matching the target's fields, compared in normalized form; `elements` must contain only records. */
+function matchElements(elements: Element[], target: Target): Element[] {
+  return matchingIndexes(normalizeIdbElements(elements), target).map(position => elements[position]!);
+}
+
 function findElement(elements: Element[], target: Target): Element | undefined {
-  return target.identifier !== undefined
-    ? elements.find(element => element.AXUniqueId === target.identifier)
-    : elements.find(element => element.AXLabel === target.label);
+  return matchElements(elements, target)[target.index ?? 0];
 }
 
 function center(element: Element): [number, number] {
@@ -126,7 +137,7 @@ export async function tryRunIdbPlan(config: LoadedConfig, plan: UiPlan, udid: st
 
   const transcript = path.join(directory, 'idb.log');
   const lines: string[] = [];
-  const trees: string[] = [];
+  const inspections: Inspection[] = [];
   const screenshots: string[] = [];
   const execute = async (executable: string, args: string[], options?: RunOptions): Promise<ProcessResult> => {
     const result = await run(executable, args, options);
@@ -135,10 +146,46 @@ export async function tryRunIdbPlan(config: LoadedConfig, plan: UiPlan, udid: st
     return result;
   };
   const elements = async (): Promise<Element[]> => parseElements((await execute('idb', ['ui', 'describe-all', '--api', 'axbridge', '--udid', udid])).stdout);
-  const targetElement = async (target: Target): Promise<Element> => {
-    const element = findElement(await elements(), target);
-    if (!element) throw new Error(`element not found: ${target.identifier ?? target.label}`);
+  const targetElement = async (target: Target, tree?: Element[]): Promise<Element> => {
+    const element = findElement(tree ?? await elements(), target);
+    if (!element) throw new Error(`element not found: ${describeTarget(target)}`);
     return element;
+  };
+  /** Taps a resolved element: through accessibility when its id or label is unique in `tree`, else at its center. */
+  const press = async (target: Target, element: Element, tree: Element[]) => {
+    const identifier = typeof element.AXUniqueId === 'string' && element.AXUniqueId.length > 0 ? element.AXUniqueId : undefined;
+    if (identifier !== undefined && tree.filter(candidate => candidate.AXUniqueId === identifier).length === 1) {
+      // A unique identifier lets idb press the element through accessibility.
+      const [expectedKey, expectedValue] = target.identifier !== undefined ? ['AXUniqueId', target.identifier]
+        : target.label !== undefined ? ['AXLabel', target.label] : ['AXUniqueId', identifier];
+      await execute('idb', ['ui', 'tap', identifier, '--match-key', 'AXUniqueId',
+        '--expected-key', expectedKey, '--expected-value', expectedValue, '--api', 'axbridge', '--udid', udid]);
+    } else if (typeof element.AXLabel === 'string' && element.AXLabel.length > 0
+      && tree.filter(candidate => candidate.AXLabel === element.AXLabel).length === 1) {
+      const label = element.AXLabel;
+      const [expectedKey, expectedValue] = target.identifier !== undefined ? ['AXUniqueId', target.identifier] : ['AXLabel', label];
+      await execute('idb', ['ui', 'tap', label, '--match-key', 'AXLabel',
+        '--expected-key', expectedKey, '--expected-value', expectedValue, '--api', 'axbridge', '--udid', udid]);
+    } else {
+      // idb's --match-key presses the first match, which may not be the resolved element; tap its center instead.
+      const [x, y] = center(element);
+      lines.push(`coordinate fallback: ${describeTarget(target)} at ${x},${y}`);
+      await execute('idb', ['ui', 'tap', String(x), String(y), '--udid', udid]);
+    }
+  };
+  /** Stops the configured app; an app that is not running counts as stopped (src/commands/app.ts `stopped()`). */
+  const terminateApp = async () => {
+    const stopped = await run('xcrun', ['simctl', 'terminate', udid, targetBundleId(config)]);
+    lines.push(`xcrun simctl terminate: exit ${stopped.exitCode}, ${stopped.durationMs} ms`);
+    if (stopped.exitCode !== 0 && !/not running|no such process|found nothing to terminate/i.test(stopped.stderr)) {
+      throw new Error(stopped.stderr.trim() || 'Unable to terminate the app');
+    }
+  };
+  const pressKey = async (code: string, count: number) => {
+    for (let pressed = 0; pressed < count; pressed += 1) {
+      if (limit.expired()) throw expire();
+      await execute('idb', ['ui', 'key', code, '--udid', udid]);
+    }
   };
 
   let current = 0;
@@ -152,10 +199,7 @@ export async function tryRunIdbPlan(config: LoadedConfig, plan: UiPlan, udid: st
       if (limit.expired()) throw expire();
       const value = action[kind];
       if (kind === 'launch') {
-        const stopped = await run('xcrun', ['simctl', 'terminate', udid, targetBundleId(config)]);
-        if (stopped.exitCode !== 0 && !/not running|no such process|found nothing to terminate/i.test(stopped.stderr)) {
-          throw new Error(stopped.stderr.trim() || 'Unable to terminate the app');
-        }
+        await terminateApp();
         const environment = { ...process.env };
         for (const [key, entry] of Object.entries(value.environment ?? {})) environment[`SIMCTL_CHILD_${key}`] = String(entry);
         await writeLaunchMarker(config.root, { at: new Date(), udid, bundleId: targetBundleId(config), source: 'ui run' });
@@ -171,24 +215,76 @@ export async function tryRunIdbPlan(config: LoadedConfig, plan: UiPlan, udid: st
           const giveUp = Date.now() + timeout * 1000;
           while (true) {
             if (findElement(await elements(), value as Target)) break;
-            if (Date.now() >= giveUp) throw new Error(`element did not appear: ${value.identifier ?? value.label}`);
+            if (Date.now() >= giveUp) throw new Error(`element did not appear: ${describeTarget(value as Target)}`);
             if (limit.expired()) throw expire();
             await sleep(Math.min(250, limit.remaining()));
           }
+        }
+      } else if (kind === 'clear') {
+        // idb cannot press ⌘A, and the tap may leave the caret anywhere in the text: move it to the end, then delete.
+        const target = value as Target;
+        const tree = await elements();
+        const element = await targetElement(target, tree);
+        const old = typeof element.AXValue === 'string' ? element.AXValue : '';
+        await press(target, element, tree);
+        // An empty field reports its placeholder as its value, which idb cannot read. A placeholder is the value a full
+        // delete pass leaves unchanged, so a value left after the first pass gets a second pass to tell them apart.
+        let current = old;
+        for (let pass = 0; current.length > 0; pass += 1) {
+          const count = Array.from(current).length;
+          await pressKey(rightArrowKey, count);
+          await pressKey(keyCodes.delete!, count);
+          const now = (await targetElement(target)).AXValue;
+          const next = typeof now === 'string' ? now : '';
+          if (next === current) break;
+          if (pass === 1 && next.length > 0) throw new Error(`could not clear ${describeTarget(target)}`);
+          current = next;
         }
       } else if (kind === 'tap' || kind === 'type') {
         if (kind === 'tap' && Number.isFinite(value.x) && Number.isFinite(value.y)) {
           await execute('idb', ['ui', 'tap', String(value.x), String(value.y), '--udid', udid]);
         } else {
           const target = value as Target;
-          const element = await targetElement(target);
-          const identifier = typeof element.AXUniqueId === 'string' && element.AXUniqueId.length > 0 ? element.AXUniqueId : undefined;
-          const matchKey = identifier ? 'AXUniqueId' : 'AXLabel';
-          const expectedKey = target.identifier !== undefined ? 'AXUniqueId' : 'AXLabel';
-          await execute('idb', ['ui', 'tap', identifier ?? target.label!, '--match-key', matchKey,
-            '--expected-key', expectedKey, '--expected-value', target.identifier ?? target.label!, '--api', 'axbridge', '--udid', udid]);
+          const tree = await elements();
+          await press(target, await targetElement(target, tree), tree);
         }
         if (kind === 'type') await execute('idb', ['ui', 'text', '--udid', udid, '--', value.text as string]);
+      } else if (kind === 'pressKey') {
+        await pressKey(keyCodes[value.key as string]!, (value.count as number | undefined) ?? 1);
+      } else if (kind === 'pressButton') {
+        // Backgrounds the app; a later action on it needs `launch` first.
+        await execute('idb', ['ui', 'button', 'HOME', '--udid', udid]);
+      } else if (kind === 'terminate') {
+        await terminateApp();
+      } else if (kind === 'openUrl') {
+        const confirm = value.confirm === true;
+        // Only the system prompt is pressed: a newly appeared "Open in “App”?" title with new Open and Cancel buttons.
+        // An app button labelled Open revealed by the deep link does not qualify.
+        const elementKey = (element: Element) => JSON.stringify([element.type ?? null, element.AXLabel ?? null, element.frame ?? null]);
+        const before = confirm ? new Set((await elements()).map(elementKey)) : undefined;
+        const appName = confirm ? await appDisplayName(run, udid, targetBundleId(config)) : undefined;
+        await execute('xcrun', ['simctl', 'openurl', udid, value.url as string]);
+        if (before) {
+          const giveUp = Date.now() + openPromptWaitMs;
+          while (true) {
+            const tree = await elements();
+            const fresh = tree.filter(element => !before.has(elementKey(element)));
+            const title = fresh.some(element => typeof element.AXLabel === 'string' && /^Open in [“"]/.test(element.AXLabel)
+              && (appName === undefined || element.AXLabel.includes(appName)));
+            const cancel = matchElements(fresh, { label: 'Cancel', type: 'button' }).length > 0;
+            const prompt = title && cancel ? matchElements(fresh, openPrompt)[0] : undefined;
+            if (prompt) {
+              await press(openPrompt, prompt, tree);
+              lines.push('openUrl confirmation: pressed Open');
+              break;
+            }
+            if (Date.now() >= giveUp || limit.expired()) {
+              lines.push('openUrl confirmation: no Open prompt appeared');
+              break;
+            }
+            await sleep(Math.min(250, limit.remaining()));
+          }
+        }
       } else if (kind === 'longPress') {
         const press = value as LongPress;
         const coordinates = Number.isFinite(press.x) && Number.isFinite(press.y)
@@ -205,15 +301,36 @@ export async function tryRunIdbPlan(config: LoadedConfig, plan: UiPlan, udid: st
         const tree = await elements();
         const element = findElement(tree, value as Target);
         const visible = elementVisible(tree, element);
-        const name = value.identifier ?? value.label;
+        const name = describeTarget(value as Target);
         if (kind === 'assertVisible' && !visible) throw new Error(`element is not visible: ${name}${element ? ' (exists but not hittable)' : ''}`);
         if (kind === 'assertNotVisible' && visible) throw new Error(`element is visible: ${name}`);
       } else if (kind === 'assertExists') {
-        if (!findElement(await elements(), value as Target)) throw new Error(`element does not exist: ${value.identifier ?? value.label}`);
+        if (!findElement(await elements(), value as Target)) throw new Error(`element does not exist: ${describeTarget(value as Target)}`);
       } else if (kind === 'assertValue') {
         const element = await targetElement(value as Target);
         if (element.AXValue !== value.value) {
           throw new Error(`element value does not match: expected ${String(value.value)}, got ${typeof element.AXValue === 'string' ? element.AXValue : 'nil'}`);
+        }
+      } else if (kind === 'assertText') {
+        const mismatch = textMismatch(value as { equals?: string; contains?: string; matches?: string }, elementText(await targetElement(value as Target)));
+        if (mismatch) throw new Error(mismatch);
+      } else if (kind === 'scrollUntilVisible') {
+        const target = value.target as Target;
+        const container = value.in as Target | undefined;
+        const direction = (value.direction as string | undefined) ?? 'up';
+        const maxSwipes = (value.maxSwipes as number | undefined) ?? 10;
+        for (let swipes = 0; ; swipes += 1) {
+          const tree = await elements();
+          if (elementVisible(tree, findElement(tree, target))) break;
+          if (swipes >= maxSwipes) throw new Error(`target not visible after ${swipes} swipes: ${describeTarget(target)}`);
+          const surface = container ? findElement(tree, container) : tree.find(candidate => candidate.type === 'Application');
+          if (!surface) throw new Error(container ? `container not found: ${describeTarget(container)}` : 'the application frame is unavailable');
+          const [from, to] = swipePoints(surface.frame ?? {}, direction);
+          await execute('idb', ['ui', 'swipe', String(Math.round(from.x)), String(Math.round(from.y)),
+            String(Math.round(to.x)), String(Math.round(to.y)), '--udid', udid]);
+          if (limit.expired()) throw expire();
+          await sleep(Math.min(scrollSettleMs, limit.remaining()));
+          if (limit.expired()) throw expire();
         }
       } else if (kind === 'screenshot') {
         const name = screenshotName(value.name);
@@ -222,12 +339,12 @@ export async function tryRunIdbPlan(config: LoadedConfig, plan: UiPlan, udid: st
         await execute('idb', ['screenshot', file, '--udid', udid]);
         screenshots.push(path.relative(config.root, file));
       } else if (kind === 'inspect') {
-        trees.push(JSON.stringify(await elements()));
+        inspections.push({ index, elements: normalizeIdbElements(await elements()) });
       }
     }
     return redactValue({
       run: path.relative(config.root, directory), udid, bundleId: targetBundleId(config),
-      backend: 'idb', actions: plan.actions.length, runnerResult: { completed: plan.actions.length, bundleId: targetBundleId(config), trees },
+      backend: 'idb', actions: plan.actions.length, runnerResult: { completed: plan.actions.length, bundleId: targetBundleId(config), inspections },
       screenshots, transcript: path.relative(config.root, transcript),
     }, config.redactions ?? []);
   } catch (error) {

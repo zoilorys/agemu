@@ -18,7 +18,7 @@ import { addMedia, simulatorUi, statusBar } from '../commands/simulator-settings
 import { createSimulator, deleteSimulator, eraseSimulator } from '../commands/simulator-lifecycle.js';
 import { diagnose, observe, showLogs, streamLogs } from '../commands/diagnostics.js';
 import { captureJsLogs } from '../commands/js-logs.js';
-import { buildUiRunner, runUiPlan } from '../commands/ui.js';
+import { buildUiRunner, inspectScreen, runUiPlan } from '../commands/ui.js';
 import { clean } from '../commands/clean.js';
 import { listCrashes } from '../commands/crashes.js';
 import { helpFor } from './help.js';
@@ -59,7 +59,7 @@ const recorded = new Set([
   'build', 'app install', 'app launch', 'app terminate', 'app restart', 'app open-url', 'app uninstall',
   'privacy grant', 'privacy revoke', 'privacy reset', 'push',
   'location set', 'location clear', 'location run',
-  'server start', 'server status', 'server stop', 'simulator boot', 'simulator shutdown', 'simulator ui', 'simulator status-bar', 'simulator add-media', 'simulator erase', 'ui build-runner', 'ui run', 'clean',
+  'server start', 'server status', 'server stop', 'simulator boot', 'simulator shutdown', 'simulator ui', 'simulator status-bar', 'simulator add-media', 'simulator erase', 'ui build-runner', 'ui run', 'ui inspect', 'clean',
   'crashes list',
 ]);
 const durationUnits: Record<string, number> = { s: 1_000, m: 60_000, h: 3_600_000, d: 86_400_000 };
@@ -190,6 +190,14 @@ try {
     } else if (command === 'ui' && subcommand === 'build-runner') {
       const timeoutMs = timeoutOption(parsed);
       data = await withConfig(key, (config) => buildUiRunner(config, { timeoutMs }, true));
+    } else if (command === 'ui' && subcommand === 'inspect') {
+      const backend = value(parsed, 'backend');
+      if (backend !== undefined && !['auto', 'idb', 'xctest'].includes(backend)) {
+        throw new CliError('UI_VALIDATION_FAILED', 'UI backend must be auto, idb, or xctest');
+      }
+      const timeoutMs = timeoutOption(parsed);
+      const all = parsed.flags.has('all');
+      data = await withConfig(key, (config) => inspectScreen(config, { backend: backend as 'auto' | 'idb' | 'xctest' | undefined, all, timeoutMs }));
     } else if (command === 'ui') {
       const plan = nonEmpty(parsed, 'plan', 'UI_VALIDATION_FAILED');
       const planJson = nonEmpty(parsed, 'plan-json', 'UI_VALIDATION_FAILED');
