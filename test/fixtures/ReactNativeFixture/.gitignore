@@ -1,0 +1,10 @@
+node_modules/
+vendor/bundle/
+ios/Pods/
+ios/build/
+ios/*.xcworkspace/
+ios/.xcode.env.local
+xcuserdata/
+.metro-health-check*
+.agemu.json
+.agemu/
