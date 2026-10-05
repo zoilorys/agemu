@@ -949,14 +949,61 @@ describe('UI backend selection', () => {
     '--api', 'axbridge', '--udid', 'PHONE'];
   const deleteKey = ['idb', 'ui', 'key', '42', '--udid', 'PHONE'];
 
-  it('clears an idb field by tapping it and deleting each character of its value', async () => {
-    const { output, inputs } = await runIdbKeys([{ clear: { identifier: 'nameField' } }], 'abc');
+  const tapFieldEnd = ['idb', 'ui', 'tap', '206', '136', '--udid', 'PHONE'];
+
+  /** Clears a fake field whose caret lands at `carets[n]` (capped at the text length) on the nth tap. */
+  const runIdbClear = async (text: string, carets: number[]) => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-idb-clear-'));
+    const inputs: string[][] = [];
+    let caret = 0;
+    let taps = 0;
+    try {
+      const output = await runUiPlan(nativeConfig(root), { json: JSON.stringify({ version: 1, actions: [{ clear: { identifier: 'nameField' } }] }) }, {
+        backend: 'idb',
+        run: async (executable, args) => {
+          if (executable !== 'idb' || args[0] !== 'ui') return result();
+          if (args[1] === 'describe-all') {
+            return result(JSON.stringify([{ AXUniqueId: 'nameField', AXValue: text, frame: { x: 10, y: 100, width: 200, height: 40 } }]));
+          }
+          inputs.push([executable, ...args]);
+          if (args[1] === 'tap') caret = Math.min(text.length, carets[Math.min(taps++, carets.length - 1)]!);
+          if (args[1] === 'key' && args[2] === '42' && caret > 0) { text = text.slice(0, caret - 1) + text.slice(caret); caret -= 1; }
+          return result();
+        },
+      }).catch((error: unknown) => error);
+      return { output, inputs, text };
+    } finally { await rm(root, { recursive: true, force: true }); }
+  };
+  const deletes = (count: number) => Array.from({ length: count }, () => deleteKey);
+
+  it('clears an idb field by tapping at the end of its text and deleting each character', async () => {
+    const { output, inputs, text } = await runIdbClear('abc', [3]);
     expect(output).toMatchObject({ backend: 'idb', runnerResult: { completed: 1 } });
-    expect(inputs).toEqual([tapNameField, deleteKey, deleteKey, deleteKey]);
+    expect(inputs).toEqual([tapFieldEnd, ...deletes(3)]);
+    expect(text).toBe('');
+  });
+
+  it('clears the text after the caret when a tap lands mid-text', async () => {
+    const { output, inputs, text } = await runIdbClear('abcdef', [4]);
+    expect(output).toMatchObject({ runnerResult: { completed: 1 } });
+    expect(inputs).toEqual([tapFieldEnd, ...deletes(6), tapFieldEnd, ...deletes(2)]);
+    expect(text).toBe('');
+  });
+
+  it('fails an idb clear that leaves text behind', async () => {
+    const { output, text } = await runIdbClear('abcdef', [4, 0]);
+    expect(text).toBe('ef');
+    expect(output).toMatchObject({ code: 'UI_DELIVERY_FAILED', details: { failedAction: { index: 0, kind: 'clear', message: 'could not clear nameField' } } });
+  });
+
+  it('treats unchanged text as a placeholder, as XCTest does', async () => {
+    const { output, inputs } = await runIdbClear('Name', [0]);
+    expect(output).toMatchObject({ runnerResult: { completed: 1 } });
+    expect(inputs).toEqual([tapFieldEnd, ...deletes(4)]);
   });
 
   it.each([['an empty value', ''], ['no value', undefined]])('clears an idb field with %s without keystrokes', async (_case, value) => {
-    expect((await runIdbKeys([{ clear: { identifier: 'nameField' } }], value)).inputs).toEqual([tapNameField]);
+    expect((await runIdbKeys([{ clear: { identifier: 'nameField' } }], value)).inputs).toEqual([tapFieldEnd]);
   });
 
   it('presses keys and the Home button through idb', async () => {

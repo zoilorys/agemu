@@ -255,6 +255,8 @@ final class AgentRunner: XCTestCase {
                 // An empty field reports its placeholder as its value, so text equal to the placeholder is
                 // indistinguishable here; deleting in an empty field is a no-op, so always delete old.count.
                 if !old.isEmpty {
+                    // The tap may leave the caret mid-text, so select all first; the deletes then remove the selection.
+                    candidate.typeKey("a", modifierFlags: .command)
                     candidate.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: old.count))
                     let new = candidate.value as? String ?? ""
                     if !new.isEmpty && new != (candidate.placeholderValue ?? "") { return "could not clear \(target.targetDescription)" }

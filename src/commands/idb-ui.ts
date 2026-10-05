@@ -96,6 +96,13 @@ function center(element: Element): [number, number] {
   return [Math.round(frame.x! + frame.width! / 2), Math.round(frame.y! + frame.height! / 2)];
 }
 
+/** A point just inside the element's bottom-right corner, where a tap leaves the caret after the last character. */
+function textEnd(element: Element): [number, number] {
+  const [x, y] = center(element);
+  const frame = element.frame!;
+  return [Math.round(x + Math.max(0, frame.width! / 2 - 4)), Math.round(y + Math.max(0, frame.height! / 2 - 4))];
+}
+
 function swipePoints(frame: NonNullable<Element['frame']>, direction: string): [Point, Point] {
   if (!Number.isFinite(frame.x) || !Number.isFinite(frame.y) || !Number.isFinite(frame.width) || !Number.isFinite(frame.height)) {
     throw new Error('The matched element has no usable screen frame');
@@ -219,19 +226,36 @@ export async function tryRunIdbPlan(config: LoadedConfig, plan: UiPlan, udid: st
             await sleep(Math.min(250, limit.remaining()));
           }
         }
-      } else if (kind === 'tap' || kind === 'type' || kind === 'clear') {
-        let deletions = 0;
+      } else if (kind === 'clear') {
+        // idb cannot press ⌘A, so tap at the end of the text and delete backwards. A tap may still land mid-text
+        // (scrolled or multi-line text), so delete again while that removes something, and fail if text is left.
+        const target = value as Target;
+        const text = (element: Element) => typeof element.AXValue === 'string' ? element.AXValue : '';
+        let element = await targetElement(target);
+        const original = text(element);
+        let remaining = original;
+        while (true) {
+          const [x, y] = textEnd(element);
+          await execute('idb', ['ui', 'tap', String(x), String(y), '--udid', udid]);
+          if (remaining.length === 0) break;
+          await pressKey(keyCodes.delete!, Array.from(remaining).length);
+          element = await targetElement(target);
+          const next = text(element);
+          const deleted = next !== remaining;
+          remaining = next;
+          // Nothing deleted: an empty field reporting its placeholder, as on XCTest.
+          if (!deleted || remaining.length === 0) break;
+        }
+        if (remaining.length > 0 && remaining !== original) throw new Error(`could not clear ${describeTarget(target)}`);
+      } else if (kind === 'tap' || kind === 'type') {
         if (kind === 'tap' && Number.isFinite(value.x) && Number.isFinite(value.y)) {
           await execute('idb', ['ui', 'tap', String(value.x), String(value.y), '--udid', udid]);
         } else {
           const target = value as Target;
           const tree = await elements();
-          const element = await targetElement(target, tree);
-          if (typeof element.AXValue === 'string') deletions = Array.from(element.AXValue).length;
-          await press(target, element, tree);
+          await press(target, await targetElement(target, tree), tree);
         }
         if (kind === 'type') await execute('idb', ['ui', 'text', '--udid', udid, '--', value.text as string]);
-        if (kind === 'clear') await pressKey(keyCodes.delete!, deletions);
       } else if (kind === 'pressKey') {
         await pressKey(keyCodes[value.key as string]!, (value.count as number | undefined) ?? 1);
       } else if (kind === 'pressButton') {
