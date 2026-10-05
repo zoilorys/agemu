@@ -35,6 +35,7 @@ const openPrompt: Target = { label: 'Open', type: 'button' };
 const openPromptWaitMs = 2_000;
 /** HID keyboard usage codes for `idb ui key`. */
 const keyCodes: Record<string, string> = { return: '40', delete: '42', tab: '43', space: '44' };
+const rightArrowKey = '79';
 
 /** Screenshot file-name stem shared by both backends; AgentRunner.swift applies the same rule. */
 export function screenshotName(name: unknown): string {
@@ -94,13 +95,6 @@ function center(element: Element): [number, number] {
     throw new Error('The matched element has no usable screen frame');
   }
   return [Math.round(frame.x! + frame.width! / 2), Math.round(frame.y! + frame.height! / 2)];
-}
-
-/** A point just inside the element's bottom-right corner, where a tap leaves the caret after the last character. */
-function textEnd(element: Element): [number, number] {
-  const [x, y] = center(element);
-  const frame = element.frame!;
-  return [Math.round(x + Math.max(0, frame.width! / 2 - 4)), Math.round(y + Math.max(0, frame.height! / 2 - 4))];
 }
 
 function swipePoints(frame: NonNullable<Element['frame']>, direction: string): [Point, Point] {
@@ -227,26 +221,20 @@ export async function tryRunIdbPlan(config: LoadedConfig, plan: UiPlan, udid: st
           }
         }
       } else if (kind === 'clear') {
-        // idb cannot press ⌘A, so tap at the end of the text and delete backwards. A tap may still land mid-text
-        // (scrolled or multi-line text), so delete again while that removes something, and fail if text is left.
+        // idb cannot press ⌘A, and the tap may leave the caret anywhere in the text: move it to the end, then delete.
         const target = value as Target;
-        const text = (element: Element) => typeof element.AXValue === 'string' ? element.AXValue : '';
-        let element = await targetElement(target);
-        const original = text(element);
-        let remaining = original;
-        while (true) {
-          const [x, y] = textEnd(element);
-          await execute('idb', ['ui', 'tap', String(x), String(y), '--udid', udid]);
-          if (remaining.length === 0) break;
-          await pressKey(keyCodes.delete!, Array.from(remaining).length);
-          element = await targetElement(target);
-          const next = text(element);
-          const deleted = next !== remaining;
-          remaining = next;
-          // Nothing deleted: an empty field reporting its placeholder, as on XCTest.
-          if (!deleted || remaining.length === 0) break;
+        const tree = await elements();
+        const element = await targetElement(target, tree);
+        const old = typeof element.AXValue === 'string' ? element.AXValue : '';
+        await press(target, element, tree);
+        if (old.length > 0) {
+          const count = Array.from(old).length;
+          await pressKey(rightArrowKey, count);
+          await pressKey(keyCodes.delete!, count);
+          const now = (await targetElement(target)).AXValue;
+          // An empty field reports its placeholder as its value, so unchanged text counts as cleared, as on XCTest.
+          if (typeof now === 'string' && now.length > 0 && now !== old) throw new Error(`could not clear ${describeTarget(target)}`);
         }
-        if (remaining.length > 0 && remaining !== original) throw new Error(`could not clear ${describeTarget(target)}`);
       } else if (kind === 'tap' || kind === 'type') {
         if (kind === 'tap' && Number.isFinite(value.x) && Number.isFinite(value.y)) {
           await execute('idb', ['ui', 'tap', String(value.x), String(value.y), '--udid', udid]);
