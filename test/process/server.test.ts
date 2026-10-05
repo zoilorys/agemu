@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
-import { execFileSync } from 'node:child_process';
+import { mkdtemp, mkdir, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
+import { execFileSync, spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createServer } from 'node:net';
@@ -19,6 +19,55 @@ async function freePort(): Promise<number> {
 }
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
 describe('Metro server', () => {
+  it('bounds readiness inspection even when a listener trickles an unfinished response', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-server-trickle-'));
+    roots.push(root);
+    const listener = createHttpServer((_request, response) => {
+      const timer = setInterval(() => response.write(' '), 50);
+      response.once('close', () => clearInterval(timer));
+    });
+    await new Promise<void>(resolve => listener.listen(0, '127.0.0.1', resolve));
+    const port = (listener.address() as { port: number }).port;
+    const config: LoadedConfig = { version: 2, platform: 'ios', root, simulator: { udid: 'unused' }, app: { type: 'expo', root, port, launchTarget: 'expo-go', hostBundleId: 'host.exp.Exponent' } };
+    try {
+      const started = performance.now();
+      expect(await server(config, 'status')).toMatchObject({ running: false, owned: false, collision: true });
+      expect(performance.now() - started).toBeLessThan(3000);
+      expect(listener.listening).toBe(true);
+    } finally { await new Promise<void>(resolve => listener.close(() => resolve())); }
+  });
+
+  it.each([0, -1, '123', 1.5])('rejects unsafe cached supervisor PID %s before identity inspection', async pid => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-server-invalid-'));
+    roots.push(root);
+    await mkdir(path.join(root, '.agemu'));
+    const config: LoadedConfig = { version: 2, platform: 'ios', root, simulator: { udid: 'unused' }, app: { type: 'expo', root, port: await freePort(), launchTarget: 'expo-go', hostBundleId: 'host.exp.Exponent' } };
+    await writeFile(path.join(root, '.agemu/server.json'), JSON.stringify({ root, port: config.app.port, pid, startedAt: 'then', token: 'test-token', command: 'expo start --go', log: path.join(root, '.agemu/metro.log') }));
+    let inspected = false;
+    await expect(server(config, 'stop', { processIdentity: async () => { inspected = true; return undefined; } })).rejects.toMatchObject({ code: 'CONFIG_INVALID' });
+    expect(inspected).toBe(false);
+  });
+
+  it.each(['reused before inspection', 'reused before signalling', 'foreign project'])('does not signal a supervisor %s', async scenario => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-server-ownership-'));
+    roots.push(root);
+    const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+    const closed = new Promise<void>(resolve => child.once('close', () => resolve()));
+    try {
+      await mkdir(path.join(root, '.agemu'));
+      const recordedPort = await freePort();
+      const projectRoot = await realpath(root);
+      const config: LoadedConfig = { version: 2, platform: 'ios', root, simulator: { udid: 'unused' }, app: { type: 'expo', root, port: await freePort(), launchTarget: 'expo-go', hostBundleId: 'host.exp.Exponent' } };
+      const state = { root: scenario === 'foreign project' ? path.dirname(projectRoot) : projectRoot, port: recordedPort, pid: child.pid, startedAt: 'original start', token: 'test-token', command: 'expo start --go', log: path.join(root, '.agemu/metro.log') };
+      await writeFile(path.join(root, '.agemu/server.json'), JSON.stringify(state));
+      let inspection = 0;
+      const inspect = async () => ({ startedAt: scenario === 'reused before inspection' || (scenario === 'reused before signalling' && ++inspection > 1) ? 'new process start' : 'original start', command: 'node server-child test-token' });
+      if (scenario === 'foreign project') await expect(server(config, 'stop', { processIdentity: inspect })).rejects.toThrow(/stop it before changing/);
+      else expect(await server(config, 'stop', { processIdentity: inspect })).toMatchObject({ stopped: false });
+      expect(() => process.kill(child.pid!, 0)).not.toThrow();
+    } finally { child.kill('SIGTERM'); await closed; }
+  });
+
   it('starts, reuses, and stops a real project child', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'agemu-server-'));
     roots.push(root);

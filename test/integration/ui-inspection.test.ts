@@ -1,4 +1,4 @@
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -87,6 +87,11 @@ describe.skipIf(!enabled)('ui inspection fixture', () => {
     expect(visible.elements).toContainEqual(expect.objectContaining({ identifier: 'saveButton', visible: true }));
     expect(visible.elements).not.toContainEqual(expect.objectContaining({ label: 'Item 24' }));
     expect(visible.screenshot).toEqual(expect.any(String));
+    expect(visible).toMatchObject({ backend: 'xctest', completed: 2, actions: 2, foreground: null, foregroundUnavailable: expect.stringContaining('Neither XCTest'), recordings: [], inspections: [expect.objectContaining({ index: 0 })] });
+    const png = await readFile(path.join(root, visible.screenshot!));
+    expect(png.subarray(0, 8).toString('hex')).toBe('89504e470d0a1a0a');
+    expect(png.readUInt32BE(16)).toBeGreaterThan(0);
+    expect(png.readUInt32BE(20)).toBeGreaterThan(0);
 
     const all = data(await run(['ui', 'inspect', '--backend=xctest', '--all']), 'ui inspect --all') as unknown as Inspected;
     expect(all.elements).toContainEqual(expect.objectContaining({ label: 'Item 24', visible: false }));
@@ -111,7 +116,7 @@ describe.skipIf(!enabled)('ui inspection fixture', () => {
     const offscreen = await run(['ui', 'run', '--backend=xctest', '--plan-json=' + JSON.stringify({
       version: 1, actions: [{ assertVisible: { identifier: 'row', index: 24 } }],
     })]);
-    expect(offscreen).toMatchObject({ ok: false, error: { code: 'UI_DELIVERY_FAILED', details: { failedAction: { index: 0, kind: 'assertVisible', message: expect.stringContaining('exists but not hittable') } } } });
+    expect(offscreen).toMatchObject({ ok: false, error: { code: 'UI_DELIVERY_FAILED', details: { failedAction: { index: 0, kind: 'assertVisible', message: expect.stringContaining('no on-screen geometry') } } } });
   }, 300_000);
 
   test('types, taps, and opens URLs in the fixture', async () => {
@@ -147,7 +152,7 @@ describe.skipIf(!enabled)('ui inspection fixture', () => {
     const opened = data(await run(['ui', 'run', '--backend=xctest', '--plan-json=' + JSON.stringify({
       version: 1, actions: [
         { launch: {} },
-        { openUrl: { url: 'agemufixture://deep/link' } },
+        { openUrl: { url: 'agemufixture://deep/link', confirm: true } },
         { wait: { duration: 1 } },
         { assertValue: { identifier: 'gestureStatus', value: 'opened:deep/link' } },
         { terminate: {} },
@@ -169,10 +174,10 @@ describe.skipIf(!enabled)('ui inspection fixture', () => {
     expect(scrolled).toMatchObject({ backend: 'xctest', runnerResult: { completed: 4 } });
 
     const mismatch = await run(['ui', 'run', '--backend=xctest', '--plan-json=' + JSON.stringify({
-      version: 1, actions: [{ launch: {} }, { assertText: { identifier: 'gestureStatus', equals: 'wrong' } }],
+      version: 1, actions: [{ launch: {} }, { inspect: {} }, { assertText: { identifier: 'gestureStatus', equals: 'wrong' } }],
     })]);
-    expect(mismatch).toMatchObject({ ok: false, error: { code: 'UI_DELIVERY_FAILED', details: { failedAction: {
-      index: 1, kind: 'assertText', message: expect.stringMatching(/^text does not match: expected equals wrong, got idle/),
+    expect(mismatch).toMatchObject({ ok: false, error: { code: 'UI_DELIVERY_FAILED', details: { completed: 2, inspections: [expect.objectContaining({ index: 1, elements: expect.arrayContaining([expect.objectContaining({ identifier: 'gestureStatus', value: 'idle' })]) })], failedAction: {
+      index: 2, kind: 'assertText', message: expect.stringMatching(/^text does not match: expected equals wrong, got idle/),
     } } } });
   }, 600_000);
 
@@ -206,7 +211,6 @@ describe.skipIf(!enabled)('ui inspection fixture', () => {
     expect(cleared).toMatchObject({ backend: 'xctest', runnerResult: { completed: 7 } });
   }, 300_000);
 
-  // Must stay last: it leaves the app backgrounded.
   test('clears a field, presses return, and presses Home', async () => {
     const edited = data(await run(['ui', 'run', '--backend=xctest', '--plan-json=' + JSON.stringify({
       version: 1, actions: [
@@ -221,10 +225,21 @@ describe.skipIf(!enabled)('ui inspection fixture', () => {
     })]), 'ui run clear and return');
     expect(edited).toMatchObject({ backend: 'xctest', runnerResult: { completed: 7 } });
 
-    // Home backgrounds the app; later tests must start with launch.
+    // Home must invalidate visibility without discarding cached geometry; relaunch restores visibility.
     const home = data(await run(['ui', 'run', '--backend=xctest', '--plan-json=' + JSON.stringify({
-      version: 1, actions: [{ launch: {} }, { pressButton: { button: 'home' } }, { assertNotVisible: { identifier: 'saveButton' } }],
+      version: 1, actions: [{ launch: {} }, { inspect: {} }, { pressButton: { button: 'home' } },
+        { assertNotVisible: { identifier: 'saveButton' } }, { inspect: {} },
+        { launch: {} }, { assertVisible: { identifier: 'saveButton' } }, { inspect: {} }],
     })]), 'ui run home');
-    expect(home).toMatchObject({ backend: 'xctest', runnerResult: { completed: 3 } });
+    expect(home).toMatchObject({ backend: 'xctest', runnerResult: { completed: 8 } });
+    const inspections = home.inspections as Array<{ index: number; elements: Array<{ identifier?: string; visible: boolean; frame: { width: number; height: number } }> }>;
+    expect(inspections.map(inspection => inspection.index)).toEqual([1, 4, 7]);
+    expect(inspections[0]!.elements).toContainEqual(expect.objectContaining({ identifier: 'saveButton', visible: true }));
+    expect(inspections[1]!.elements.every(element => !element.visible)).toBe(true);
+    const cachedSave = inspections[1]!.elements.find(element => element.identifier === 'saveButton');
+    expect(cachedSave).toBeDefined();
+    expect(cachedSave!.frame.width).toBeGreaterThan(0);
+    expect(cachedSave!.frame.height).toBeGreaterThan(0);
+    expect(inspections[2]!.elements).toContainEqual(expect.objectContaining({ identifier: 'saveButton', visible: true }));
   }, 600_000);
 });

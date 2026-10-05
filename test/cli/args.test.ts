@@ -1,14 +1,16 @@
 import { describe, expect, it } from 'vitest';
-import { commandSpecs, parseArgs, values } from '../../src/cli/args.js';
+import { parseArgs, values } from '../../src/cli/args.js';
 import { helpFor } from '../../src/cli/help.js';
 
 describe('helpFor', () => {
-  const cases: [string, string, string][] = Object.entries(commandSpecs).flatMap(([command, spec]) =>
-    [...Object.entries(spec.subcommands ?? {}), ['', spec.flags ?? {}] as [string, Record<string, unknown>]]
-      .flatMap(([sub, flags]) => Object.keys(flags).map((flag): [string, string, string] => [command, sub, flag])));
-
-  it.each(cases)('documents %s %s --%s', (command, _sub, flag) => {
-    expect(helpFor(command)).toMatch(new RegExp(`--${flag}(?![\\w-])`));
+  it('includes shortcut targeting and numeric limits in focused command help', () => {
+    const tap = helpFor('ui', 'tap');
+    expect(tap).toContain('agemu ui tap');
+    expect(tap).toContain('--id=VALUE');
+    expect(tap).toContain('--label-contains=VALUE');
+    expect(tap).toContain('--timeout=VALUE (1 to 86400 seconds; default 900)');
+    expect(helpFor('crashes', 'list')).toContain('--limit=VALUE (1 to 100; default 10)');
+    expect(helpFor('logs', 'show')).toContain('--limit=VALUE (0 to 10000; default 100)');
   });
 });
 

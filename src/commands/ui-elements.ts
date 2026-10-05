@@ -12,14 +12,14 @@ export type UiElement = {
   visible: boolean;
   enabled?: boolean;
   selected?: boolean;
-  depth?: number;
+  depth: number | null;
 };
 export type Inspection = { index: number; elements: UiElement[] };
 
 /** Element serialized by AgentRunner.swift (`Node`). */
 export type XctestNode = {
   type?: unknown; identifier?: unknown; label?: unknown; value?: unknown;
-  x?: unknown; y?: unknown; width?: unknown; height?: unknown; enabled?: unknown; selected?: unknown; depth?: unknown;
+  x?: unknown; y?: unknown; width?: unknown; height?: unknown; enabled?: unknown; selected?: unknown; depth?: unknown; visible?: unknown;
 };
 
 const knownTypes = new Set(['application', 'window', 'button', 'staticText', 'textField', 'secureTextField', 'searchField', 'textView',
@@ -62,16 +62,17 @@ export function finiteFrame(frame: Frame | undefined): frame is Required<Frame> 
 }
 
 /** Positive size and, when a screen frame is known, intersection with it. Shared by both backends. */
-function frameVisible(frame: Frame | undefined, screen: Frame | undefined): boolean {
+export function frameVisible(frame: Frame | undefined, screen: Frame | undefined): boolean {
   if (!finiteFrame(frame) || frame.width <= 0 || frame.height <= 0) return false;
   if (!finiteFrame(screen)) return true;
+  if (screen.width <= 0 || screen.height <= 0) return false;
   return frame.x < screen.x + screen.width && frame.x + frame.width > screen.x
     && frame.y < screen.y + screen.height && frame.y + frame.height > screen.y;
 }
 
 /**
- * Mirrors XCTest `exists && isHittable` as closely as the AX tree allows: a positive-size frame that intersects the
- * screen. The screen is the first `type === 'Application'` element's frame; if idb names that element differently
+ * Visibility means nonempty geometry intersecting the screen, independent of hittability. The
+ * screen is the first `type === 'Application'` element's frame; if idb names that element differently
  * (the field varies by idb version), the intersection check is skipped.
  */
 export function elementVisible(elements: IdbElement[], element: IdbElement | undefined): boolean {
@@ -100,6 +101,7 @@ function element(type: string, identifier: unknown, label: unknown, value: unkno
     ...(strings.value === undefined ? {} : { value: strings.value }),
     frame: finiteFrame(frame) ? { x: frame.x, y: frame.y, width: frame.width, height: frame.height } : { x: 0, y: 0, width: 0, height: 0 },
     visible: frameVisible(frame, screen),
+    depth: null,
   };
 }
 
@@ -146,9 +148,11 @@ export function normalizeXctestNodes(raw: unknown): UiElement[] {
   return nodes.map((node) => {
     const type = typeof node.type === 'string' && knownTypes.has(node.type) ? node.type : 'other';
     const normalized = element(type, node.identifier, node.label, node.value, frameOf(node), screen);
+    // New runners qualify geometry with configured-app state; old fixture nodes retain geometry semantics.
+    if (typeof node.visible === 'boolean') normalized.visible = normalized.visible && node.visible;
     if (typeof node.enabled === 'boolean') normalized.enabled = node.enabled;
     if (typeof node.selected === 'boolean') normalized.selected = node.selected;
-    if (Number.isInteger(node.depth)) normalized.depth = node.depth as number;
+    if (Number.isSafeInteger(node.depth) && (node.depth as number) >= 0) normalized.depth = node.depth as number;
     return normalized;
   });
 }

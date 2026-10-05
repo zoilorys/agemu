@@ -19,7 +19,7 @@
 - More commands append to `.agemu/events.jsonl`, so `diagnose` `recentErrors` reports more failures.
 - UI plans stop at the first failed action on both backends. `UI_DELIVERY_FAILED` details add `failedAction` (`index`, `kind`, `message`) and `completed`.
 - XCTest runs return `screenshots` PNG paths like idb runs; failed plans on both backends return `failureScreenshot`.
-- `assertVisible` requires the element to be on screen and hittable. New `assertExists` and `assertNotVisible` actions.
+- `assertVisible` requires nonempty on-screen geometry. Hittability is separate. `assertExists` and `assertNotVisible` distinguish existence from visibility.
 - UI plans are validated completely before running: unknown actions or fields, and actions that were previously skipped silently, fail with `UI_VALIDATION_FAILED`.
 - `build`, `ui build-runner`, and `ui run` accept `--timeout=SECONDS` and fail with `PROCESS_TIMEOUT` when it expires.
 - Build logs are plain text. `BUILD_FAILED` details include parsed compiler `errors`. A failed XCTest runner build returns `BUILD_FAILED` instead of `UI_DELIVERY_FAILED`.
@@ -123,6 +123,50 @@ agemu doctor --pretty
 
 Checks marked `advisory: true` (Simulator booted, idb usable, `.agemu/` git-ignored) are informational and do not affect `ready`.
 
+## Discover commands and results
+
+```sh
+agemu commands --runtime=native
+agemu capabilities --runtime=expo-go
+agemu ui tap --help
+```
+
+`commands` and `capabilities` work without a configuration and list runtime support, option types/defaults/bounds, required/repeated flags, destructive guards and recording policy. Runtime profiles are `native`, `react-native`, `expo-development-build` and `expo-go`. Their availability describes runtime support; it does not probe a live device or certify installed tools. Unknown configuration/tool readiness is explicitly null with a reason. Use `doctor` for prerequisites. Parsing, generated command/option help, discovery and dispatch share one registry.
+
+Successful dispatched commands retain their existing fields and add common metadata:
+
+| Field | Meaning |
+| --- | --- |
+| `action` | Command action; preserves existing command-specific values. |
+| `udid`, `bundleId` | Observed device/app scope, or null when inapplicable or unavailable. Inventory commands have null app scope. |
+| `run` | Relative evidence run directory, or null when no run was created. |
+| `capturedAt` | ISO timestamp; the existing evidence timestamp when available, otherwise response generation time. |
+| `artifacts` | `screenshots`, `recordings`, `logs`, `reports` and `files` arrays; nullable `transcript` and named `backend` evidence. Empty arrays mean no evidence. |
+
+JSON envelopes remain `{ "ok": true, "data": ... }` or `{ "ok": false, "error": { "code", "message", "details"? } }`. Help/version keep their established envelopes. Artifact paths and aliases are retained: `screenshot`, `screenshots`, `recordings`, `artifact`, `logs.build`, `logs.settings`, `resultBundle`, `manifest` and `runnerResult`. A build product's `appPath` is a product, not a captured evidence file.
+
+Every build result includes `appType`. Native/React Native builds also include `target`, `derivedData` and `logs.settings`; Expo development builds return null for those three native-only fields; Expo Go uses an installed host and cannot build/install through agemu. Diagnostics always include nullable `evidence.build` and `evidence.host`, plus `evidence.availability.{build,host}` with separate `applicable` and `available` booleans. Unavailable applicable evidence also has a reason in `failures`.
+
+## Inspect and control one step
+
+```sh
+agemu app status
+agemu app list
+agemu app reload
+agemu clipboard write --text='exact text'
+agemu clipboard read
+agemu ui tap --id=saveButton --backend=xctest
+agemu ui type --id=nameField --text=Ada
+agemu ui assert-value --id=gestureStatus --value=saved:Ada
+agemu ui screenshot --name=current
+```
+
+`app status` returns exact UIKit service/PID evidence for `running`/`pid`, or null with a reason when inspection is unavailable/ambiguous. `foreground` is always null with an explicit limitation. `app list` returns a sorted installed app inventory with nullable name/executable/type fields. `app reload` requires a matching ready Metro/Expo project server and requests `/reload`; success confirms request acceptance, not completed app reload. Native apps reject it. Clipboard commands require a booted Simulator; writes preserve exact text through stdin, accept an empty string and exclude input from process arguments and event summaries.
+
+One-action UI shortcuts use the same validator and executor as plans: `launch`, `terminate`, `tap`, `type`, `clear`, `wait`, `long-press`, `swipe`, `assert-visible`, `assert-exists`, `assert-not-visible`, `assert-value`, `assert-text`, `screenshot`, `press-key`, `press-button` and `open-url`. Targets use `--id`, `--label`, `--label-contains`, `--type` and `--index`. Coordinate swipes accept `--from=x,y --to=x,y`. `--wait-timeout` bounds an element wait; `--timeout` always bounds the whole command. Pass `--confirm` to consent to URL prompts. Recording pairs and nested scroll actions remain ordinary JSON plans.
+
+Both backend UI results are flat: `backend`, `bundleId`, `actions` (submitted count), `completed`, `screenshots`, `recordings`, `inspections`, `transcript` and `backendArtifacts`. The compatibility `runnerResult` aliases completed/bundle/inspection data. Empty evidence arrays remain present when recording or screenshots are absent. Screenshot and inspection indexes refer to the original submitted plan across recording boundaries. Failures preserve the same accumulated evidence and a nullable `failedAction`; `failureScreenshot` is available when capture succeeds.
+
 ## Build and run a native app
 
 ```sh
@@ -202,7 +246,7 @@ For React Native and Expo, `diagnose` includes server status, the last server ou
 
 `diagnose` also returns `evidence.crashes` (see [Investigate failures](#investigate-failures)) and `window`, which reports the start and source of the `logs` and `crashes` windows. Without `--since` or `--last`, both start at the latest agemu launch of the configured app when one is recorded.
 
-`agemu` writes build state, logs, screenshots, and test results to `.agemu/`. Add that directory to the app repository's `.gitignore`. Each `build`, `app`, `server`, `simulator boot|shutdown`, `ui`, `observe`, `logs show`, `diagnose`, and `clean` run appends one redacted event to `.agemu/events.jsonl`; `diagnose` reports recent failures from it. The file is append-only and is never trimmed.
+`agemu` writes build state, logs, screenshots, and test results to `.agemu/`. Add that directory to the app repository's `.gitignore`. Mutating workflows and evidence commands append redacted events to `.agemu/events.jsonl`; `commands` reports each command's recording policy. Recording is best effort: a write failure never changes success or replaces the primary error. Lock contention uses a 100 ms budget per event. `diagnose` also records its individual evidence collectors and reports recent failures. The file is append-only and is never trimmed.
 
 ## Run a UI plan
 
@@ -233,13 +277,13 @@ Run the plan:
 agemu ui run --plan=ui-plan.json
 ```
 
-`ui run` uses `idb` when an installed companion supports the plan. Otherwise it uses the bundled XCTest runner. [Install idb](https://fbidb.io/docs/idb/installation/) to enable this path. Use `--backend=xctest` when you need an `.xcresult` bundle, or `--backend=idb` to require `idb`. An `idb` run returns `backend`, `transcript`, and `screenshots` paths. An XCTest run returns `backend`, `runnerCached`, `resultBundle`, `transcript`, and `screenshots` exported from the result bundle. Both backends name screenshots `screenshots/<index>-<name>.png`. If XCTest export fails, the run keeps its outcome and reports `screenshotExportError`.
+`ui run` uses `idb` when an installed companion supports the plan. Otherwise it uses the bundled XCTest runner. [Install idb](https://fbidb.io/docs/idb/installation/) to enable this path. Use `--backend=xctest` when you need an `.xcresult` bundle, or `--backend=idb` to require `idb`. Both backends return the flat UI result described above. XCTest also returns `runnerCached` and `resultBundle`; its PNGs are exported from the result bundle. `ui build-runner` returns the `manifest` path. Both backends name screenshots `screenshots/<index>-<name>.png`. A non-timeout XCTest export failure keeps the action outcome and reports `screenshotExportError`; export deadline expiry returns `PROCESS_TIMEOUT` with completed evidence.
 
 A plan stops at the first failed action. The `UI_DELIVERY_FAILED` error reports `details.failedAction` when known (`index` in the submitted plan, `kind`, `message`), `details.completed` (actions finished), and `details.failureScreenshot` when a failure screenshot was captured. A failed XCTest runner build returns `BUILD_FAILED`.
 
-`--timeout=SECONDS` (1 to 86400) bounds `build` (default 1800), `ui build-runner` (default 900), and `ui run` (default 900, covering the whole plan including a runner build). A timeout fails with `PROCESS_TIMEOUT`. After an XCTest timeout, agemu terminates the runner and the app and returns `lastStartedAction` when known.
+`--timeout=SECONDS` (1 to 86400) bounds `build` (default 1800), `ui build-runner` (default 900), and `ui run` (default 900, covering the whole plan including a runner build). A timeout fails with `PROCESS_TIMEOUT`. The shared deadline covers device selection, plan IO, runner build/cache, Expo URL preflight, actions, recordings and screenshot export. After a timeout, bounded cleanup stops active recordings and runners. An executing `ui run` may terminate the configured app; read-only `ui inspect` keeps it running. Failure details preserve `failedAction` (or null when no action failed), `completed`, `screenshots`, `recordings` and `inspections`; the legacy `lastStartedAction` alias may also be present.
 
-`startVideoRecording` begins capturing the selected Simulator to an MP4 in the run directory. `stopVideoRecording` finishes that file. Put the pair around the entire sequence you want to show, including waits and screenshots. Keep it open until the last action; use another pair only when you want a separate clip. Starts cannot overlap, and every start needs a stop. The optional `name` labels the file. Plans with recordings return `recordings` paths. idb also returns `segments` results for actions between recording boundaries. If an action fails, agemu stops the active recording before returning the error.
+`startVideoRecording` begins capturing the selected Simulator to an MP4 in the run directory. `stopVideoRecording` finishes that file. Put the pair around the entire sequence you want to show, including waits and screenshots. Keep it open until the last action; use another pair only when you want a separate clip. Starts cannot overlap, and every start needs a stop. The optional `name` labels the file. Plans with recordings return `recordings` paths. Recording keeps the same top-level result and submitted action indexes on both backends; it does not introduce segmented results. If an action fails, agemu stops the active recording before returning the error.
 
 For a short plan, pass JSON directly:
 
@@ -249,7 +293,7 @@ agemu ui run --plan-json='{"version":1,"actions":[{"screenshot":{"name":"current
 
 Targets accept an accessibility `identifier`, an exact `label`, and the other fields described in [Targets](#targets). The `tap` and `longPress` actions also accept `x` and `y` screen coordinates. `longPress` holds for `duration` seconds (default `1`). Swipe a scrollable element with `{ "swipe": { "direction": "up", "identifier": "resultsList", "duration": 0.3 } }`, or swipe the whole screen by omitting the target. Directions are `up`, `down`, `left`, and `right`; they describe finger movement, so swiping up scrolls content down the page. For a precise path, use `{ "swipe": { "from": { "x": 100, "y": 500 }, "to": { "x": 100, "y": 100 }, "duration": 0.3 } }`. `idb` uses the requested duration; XCTest uses gesture velocity to approximate it. Screen swipes without a target use XCTest. `wait` accepts a target and optional `timeout` to wait for an element, or `duration` in seconds to pause before the next action. Use a timed wait after a swipe before capturing an animation-sensitive screenshot. For `idb`, targeted taps use an accessibility press with an exact-value guard when the element has a unique identifier or label; otherwise they tap the center of its reported frame and log `coordinate fallback` in the transcript. Follow a tap with `wait` or an assertion for the expected result. The `inspect` action returns the screen's elements in `runnerResult.inspections` (see [Inspect the screen](#inspect-the-screen)).
 
-Assertions take a target (see [Targets](#targets)). `assertVisible` passes only when the element is on screen and hittable; `assertExists` passes when the element is in the accessibility tree, even off screen; `assertNotVisible` passes when the element is absent or not on screen; `assertValue` compares the element's accessibility value with `value`. Plans are validated completely before any Simulator interaction: unknown actions, unknown fields, and missing targets or text fail with `UI_VALIDATION_FAILED`.
+Assertions take a target (see [Targets](#targets)). `assertVisible` passes when the element has nonempty on-screen geometry, independently of hittability. XCTest also requires the configured app to be `runningForeground`; background or stopped apps are not visible even when XCTest retains cached frames. This state qualification does not certify foreground identity. `assertExists` passes when the element is in the accessibility tree, even off screen; `assertNotVisible` passes when the element is absent or not on screen; `assertValue` compares the element's accessibility value with `value`. Plans are validated completely before any Simulator interaction: unknown actions, unknown fields, and missing targets or text fail with `UI_VALIDATION_FAILED`.
 
 The bundled XCTest runner needs no macOS Accessibility or Screen Recording permission. XCTest runs save an `.xcresult` bundle and `xcodebuild.log` under `.agemu/runs/`. Its build is reused until runner sources change; `runnerCached` reports whether the run used that build. `idb` runs save `idb.log` and any requested screenshots there.
 
@@ -259,9 +303,9 @@ The bundled XCTest runner needs no macOS Accessibility or Screen Recording permi
 agemu ui inspect [--backend=auto|idb|xctest] [--all] [--timeout=SECONDS]
 ```
 
-Reads the running app's current screen and returns the elements and a screenshot in one response, so you can find identifiers and labels before writing a plan. It is read-only: it never launches, terminates, or taps the app, even on timeout. The app must already be running (`agemu app launch`); otherwise it fails with `UI_DELIVERY_FAILED` and a hint to launch it. With `idb` or `auto`, agemu checks that the app is running with `launchctl` first. Because `idb` reads whichever app is in the foreground, an `idb` inspection also fails with `UI_DELIVERY_FAILED` ("is not in the foreground") when the foreground app's name differs from the configured app's display name (read with `simctl appinfo`); bring the app to the foreground first. When the display name cannot be read, this check is skipped.
+Reads the running app's current screen and returns the elements and a screenshot in one response, so you can find identifiers and labels before writing a plan. It is read-only: it never launches, terminates, or taps the app, even on timeout. The app must already be running (`agemu app launch`); otherwise it fails with `UI_DELIVERY_FAILED` and a hint to launch it. With `idb` or `auto`, agemu checks exact UIKit service/PID evidence with `launchctl` first. XCTest inspects the configured app; idb reads the foreground tree. Neither backend certifies foreground identity: `foreground` is null with `foregroundUnavailable`. Bring the configured app forward before an idb inspection; an application label alone is not proof of its identity.
 
-The result has `run`, `udid`, `bundleId`, `backend`, `capturedAt`, `screenshot` (a PNG path), `elements`, and `counts` (`total` and `visible`). `elements` lists only visible elements unless you pass `--all`, which also returns off-screen ones with `visible: false`. If XCTest screenshot export fails, the result keeps its elements and reports `screenshotExportError`.
+The result retains the flat UI evidence (`actions`, `completed`, `screenshots`, `recordings`, `inspections`, `transcript`, `runnerResult` and `backendArtifacts`) plus `run`, `udid`, `bundleId`, `backend`, `capturedAt`, `screenshot` (a PNG path), `elements`, and `counts` (`total` and `visible`). `elements` lists only visible elements unless you pass `--all`, which also returns off-screen ones with `visible: false`. If XCTest screenshot export fails, the result keeps its elements and reports `screenshotExportError`.
 
 Each element, in document order, has:
 
@@ -270,7 +314,7 @@ Each element, in document order, has:
 - `frame`: `{ x, y, width, height }` in points (zeros when the backend reports none).
 - `visible`: the frame has positive size and intersects the application frame. This is a geometric check, not XCTest's `isHittable`.
 - `enabled`, `selected`: present when the backend reports them.
-- `depth`: nesting depth; XCTest only (the `idb` list is flat).
+- `depth`: nesting depth as a number, or null when unavailable. idb always returns null because its list is flat.
 
 The `inspect` plan action returns the same elements as `runnerResult.inspections[].elements` (all elements, including off-screen ones), where `index` is the action's position in the submitted plan.
 
@@ -298,7 +342,7 @@ Plans stop at the first failed action and are validated completely before runnin
 | --- | --- | --- | --- |
 | `launch` | `arguments`, `environment` | yes | yes |
 | `terminate` | none | yes | yes |
-| `openUrl` | `url`; `confirm` (boolean) | yes, on iOS 16.4 or newer (fails with "openUrl requires iOS 16.4 or newer"); presses SpringBoard's first-open "Open" prompt unless `confirm` is `false` | yes; presses the prompt only with `confirm: true`, and only when a new "Open in “App”?" title (naming the configured app when its display name is known) with Open and Cancel buttons appears |
+| `openUrl` | `url`; `confirm` (boolean) | yes, on iOS 16.4 or newer; presses SpringBoard's first-open "Open" prompt only with `confirm: true` (default false) | yes; presses the prompt only with `confirm: true`, and only when a new "Open in “App”?" title (naming the configured app when its display name is known) with Open and Cancel buttons appears |
 | `pressButton` | `button`: `home` | yes | yes |
 | `pressKey` | `key`: `return`, `delete`, `tab`, or `space`; `count` 1 to 100 (default 1) | yes | yes |
 | `tap` | target, or `x` and `y` | yes | yes |
@@ -320,12 +364,12 @@ Notes:
 - `pressKey` types into the focused element. `pressKey` with `return` dismisses the keyboard.
 - `pressButton` with `home` backgrounds the app. Use `launch` or `openUrl` before acting on the app again.
 - `terminate` stops the configured app and succeeds if it is not running.
-- `scrollUntilVisible` swipes the `in` container (default: the whole app) until `target` is visible, up to `maxSwipes` swipes. "Visible" means exists and hittable on XCTest, and the frame-intersection rule of `visible` on `idb`. `direction` is the finger direction, so the default `up` scrolls content down the page. It fails when the target is still not visible afterward.
-- `assertText` compares the element's `value` when it is not empty, otherwise its `label`. `matches` is a regular expression searched anywhere in the text (not anchored); use syntax common to JavaScript and ICU, because the XCTest runner uses ICU and `idb` uses JavaScript.
+- `scrollUntilVisible` swipes the `in` container (default: the whole app) until `target` is visible, up to `maxSwipes` swipes. "Visible" uses the same nonempty frame-intersection rule on both backends; it does not require hittability. `direction` is the finger direction, so the default `up` scrolls content down the page. It fails when the target is still not visible afterward.
+- `assertText` compares the element's `value` when it is not empty, otherwise its `label`. `matches` searches anywhere in the text unless anchored. Both engines use a validated portable subset: Unicode scalar characters, dot, anchors, classes, ASCII `\d`/`\w`/`\s`, capturing/noncapturing groups, alternation and greedy/lazy quantifiers (repeat counts up to 16777215). Dot excludes LF, CR, U+2028 and U+2029; `$` requires the strict end of text. Lookaround, backreferences, named groups, flags, Unicode properties and class-set operations are rejected before backend selection. This UI assertion subset differs from the JavaScript expressions accepted by log `--until`.
 
 ### Verification notes
 
-All `idb` paths are verified by unit tests only. `idb` was not installed on the machine used for verification, so none of them ran live. The XCTest paths ran on a Simulator.
+Shared process fixtures exercise both backend contracts, including geometry/regex normalization, recording indexes, flat results and preserved failure evidence. XCTest also runs against the native Simulator fixture. Live idb conformance is unavailable on the current Intel host: the current official companion package is ARM64-only. Process fixtures do not establish live idb parity. No live Expo/React Native claim follows from these native checks.
 
 ## Control the Simulator
 
@@ -405,7 +449,7 @@ Each result has the exception type and signal, `termination`, and the faulting t
 
 ### Launch windows
 
-`app launch`, `app restart`, and each `launch` action in a `ui run` plan record the launch time in `.agemu/launch.json`. With the `idb` backend each launch is recorded as it runs; with XCTest the time is recorded when the runner starts the plan. `--since=launch` on `logs show`, `crashes list`, and `diagnose` starts at the latest record. It fails with `COMMAND_INVALID` when nothing was recorded or the record is for another app or Simulator. For `logs show`, lines timestamped before the launch are dropped from the response; the saved artifact keeps the full output. Do not combine `--since` with `--last`.
+`app launch`, `app restart`, and each `launch` action in a `ui run` plan record the launch time in `.agemu/launch.json`. Both backends record reached launch attempts as they execute. XCTest emits the action index and timestamp immediately before each launch attempt; an unreached later launch cannot replace the previous marker. `--since=launch` on `logs show`, `crashes list`, and `diagnose` starts at the latest record. It fails with `COMMAND_INVALID` when nothing was recorded or the record is for another app or Simulator. For `logs show`, lines timestamped before the launch are dropped from the response; the saved artifact keeps the full output. Do not combine `--since` with `--last`.
 
 ### Live capture
 
@@ -459,9 +503,9 @@ AGEMU_NATIVE_SIMULATOR_UDID=<udid> pnpm test:integration:native
 
 The native test keeps its Xcode DerivedData under `.agemu/native-workflow/<udid>/` so later runs use an incremental build.
 
-As of 2026-09-29, the unit test suite passes, and the native Simulator integration test (`pnpm test:integration:native`) passed on iPhone 17 Pro (iOS 26.5, Xcode 26.5). idb paths are covered by unit tests only and were not verified live.
+The authoritative suite is `test/**/*.test.ts`; nested review worktree copies are excluded. Native integration files run serially because they share the fixture app and selected Simulator. See [CONTRIBUTING.md](CONTRIBUTING.md) for the full verification commands.
 
-A bare React Native sample is unavailable. An Expo development sample reached Xcode asset compilation but did not complete its build. An Expo Go live run is unverified because CoreSimulatorService failed during that attempt.
+Bare React Native and Expo project launch/reload contracts are covered by injected processes and real local HTTP peers. This refactor's live verification uses the native fixture; live Expo development and Expo Go workflows remain unverified.
 
 ## Contribute
 

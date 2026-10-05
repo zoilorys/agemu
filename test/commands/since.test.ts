@@ -23,6 +23,12 @@ describe('resolveSince', () => {
     await expect(resolveSince('yesterday', root, now, 0)).rejects.toMatchObject({ code: 'COMMAND_INVALID' });
   });
 
+  it('rejects durations that overflow or resolve outside the Date range', async () => {
+    await expect(resolveSince('999999999999999999999d', root, now, 0)).rejects.toMatchObject({ code: 'COMMAND_INVALID' });
+    await expect(resolveSince('9000000000000s', root, now, 0)).rejects.toMatchObject({ code: 'COMMAND_INVALID' });
+    await expect(resolveSince(undefined, root, now, Infinity)).rejects.toMatchObject({ code: 'COMMAND_INVALID' });
+  });
+
   it('starts at the latest recorded launch of the expected app and Simulator', async () => {
     await writeLaunchMarker(root, { at: new Date('2026-09-30T11:40:00.000Z'), udid: 'PHONE', bundleId: 'com.example.app', source: 'app launch' });
     await writeLaunchMarker(root, { at: new Date('2026-09-30T11:55:00.000Z'), udid: 'PHONE', bundleId: 'com.example.app', source: 'app restart' });

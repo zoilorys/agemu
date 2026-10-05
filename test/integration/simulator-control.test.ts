@@ -85,7 +85,7 @@ describe.skipIf(!enabled)('simulator control on a real Simulator', () => {
     ready(context);
     expect(await installed()).toBe(true);
     try {
-      expect(data(await run(root, ['app', 'uninstall', '--yes']), 'app uninstall')).toEqual({ action: 'uninstall', udid, bundleId });
+      expect(data(await run(root, ['app', 'uninstall', '--yes']), 'app uninstall')).toMatchObject({ action: 'uninstall', udid, bundleId, run: null, artifacts: { screenshots: [], recordings: [] } });
       expect(await installed()).toBe(false);
       expect(await run(root, ['app', 'launch'])).toMatchObject({ ok: false, error: { code: 'PROCESS_FAILED' } });
     } finally {
@@ -128,7 +128,7 @@ describe.skipIf(!enabled)('simulator control on a real Simulator', () => {
       const clean = data(await run(root, ['simulator', 'status-bar', '--preset=clean']), 'status-bar clean');
       expect(clean.overrides).toEqual(expect.arrayContaining(['Time: 09:41', expect.stringContaining('Battery Level: 100')]));
     } finally {
-      expect(data(await run(root, ['simulator', 'status-bar', '--clear']), 'status-bar clear')).toEqual({ udid, overrides: [] });
+      expect(data(await run(root, ['simulator', 'status-bar', '--clear']), 'status-bar clear')).toMatchObject({ action: 'status-bar', udid, bundleId: null, overrides: [], run: null });
     }
   }, 120_000);
 
@@ -139,7 +139,7 @@ describe.skipIf(!enabled)('simulator control on a real Simulator', () => {
     await writeFile(path.join(root, png), Buffer.from(
       'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64',
     ));
-    expect(data(await run(root, ['simulator', 'add-media', `--file=${png}`]), 'add-media')).toEqual({ udid, added: [png] });
+    expect(data(await run(root, ['simulator', 'add-media', `--file=${png}`]), 'add-media')).toMatchObject({ action: 'add-media', udid, bundleId: null, added: [png], run: null });
   }, 120_000);
 
   test('throwaway Simulator is created, erased, guarded against unconfirmed delete, and deleted', async (context) => {
@@ -155,10 +155,10 @@ describe.skipIf(!enabled)('simulator control on a real Simulator', () => {
       created = (result.created as { udid: string; name: string }).udid;
       expect(result.created).toMatchObject({ name, state: 'Shutdown' });
       if (!created || created === udid) throw new Error(`refusing to act on ${created}: not a new throwaway Simulator`);
-      expect(data(await run(bare, ['simulator', 'erase', `--udid=${created}`, '--yes']), 'simulator erase')).toEqual({ erased: created, udid: created, shutDown: false });
+      expect(data(await run(bare, ['simulator', 'erase', `--udid=${created}`, '--yes']), 'simulator erase')).toMatchObject({ action: 'erase', erased: created, udid: created, bundleId: null, shutDown: false });
       expect(await run(bare, ['simulator', 'delete', `--udid=${created}`])).toMatchObject({ ok: false, error: { code: 'COMMAND_INVALID' } });
       expect(await listed()).toContain(created);
-      expect(data(await run(bare, ['simulator', 'delete', `--udid=${created}`, '--yes']), 'simulator delete')).toEqual({ deleted: created });
+      expect(data(await run(bare, ['simulator', 'delete', `--udid=${created}`, '--yes']), 'simulator delete')).toMatchObject({ action: 'delete', deleted: created, udid: created, bundleId: null });
       expect(await listed()).not.toContain(created);
     } finally {
       if (created && created !== udid) {

@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -15,6 +15,31 @@ const config = (root: string): LoadedConfig => ({ version: 2 as const, platform:
 const state: AppState = { appPath: '/products/MyApp.app', bundleId: 'com.example.app', executableName: 'RealExecutable', udid: 'PHONE', configuration: 'Debug', updatedAt: '' };
 
 describe('logs show command', () => {
+  it('refuses to query a stopped simulator with a redacted prerequisite error', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-logs-stopped-'));
+    let called = false;
+    try {
+      await expect(showLogs(config(root), {}, {
+        resolveDevice: async () => ({ ...device, name: 'secret-value phone', state: 'Shutdown' }), readState: async () => state,
+        runner: async () => { called = true; return { stdout: '', stderr: '', exitCode: 0, signal: null, startedAt: '', durationMs: 1 }; },
+      })).rejects.toMatchObject({ code: 'SIMULATOR_NOT_BOOTED', message: 'Simulator [REDACTED] phone (PHONE) is not booted; run agemu simulator boot', details: { udid: 'PHONE', state: 'Shutdown' } });
+      expect(called).toBe(false);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('retains log success, its artifact and the primary error when events cannot be written', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-logs-event-failure-'));
+    const dependencies = { resolveDevice: async () => device, readState: async () => state };
+    try {
+      await mkdir(path.join(root, '.agemu/events.jsonl'), { recursive: true });
+      const result = await showLogs(config(root), {}, { ...dependencies, runner: async () => ({ stdout: 'captured secret-value', stderr: '', exitCode: 0, signal: null, startedAt: '', durationMs: 1 }) });
+      expect(result.logs).toEqual(['captured [REDACTED]']);
+      expect(await readFile(path.join(root, result.artifact), 'utf8')).toBe('captured [REDACTED]');
+      await expect(showLogs(config(root), {}, { ...dependencies, runner: async () => ({ stdout: '', stderr: 'primary failure secret-value', exitCode: 1, signal: null, startedAt: '', durationMs: 1 }) }))
+        .rejects.toMatchObject({ code: 'PROCESS_FAILED', message: 'primary failure [REDACTED]' });
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
   it('queries the installed Expo Go executable without native build state', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'agemu-go-logs-'));
     const calls: string[][] = [];
@@ -107,6 +132,19 @@ describe('logs show command', () => {
         return { stoppedBy: exit.exitCode === 0 ? 'duration' as const : 'exit' as const, exitCode: exit.exitCode, signal: null, stderr: exit.stderr };
       };
 
+    it('keeps capture success and failure when events cannot be written', async () => {
+      const root = await mkdtemp(path.join(tmpdir(), 'agemu-stream-event-failure-'));
+      const dependencies = { resolveDevice: async () => device, readState: async () => state };
+      try {
+        await mkdir(path.join(root, '.agemu/events.jsonl'), { recursive: true });
+        const result = await streamLogs(config(root), { duration: '3s' }, { ...dependencies, stream: streamOf(['captured secret-value'], []) });
+        expect(result.logs).toEqual(['captured [REDACTED]']);
+        expect(await readFile(path.join(root, result.artifact), 'utf8')).toBe('captured [REDACTED]\n');
+        await expect(streamLogs(config(root), { duration: '3s' }, { ...dependencies, stream: streamOf([], [], { exitCode: 1, stderr: 'primary secret-value failure' }) }))
+          .rejects.toMatchObject({ code: 'PROCESS_FAILED', message: 'primary [REDACTED] failure' });
+      } finally { await rm(root, { recursive: true, force: true }); }
+    });
+
     it('redacts lines before matching and saves the redacted capture without the filter banner', async () => {
       const root = await mkdtemp(path.join(tmpdir(), 'agemu-stream-'));
       const calls: Call[] = [];
@@ -158,7 +196,7 @@ describe('logs show command', () => {
       try {
         await expect(streamLogs(config(root), { duration: '5s' }, {
           resolveDevice: async () => ({ ...device, state: 'Shutdown' }), readState: async () => state, stream: streamOf([], calls),
-        })).rejects.toMatchObject({ code: 'PROCESS_FAILED', message: expect.stringContaining('not booted') });
+        })).rejects.toMatchObject({ code: 'SIMULATOR_NOT_BOOTED', message: expect.stringContaining('not booted') });
         expect(calls).toEqual([]);
       } finally { await rm(root, { recursive: true, force: true }); }
     });
@@ -187,6 +225,20 @@ describe('logs show command', () => {
     const dependencies = (frames: string[], start: number) => ({
       clock: () => start, now: () => new Date(start), serverStatus: async () => ({ running: true }), listDevices: async () => [device],
       fetch: async () => ({ ok: true, status: 200, json: async () => [target] }), WebSocketImpl: socketOf(frames),
+    });
+
+    it('keeps JavaScript capture success and discovery failure when events cannot be written', async () => {
+      const root = await mkdtemp(path.join(tmpdir(), 'agemu-js-event-failure-'));
+      const start = Date.now();
+      const base = dependencies([consoleFrame('log', start + 1, 'captured secret-value')], start);
+      try {
+        await mkdir(path.join(root, '.agemu/events.jsonl'), { recursive: true });
+        const result = await captureJsLogs(goConfig(root), { duration: '3s', until: 'captured' }, base);
+        expect(result).toMatchObject({ matched: true, matchedMessage: 'captured [REDACTED]' });
+        expect(await readFile(path.join(root, result.artifact), 'utf8')).not.toContain('secret-value');
+        await expect(captureJsLogs(goConfig(root), { duration: '3s' }, { ...base, fetch: async () => ({ ok: true, status: 200, json: async () => [] }) }))
+          .rejects.toMatchObject({ code: 'PROCESS_FAILED', message: expect.stringContaining('No JavaScript target') });
+      } finally { await rm(root, { recursive: true, force: true }); }
     });
 
     it('redacts console text before --until matching and in the response and artifact', async () => {

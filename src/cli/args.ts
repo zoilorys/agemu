@@ -1,54 +1,18 @@
 import { CliError } from '../core/errors.js';
 
-export type FlagSpec = { kind: 'boolean' | 'value' | 'repeat' };
-export type CommandSpec = {
-  subcommands?: Record<string, Record<string, FlagSpec>>;
-  flags?: Record<string, FlagSpec>;
-};
-export type ParsedArgs = {
-  command?: string;
-  subcommand?: string;
-  flags: Map<string, string[]>;
-  globals: { pretty: boolean; debug: boolean; help: boolean; version: boolean };
-};
+import { commandDefinitions } from './registry.js';
+import type { CommandSpec, ParsedArgs, FlagSpec } from './types.js';
+export type { FlagSpec, CommandSpec, ParsedArgs } from './types.js';
+export { value, values } from './options.js';
 
-const boolean: FlagSpec = { kind: 'boolean' };
-const single: FlagSpec = { kind: 'value' };
-const repeat: FlagSpec = { kind: 'repeat' };
-const selector = { udid: single, name: single, runtime: single };
-const logOptions = { last: single, since: single, level: single, limit: single };
-const launchOptions = { arg: repeat, env: repeat };
-
-export const commandSpecs: Record<string, CommandSpec> = {
-  setup: { flags: { 'expo-go': boolean, udid: single, port: single } },
-  config: { subcommands: { show: {} } },
-  simulator: { subcommands: {
-    list: {}, boot: selector, shutdown: selector,
-    ui: { ...selector, appearance: single, 'content-size': single, 'increase-contrast': single },
-    'add-media': { ...selector, file: repeat },
-    create: { name: single, 'device-type': single, runtime: single },
-    delete: { udid: single, yes: boolean },
-    erase: { ...selector, yes: boolean },
-    'status-bar': {
-      ...selector, clear: boolean, preset: single, time: single, 'data-network': single, 'wifi-mode': single, 'wifi-bars': single,
-      'cellular-mode': single, 'cellular-bars': single, 'operator-name': single, 'battery-state': single, 'battery-level': single,
-    },
-  } },
-  build: { flags: { timeout: single } },
-  server: { subcommands: { start: {}, status: {}, stop: {} } },
-  app: { subcommands: { install: {}, launch: launchOptions, terminate: {}, restart: launchOptions, 'open-url': { url: single }, uninstall: { yes: boolean } } },
-  privacy: { subcommands: { grant: { service: single }, revoke: { service: single }, reset: { service: single, 'all-apps': boolean } } },
-  push: { flags: { payload: single, 'payload-json': single } },
-  location: { subcommands: { set: { coordinate: single }, clear: {}, list: {}, run: { scenario: single } } },
-  observe: { flags: {} },
-  logs: { subcommands: { show: logOptions, stream: { duration: single, until: single, level: single, limit: single }, js: { duration: single, until: single, limit: single } } },
-  diagnose: { flags: logOptions },
-  crashes: { subcommands: { list: { since: single, limit: single } } },
-  ui: { subcommands: { 'build-runner': { timeout: single }, run: { plan: single, 'plan-json': single, backend: single, timeout: single },
-    inspect: { backend: single, all: boolean, timeout: single } } },
-  doctor: { flags: {} },
-  clean: { flags: { runs: boolean, 'derived-data': boolean, 'older-than': single, 'dry-run': boolean } },
-};
+export const commandSpecs: Record<string, CommandSpec> = {};
+for (const definition of commandDefinitions) {
+  const [command, subcommand] = definition.key.split(' ');
+  if (subcommand) {
+    const spec = commandSpecs[command] ??= { subcommands: {} };
+    spec.subcommands![subcommand] = definition.flags;
+  } else commandSpecs[command] = { flags: definition.flags };
+}
 
 const globalNames = ['pretty', 'debug', 'help', 'version'] as const;
 type GlobalName = typeof globalNames[number];
@@ -130,12 +94,4 @@ export function parseArgs(argv: string[]): ParsedArgs {
     flags.set(name, [...(existing ?? []), value]);
   }
   return { command, subcommand, flags, globals };
-}
-
-export function value(parsed: ParsedArgs, name: string): string | undefined {
-  return parsed.flags.get(name)?.[0];
-}
-
-export function values(parsed: ParsedArgs, name: string): string[] {
-  return parsed.flags.get(name) ?? [];
 }

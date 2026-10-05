@@ -80,6 +80,10 @@ describe('selectTarget', () => {
 });
 
 describe('listTargets', () => {
+  it('rejects malformed target records with a structured failure', async () => {
+    await expect(listTargets(8093, 1000, async () => ({ ok: true, status: 200, json: async () => [null] })))
+      .rejects.toMatchObject({ code: 'PROCESS_FAILED', message: expect.stringContaining('not a list of targets') });
+  });
   it('reads /json/list on the configured port', async () => {
     const urls: string[] = [];
     const targets = await listTargets(8093, 1_000, async (url) => { urls.push(url); return { ok: true, status: 200, json: async () => [recordedTarget] }; });
@@ -129,6 +133,24 @@ describe('renderArgs', () => {
 });
 
 describe('captureConsole', () => {
+  it('ignores malformed JSON records and out-of-range timestamps without crashing capture', async () => {
+    const startMs = Date.now();
+    const received: string[] = [];
+    const { capture, socket } = connect(10000, startMs, event => { received.push(event.text); return true; });
+    socket.emit('open');
+    for (const data of ['null', '[]', consoleEvent({ timestamp: 1e100, type: 'log', args: [] }), '{']) socket.emit('message', { data });
+    socket.emit('message', { data: probeLog(startMs + 1) });
+    expect(await capture).toEqual({ stoppedBy: 'until' });
+    expect(received).toEqual([`agemu-js-probe ${startMs + 1}`]);
+  });
+
+  it('fails and closes promptly on a transport error after opening', async () => {
+    const { capture, socket } = connect(10000);
+    socket.emit('open');
+    socket.emit('error', { message: 'Invalid WebSocket frame' });
+    await expect(capture).rejects.toMatchObject({ code: 'PROCESS_FAILED', message: 'Metro inspector connection failed: Invalid WebSocket frame' });
+    expect(socket.closed).toBe(true);
+  });
   it('connects with a local Origin header and sends only Runtime.enable', async () => {
     const { capture, socket } = connect(10_000);
     expect(socket.url).toBe(recordedTarget.webSocketDebuggerUrl);

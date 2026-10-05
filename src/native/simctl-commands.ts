@@ -1,5 +1,6 @@
 import type { LoadedConfig } from '../config/config.js';
 import { CliError } from '../core/errors.js';
+import { redactValue } from '../artifacts/runs.js';
 import { redact } from '../core/redact.js';
 import type { ProcessResult, RunOptions } from '../process/run-process.js';
 import { listDevices as defaultListDevices, resolveDevice, simctl, type Device, type SimctlRunner } from './simctl.js';
@@ -14,11 +15,11 @@ export async function selectedDevice(config: LoadedConfig, deps: SimctlDeps = {}
   return resolveDevice(devices, config.simulator);
 }
 
-export function requireBooted(device: Device): void {
+export function requireBooted(device: Device, secrets: string[] = []): void {
   if (device.state !== 'Booted') {
-    throw new CliError('SIMULATOR_NOT_BOOTED', `Simulator ${device.name} (${device.udid}) is not booted; run agemu simulator boot`, {
+    throw new CliError('SIMULATOR_NOT_BOOTED', `Simulator ${redact(device.name, secrets)} (${redact(device.udid, secrets)}) is not booted; run agemu simulator boot`, redactValue({
       udid: device.udid, state: device.state,
-    });
+    }, secrets));
   }
 }
 

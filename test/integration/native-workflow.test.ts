@@ -80,6 +80,25 @@ test.skipIf(!enabled)('proves the public native workflow', async (context) => {
     data(await run(root, ['app', 'launch', `--env=AGEMU_NATIVE_RUN_ID=${runId}`]), 'app launch');
     launched = true;
 
+    const status = data(await run(root, ['app', 'status']), 'app status');
+    expect(status).toMatchObject({ action: 'status', udid, bundleId: 'dev.agemu.agemu-native-fixture', running: true, foreground: null, run: null });
+    expect(status.pid).toBeGreaterThan(0);
+    expect(status.capturedAt).toEqual(expect.stringMatching(/^\d{4}-\d\d-\d\dT/));
+    const inventory = data(await run(root, ['app', 'list']), 'app list');
+    expect(inventory).toMatchObject({ action: 'list', udid, bundleId: null });
+    expect(inventory.apps).toEqual(expect.arrayContaining([expect.objectContaining({ bundleId: 'dev.agemu.agemu-native-fixture', executableName: 'NativeFixture' })]));
+    const priorClipboard = data(await run(root, ['clipboard', 'read']), 'clipboard read before').text as string;
+    const text = '第一行\n$HOME; $(false)\n';
+    try {
+      expect(data(await run(root, ['clipboard', 'write', `--text=${text}`]), 'clipboard write')).toMatchObject({ action: 'write', udid });
+      expect(data(await run(root, ['clipboard', 'read']), 'clipboard roundtrip').text).toBe(text);
+    } finally { data(await run(root, ['clipboard', 'write', `--text=${priorClipboard}`]), 'clipboard restore'); }
+
+    const shortcut = data(await run(root, ['ui', 'tap', '--backend=xctest', '--id=saveDraftButton']), 'ui tap shortcut');
+    expect(shortcut).toMatchObject({ backend: 'xctest', actions: 1, completed: 1, screenshots: [], recordings: [], inspections: [] });
+    data(await run(root, ['ui', 'assert-value', '--backend=xctest', '--id=gestureStatus', '--value=draft']), 'ui assertion shortcut');
+    data(await run(root, ['app', 'restart', `--env=AGEMU_NATIVE_RUN_ID=${runId}`]), 'restore fixture before gestures');
+
     const observation = data(await run(root, ['observe']), 'observe');
     const screenshot = path.join(root, String(observation.screenshot));
     expect((await stat(screenshot)).size).toBeGreaterThan(0);
@@ -129,11 +148,18 @@ test.skipIf(!enabled)('proves the public native workflow', async (context) => {
         { stopVideoRecording: {} },
       ],
     })]), 'ui run videos');
-    expect(videos).toMatchObject({ backend: 'xctest', runnerResult: { completed: 11 }, screenshots: [] });
+    expect(videos).toMatchObject({ backend: 'xctest', completed: 11, actions: 11, runnerResult: { completed: 11 }, screenshots: [], inspections: [] });
     expect(videos).not.toHaveProperty('screenshotExportError');
     const recordings = videos.recordings as string[];
     expect(recordings).toHaveLength(2);
-    for (const file of recordings) expect((await stat(path.join(root, file))).size).toBeGreaterThan(0);
+    for (const file of recordings) {
+      const recording = await readFile(path.join(root, file));
+      expect(recording.length).toBeGreaterThan(1000);
+      expect(recording.subarray(4, 8).toString('ascii')).toBe('ftyp');
+      expect(recording.includes(Buffer.from('moov'))).toBe(true);
+      expect(recording.includes(Buffer.from('mdat'))).toBe(true);
+    }
+    expect(videos.artifacts).toMatchObject({ recordings, screenshots: [] });
 
     const failed = await run(root, ['ui', 'run', '--backend=xctest', '--plan-json=' + JSON.stringify({
       version: 1, actions: [
@@ -162,7 +188,7 @@ test.skipIf(!enabled)('proves the public native workflow', async (context) => {
       version: 1, actions: [{ launch: {} }, { assertVisible: { label: 'Item 24' } }],
     })]);
     expect(hidden).toMatchObject({ ok: false, error: { code: 'UI_DELIVERY_FAILED',
-      details: { failedAction: { index: 1, kind: 'assertVisible', message: 'element is not visible: Item 24 (exists but not hittable)' } } } });
+      details: { failedAction: { index: 1, kind: 'assertVisible', message: 'element is not visible: Item 24 (exists but has no on-screen geometry)' } } } });
 
     data(await run(root, ['app', 'terminate']), 'app terminate');
     launched = false;

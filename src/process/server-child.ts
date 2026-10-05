@@ -18,15 +18,19 @@ function stripPartialSecretStart(value: string): string {
   }
   return value.slice(discard);
 }
-const append = (chunk: Buffer) => {
-  raw += chunk.toString();
+const append = (chunk: string) => {
+  raw += chunk;
   if (raw.length > limit + 2 * longestSecret) raw = stripPartialSecretStart(raw.slice(-(limit + longestSecret)));
   const safe = redact(raw, secrets).slice(0, -(longestSecret - 1) || undefined);
   writeFileSync(log, safe.slice(-limit), { mode: 0o600 });
 };
 const child = spawn(process.execPath, [cli, 'start', ...(expoMode ? [`--${expoMode}`] : []), '--port', port], { cwd: root, stdio: ['ignore', 'pipe', 'pipe'] });
-child.stdout.on('data', append);
-child.stderr.on('data', append);
-child.on('error', error => { append(Buffer.from(error.message)); process.exitCode = 1; });
-child.on('exit', code => { process.exit(code ?? 1); });
+child.stdout.setEncoding('utf8').on('data', append);
+child.stderr.setEncoding('utf8').on('data', append);
+child.on('error', error => { append(error.message); process.exitCode = 1; });
+child.on('close', code => {
+  // All output is drained: finish the withheld suffix without exposing a chunk-split secret.
+  writeFileSync(log, redact(raw, secrets).slice(-limit), { mode: 0o600 });
+  process.exit(code ?? 1);
+});
 process.on('SIGTERM', () => { child.kill('SIGTERM'); setTimeout(() => child.kill('SIGKILL'), 2000).unref(); });

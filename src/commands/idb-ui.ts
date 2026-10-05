@@ -6,14 +6,17 @@ import { redact } from '../core/redact.js';
 import { redactValue } from '../artifacts/runs.js';
 import { writeLaunchMarker } from '../artifacts/launch-marker.js';
 import { deadline, type Deadline, type ProcessResult, type RunOptions } from '../process/run-process.js';
-import type { LongPress, Point, Swipe, UiPlan } from './ui.js';
+import { actionDefinitions, type LongPress, type Point, type Swipe, type UiPlan, type UiActionKind } from './ui-plan.js';
+import { portableRegexSource } from './ui-regex.js';
+import { createRecordingSession, startVideoRecording, type RecordingStarter } from './video-recording.js';
+import { uiArtifactStem } from './ui-artifact-name.js';
+import { checkUiDeadline, uiOperation, uiTimeout } from './ui-deadline.js';
+import { failureMessage, uiFailure, uiResult } from './ui-result.js';
 import { appDisplayName, describeTarget, elementVisible, matchingIndexes, normalizeIdbElements, type ElementTarget, type IdbElement, type Inspection } from './ui-elements.js';
 
 type Run = (executable: string, args: string[], options?: RunOptions) => Promise<ProcessResult>;
 type Target = ElementTarget & { x?: number; y?: number };
 type Element = IdbElement;
-const operations = new Set(['launch', 'wait', 'type', 'tap', 'swipe', 'longPress', 'assertVisible', 'assertExists', 'assertNotVisible',
-  'assertValue', 'screenshot', 'inspect', 'clear', 'pressKey', 'pressButton', 'openUrl', 'terminate', 'scrollUntilVisible', 'assertText']);
 /** Pause after each scrollUntilVisible swipe so scrolling settles; AgentRunner.swift uses the same pause. */
 const scrollSettleMs = 300;
 
@@ -27,7 +30,7 @@ function elementText(element: { AXValue?: unknown; AXLabel?: unknown }): string 
 function textMismatch(assertion: { equals?: string; contains?: string; matches?: string }, text: string): string | undefined {
   const [mode, expected]: [string, string] = assertion.equals !== undefined ? ['equals', assertion.equals]
     : assertion.contains !== undefined ? ['contains', assertion.contains] : ['matches', assertion.matches ?? ''];
-  const passed = mode === 'equals' ? text === expected : mode === 'contains' ? text.includes(expected) : new RegExp(expected).test(text);
+  const passed = mode === 'equals' ? text === expected : mode === 'contains' ? text.includes(expected) : new RegExp(portableRegexSource(expected), 'u').test(text);
   return passed ? undefined : `text does not match: expected ${mode} ${expected}, got ${text}`;
 }
 /** SpringBoard's first-open "Open in …?" prompt button, confirmed by `openUrl` with `confirm: true`. */
@@ -46,31 +49,13 @@ function record(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+/** Plans reach backend selection only after shared validation. Check backend limitations alone. */
 export function idbCompatible(plan: UiPlan): boolean {
-  return plan.actions.every((action) => {
-    if (!record(action)) return false;
-    const keys = Object.keys(action);
-    if (keys.length !== 1 || !operations.has(keys[0]) || !record(action[keys[0]])) return false;
-    const value = action[keys[0]];
-    if (!record(value)) return false;
-    if (keys[0] === 'launch') return (value.arguments === undefined || (Array.isArray(value.arguments) && value.arguments.every(v => typeof v === 'string')))
-      && (value.environment === undefined || (record(value.environment) && Object.values(value.environment).every(v => typeof v === 'string')));
-    if (keys[0] === 'screenshot') return value.name === undefined || typeof value.name === 'string';
-    if (keys[0] === 'inspect' || keys[0] === 'terminate') return true;
-    if (keys[0] === 'openUrl') return typeof value.url === 'string' && (value.confirm === undefined || typeof value.confirm === 'boolean');
-    if (keys[0] === 'pressKey') return typeof value.key === 'string' && keyCodes[value.key] !== undefined;
-    if (keys[0] === 'pressButton') return value.button === 'home';
-    if (keys[0] === 'scrollUntilVisible') return record(value.target) && (value.in === undefined || record(value.in));
-    const targeted = typeof value.identifier === 'string' || typeof value.label === 'string' || typeof value.labelContains === 'string';
-    if (keys[0] === 'swipe') return value.from !== undefined || targeted;
-    if (keys[0] === 'longPress') return targeted || (Number.isFinite(value.x) && Number.isFinite(value.y));
-    if (keys[0] === 'tap') return targeted || (Number.isFinite(value.x) && Number.isFinite(value.y));
-    if (keys[0] === 'wait' && value.duration !== undefined) return true;
-    if (!targeted) return false;
-    if (keys[0] === 'type') return typeof value.text === 'string';
-    if (keys[0] === 'assertValue') return typeof value.value === 'string';
-    if (keys[0] === 'wait') return value.timeout === undefined || (typeof value.timeout === 'number' && value.timeout >= 0 && Number.isFinite(value.timeout));
-    return true;
+  return plan.actions.every(action => {
+    if (!actionDefinitions[Object.keys(action)[0] as UiActionKind].backends.includes('idb')) return false;
+    // Whole-screen directional swipes are an XCTest-only capability.
+    return !action.swipe || 'from' in action.swipe || action.swipe.identifier !== undefined
+      || action.swipe.label !== undefined || action.swipe.labelContains !== undefined;
   });
 }
 
@@ -119,26 +104,31 @@ function swipePoints(frame: NonNullable<Element['frame']>, direction: string): [
 const idbCallMs = 8_000;
 
 export async function tryRunIdbPlan(config: LoadedConfig, plan: UiPlan, udid: string, directory: string, unbounded: Run,
-  limit: Deadline = deadline(900_000)) {
+  limit: Deadline = deadline(900_000), dependencies: { startRecording?: RecordingStarter; launchUrl?: string } = {}) {
   if (!idbCompatible(plan)) return undefined;
-  // Every call ends by the plan deadline; idb calls additionally stop after 8 s unless the caller allows longer.
+  // Actions share the command deadline; availability probing and best-effort evidence have smaller caps.
   const run: Run = (executable, args, options = {}) => unbounded(executable, args, {
-    ...options, timeoutMs: Math.min(options.timeoutMs ?? (executable === 'idb' ? idbCallMs : Infinity), limit.remaining()),
+    ...options, timeoutMs: Math.min(options.timeoutMs ?? Infinity, limit.remaining()),
   });
-  const idb = (args: string[]) => run('idb', [...args, '--udid', udid]);
   let deadlineHit = false;
   const expire = () => { deadlineHit = true; return new Error('the UI plan deadline was reached'); };
   const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
   try {
-    const probe = await idb(['ui', 'describe-all', '--api', 'axbridge']);
+    const probe = await run('idb', ['ui', 'describe-all', '--api', 'axbridge', '--udid', udid], { timeoutMs: idbCallMs });
     if (probe.exitCode !== 0) return undefined;
     parseElements(probe.stdout);
-  } catch { return undefined; }
+  } catch (error) {
+    if (limit.expired()) throw uiTimeout(limit);
+    return undefined;
+  }
 
   const transcript = path.join(directory, 'idb.log');
   const lines: string[] = [];
   const inspections: Inspection[] = [];
   const screenshots: string[] = [];
+  const recording = createRecordingSession(udid, directory, config.root, dependencies.startRecording ?? startVideoRecording, limit, config.redactions);
+  const recordings = recording.recordings;
+  let completed = 0;
   const execute = async (executable: string, args: string[], options?: RunOptions): Promise<ProcessResult> => {
     const result = await run(executable, args, options);
     lines.push(`${executable} ${args.slice(0, 2).join(' ')}: exit ${result.exitCode}, ${result.durationMs} ms`);
@@ -192,7 +182,7 @@ export async function tryRunIdbPlan(config: LoadedConfig, plan: UiPlan, udid: st
   let currentKind = 'unknown';
   try {
     for (const [index, raw] of plan.actions.entries()) {
-      const action = raw as Record<string, Record<string, unknown>>;
+      const action = raw as unknown as Record<string, Record<string, unknown>>;
       const [kind] = Object.keys(action);
       current = index;
       currentKind = kind;
@@ -202,8 +192,9 @@ export async function tryRunIdbPlan(config: LoadedConfig, plan: UiPlan, udid: st
         await terminateApp();
         const environment = { ...process.env };
         for (const [key, entry] of Object.entries(value.environment ?? {})) environment[`SIMCTL_CHILD_${key}`] = String(entry);
-        await writeLaunchMarker(config.root, { at: new Date(), udid, bundleId: targetBundleId(config), source: 'ui run' });
+        await uiOperation(limit, () => writeLaunchMarker(config.root, { at: new Date(), udid, bundleId: targetBundleId(config), source: 'ui run' }));
         await execute('xcrun', ['simctl', 'launch', udid, targetBundleId(config), ...((value.arguments as string[] | undefined) ?? [])], { env: environment });
+        if (dependencies.launchUrl) await execute('xcrun', ['simctl', 'openurl', udid, dependencies.launchUrl]);
       } else if (kind === 'wait') {
         if (typeof value.duration === 'number') {
           const pause = (value.duration as number) * 1000;
@@ -287,22 +278,21 @@ export async function tryRunIdbPlan(config: LoadedConfig, plan: UiPlan, udid: st
         }
       } else if (kind === 'longPress') {
         const press = value as LongPress;
-        const coordinates = Number.isFinite(press.x) && Number.isFinite(press.y)
-          ? [press.x!, press.y!] : center(await targetElement(press));
+        const coordinates = 'x' in press ? [press.x, press.y] : center(await targetElement(press));
         await execute('idb', ['ui', 'tap', String(Math.round(coordinates[0])), String(Math.round(coordinates[1])),
-          '--duration', String(press.duration ?? 1), '--udid', udid], { timeoutMs: idbCallMs + (press.duration ?? 1) * 1000 });
+          '--duration', String(press.duration ?? 1), '--udid', udid], {});
       } else if (kind === 'swipe') {
         const swipe = value as Swipe;
         const [from, to] = 'from' in swipe ? [swipe.from, swipe.to] : swipePoints((await targetElement(swipe)).frame ?? {}, swipe.direction);
         await execute('idb', ['ui', 'swipe', String(Math.round(from.x)), String(Math.round(from.y)),
           String(Math.round(to.x)), String(Math.round(to.y)), ...(swipe.duration === undefined ? [] : ['--duration', String(swipe.duration)]), '--udid', udid],
-          { timeoutMs: idbCallMs + (swipe.duration ?? 0) * 1000 });
+          {});
       } else if (kind === 'assertVisible' || kind === 'assertNotVisible') {
         const tree = await elements();
         const element = findElement(tree, value as Target);
         const visible = elementVisible(tree, element);
         const name = describeTarget(value as Target);
-        if (kind === 'assertVisible' && !visible) throw new Error(`element is not visible: ${name}${element ? ' (exists but not hittable)' : ''}`);
+        if (kind === 'assertVisible' && !visible) throw new Error(`element is not visible: ${name}${element ? ' (exists but has no on-screen geometry)' : ''}`);
         if (kind === 'assertNotVisible' && visible) throw new Error(`element is visible: ${name}`);
       } else if (kind === 'assertExists') {
         if (!findElement(await elements(), value as Target)) throw new Error(`element does not exist: ${describeTarget(value as Target)}`);
@@ -332,43 +322,53 @@ export async function tryRunIdbPlan(config: LoadedConfig, plan: UiPlan, udid: st
           await sleep(Math.min(scrollSettleMs, limit.remaining()));
           if (limit.expired()) throw expire();
         }
+      } else if (kind === 'startVideoRecording') {
+        await recording.start(value.name as string | undefined);
+      } else if (kind === 'stopVideoRecording') {
+        await recording.stop();
       } else if (kind === 'screenshot') {
-        const name = screenshotName(value.name);
+        const name = uiArtifactStem(value.name, 'screen', config.redactions);
         const file = path.join(directory, 'screenshots', `${index}-${name}.png`);
-        await mkdir(path.dirname(file), { recursive: true });
+        await uiOperation(limit, () => mkdir(path.dirname(file), { recursive: true }));
         await execute('idb', ['screenshot', file, '--udid', udid]);
         screenshots.push(path.relative(config.root, file));
       } else if (kind === 'inspect') {
         inspections.push({ index, elements: normalizeIdbElements(await elements()) });
       }
+      checkUiDeadline(limit);
+      completed = index + 1;
     }
-    return redactValue({
-      run: path.relative(config.root, directory), udid, bundleId: targetBundleId(config),
-      backend: 'idb', actions: plan.actions.length, runnerResult: { completed: plan.actions.length, bundleId: targetBundleId(config), inspections },
-      screenshots, transcript: path.relative(config.root, transcript),
-    }, config.redactions ?? []);
+    return uiResult({
+      run: path.relative(config.root, directory), udid, bundleId: targetBundleId(config), backend: 'idb',
+      actions: plan.actions.length, transcript: path.relative(config.root, transcript),
+    }, { completed, screenshots, recordings, inspections });
   } catch (error) {
     const secrets = config.redactions ?? [];
     const message = redact(error instanceof Error ? error.message : String(error), secrets);
     lines.push(`action ${current} (${currentKind}) error: ${message}`);
     const failedAction = { index: current, kind: currentKind, message };
-    if (deadlineHit || limit.expired()) {
-      // No failure screenshot: it would run past the deadline.
-      throw new CliError('PROCESS_TIMEOUT', `UI plan exceeded ${limit.ms / 1000} s`,
-        redactValue({ timeoutSeconds: limit.ms / 1000, transcript: path.relative(config.root, transcript), failedAction, completed: current, screenshots }, secrets));
+    const evidence = { run: path.relative(config.root, directory), udid, bundleId: targetBundleId(config), backend: 'idb',
+      actions: plan.actions.length, failedAction, completed, screenshots, recordings, inspections, transcript: path.relative(config.root, transcript) };
+    if (deadlineHit || limit.expired() || (error instanceof CliError && error.code === 'PROCESS_TIMEOUT')) {
+      throw uiFailure('PROCESS_TIMEOUT', `UI plan exceeded ${limit.ms / 1000} s`,
+        redactValue({ ...evidence, timeoutSeconds: limit.ms / 1000 }, secrets));
     }
     let failureScreenshot: string | undefined;
     try {
-      const file = path.join(directory, 'screenshots', 'failure.png');
-      await mkdir(path.dirname(file), { recursive: true });
+      const file = path.join(directory, 'screenshots', `${uiArtifactStem('failure', 'screen', secrets)}.png`);
+      await uiOperation(limit, () => mkdir(path.dirname(file), { recursive: true }));
       const shot = await run('idb', ['screenshot', file, '--udid', udid], { timeoutMs: 8_000 });
       lines.push(`idb screenshot failure: exit ${shot.exitCode}, ${shot.durationMs} ms`);
-      if (shot.exitCode === 0 && (await stat(file)).size > 0) failureScreenshot = path.relative(config.root, file);
+      if (shot.exitCode === 0 && (await uiOperation(limit, () => stat(file))).size > 0) failureScreenshot = path.relative(config.root, file);
     } catch { /* The failure screenshot is best effort. */ }
-    throw new CliError('UI_DELIVERY_FAILED', redact(`UI action ${current} (${currentKind}) failed: ${message}`, secrets),
-      redactValue({ transcript: path.relative(config.root, transcript), failedAction, completed: current, screenshots,
-        ...(failureScreenshot ? { failureScreenshot } : {}) }, secrets));
+    if (limit.expired()) throw uiFailure('PROCESS_TIMEOUT', `UI plan exceeded ${limit.ms / 1000} s`,
+      redactValue({ ...evidence, timeoutSeconds: limit.ms / 1000, ...(failureScreenshot ? { failureScreenshot } : {}) }, secrets));
+    throw uiFailure('UI_DELIVERY_FAILED', redact(failureMessage(failedAction), secrets),
+      redactValue({ ...evidence, ...(failureScreenshot ? { failureScreenshot } : {}) }, secrets));
   } finally {
-    await writeFile(transcript, `${redact(lines.join('\n'), config.redactions ?? [])}\n`, { mode: 0o600 });
+    await recording.close();
+    // A bounded best-effort transcript write cannot replace an action failure.
+    await uiOperation(limit.expired() ? deadline(1_000) : limit,
+      () => writeFile(transcript, `${redact(lines.join('\n'), config.redactions ?? [])}\n`, { mode: 0o600 })).catch(() => undefined);
   }
 }

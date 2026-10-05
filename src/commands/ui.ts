@@ -1,218 +1,60 @@
-import { mkdir, readFile, readdir, rename, rm, stat, unlink, writeFile } from 'node:fs/promises';
+import { readFile, readdir, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { targetBundleId, type LoadedConfig } from '../config/config.js';
 import { createRun, redactValue } from '../artifacts/runs.js';
-import { writeLaunchMarker } from '../artifacts/launch-marker.js';
 import { CliError } from '../core/errors.js';
 import { redact } from '../core/redact.js';
 import { buildFailureDetails, writeBuildLog } from '../native/build-errors.js';
-import { listDevices, resolveDevice } from '../native/simctl.js';
+import { selectedDevice, requireBooted } from '../native/simctl-commands.js';
+import { appProcessEvidence } from './app-status.js';
+import { resolveExpoProjectUrl, type ExpoProjectDependencies } from './app.js';
+import { server } from './server.js';
 import { deadline, runProcess, type Deadline, type ProcessResult, type RunOptions } from '../process/run-process.js';
-import { idbCompatible, screenshotName, tryRunIdbPlan } from './idb-ui.js';
-import { appDisplayName, normalizeXctestNodes, targetTypes, type ElementTarget, type Inspection } from './ui-elements.js';
-import { createRecordingBridge, startVideoRecording, type Recording } from './video-recording.js';
+import { tryRunIdbPlan } from './idb-ui.js';
+import { runXctestPlan } from './ui-xctest.js';
+export { exportXctestScreenshots, injectEnvironment } from './ui-xctest.js';
+export type { ScreenshotExport } from './ui-xctest.js';
+import { type Inspection } from './ui-elements.js';
+import { type RecordingStarter } from './video-recording.js';
 
-export type UiPlan = { version: 1; actions: unknown[] };
-export type Point = { x: number; y: number };
-export type Swipe = ({ direction: 'up' | 'down' | 'left' | 'right' } & ElementTarget | { from: Point; to: Point }) & { duration?: number };
-export type LongPress = ElementTarget & { x?: number; y?: number; duration?: number };
-type Dependencies = {
+import { boundedUiRun, checkUiDeadline, uiOperation, uiTimeout } from './ui-deadline.js';
+import { failureMessage, uiFailure, type FailedAction, type UiRunResult } from './ui-result.js';
+export { actionKind, failureMessage } from './ui-result.js';
+export type { FailedAction, UiRunResult } from './ui-result.js';
+import { validatePlan, type UiPlan } from './ui-plan.js';
+export { validatePlan, actionDefinitions, swipeDirections, textModes, pressKeys, pressButtons } from './ui-plan.js';
+export type { UiPlan, UiAction, UiActionInputs, UiActionKind, Point, Swipe, LongPress } from './ui-plan.js';
+export type UiDependencies = ExpoProjectDependencies & {
   run?: (executable: string, args: string[], options?: RunOptions) => Promise<ProcessResult>;
-  resolveUdid?: (config: LoadedConfig) => Promise<string>;
+  resolveUdid?: (config: LoadedConfig, run: NonNullable<UiDependencies['run']>) => Promise<string>;
   runnerProject?: string;
   now?: () => Date;
   backend?: 'auto' | 'idb' | 'xctest';
-  startRecording?: (udid: string, file: string) => Promise<Recording>;
+  startRecording?: RecordingStarter;
   /** Deadline for the whole command; defaults to 15 minutes. */
   timeoutMs?: number;
   /** Internal: the single `ui run` deadline shared with the runner build. */
   deadline?: Deadline;
   /** Internal: timeout cleanup terminates only the runner, never the app (`ui inspect`). */
   preserveApp?: boolean;
+  /** Internal: verified Expo project URL, never accepted as a public action field. */
+  launchUrl?: string;
 };
 
 export const defaultUiTimeoutMs = 900_000;
-const runnerBundleId = 'dev.agemu.agemu-agent-runner.xctrunner';
 
 const isTimeout = (error: unknown): error is CliError => error instanceof CliError && error.code === 'PROCESS_TIMEOUT';
 
 const bundledRunner = fileURLToPath(new URL('../../runner/AgentRunner.xcodeproj', import.meta.url));
 
-const targetFields = ['identifier', 'label', 'labelContains', 'type', 'index'];
-
-const hasTargetFields = (input: Record<string, unknown>) => targetFields.some(field => input[field] !== undefined);
-
-/** Why a target is invalid, or undefined. Shared by every action that accepts a target. */
-function targetProblem(input: Record<string, unknown>): string | undefined {
-  for (const field of ['identifier', 'label', 'labelContains']) {
-    if (input[field] !== undefined && typeof input[field] !== 'string') return `${field} must be a string`;
-  }
-  if (input.labelContains === '') return 'labelContains must not be empty';
-  if (input.identifier !== undefined && input.label !== undefined) return 'accepts identifier or label, not both';
-  if (input.identifier === undefined && input.label === undefined && input.labelContains === undefined) {
-    return 'needs a string identifier, label, or labelContains';
-  }
-  if (input.type !== undefined && !(typeof input.type === 'string' && targetTypes.has(input.type))) {
-    return `type must be one of ${[...targetTypes].join(', ')}`;
-  }
-  if (input.index !== undefined && !(Number.isSafeInteger(input.index) && (input.index as number) >= 0)) return 'index must be a non-negative integer';
-  return undefined;
-}
-/** Accepted fields per action kind; every plan action must use exactly one of these kinds. */
-const actionFields: Record<string, string[] | undefined> = {
-  launch: ['arguments', 'environment'],
-  wait: [...targetFields, 'timeout', 'duration'],
-  type: [...targetFields, 'text'],
-  tap: [...targetFields, 'x', 'y'],
-  swipe: [...targetFields, 'direction', 'from', 'to', 'duration'],
-  longPress: [...targetFields, 'x', 'y', 'duration'],
-  assertVisible: targetFields,
-  assertExists: targetFields,
-  assertNotVisible: targetFields,
-  assertValue: [...targetFields, 'value'],
-  screenshot: ['name'],
-  inspect: [],
-  startVideoRecording: ['name'],
-  stopVideoRecording: [],
-  clear: targetFields,
-  pressKey: ['key', 'count'],
-  pressButton: ['button'],
-  openUrl: ['url', 'confirm'],
-  terminate: [],
-  scrollUntilVisible: ['target', 'in', 'direction', 'maxSwipes'],
-  assertText: [...targetFields, 'equals', 'contains', 'matches'],
-};
-const targetedActions = new Set(['tap', 'type', 'assertVisible', 'assertExists', 'assertNotVisible', 'assertValue', 'clear', 'assertText']);
-export const swipeDirections = ['up', 'down', 'left', 'right'];
-export const textModes = ['equals', 'contains', 'matches'] as const;
-export const pressKeys = ['return', 'delete', 'tab', 'space'];
-export const pressButtons = ['home'];
-
-function validatePlan(value: unknown): UiPlan {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new CliError('UI_VALIDATION_FAILED', 'The UI plan must be an object');
-  const plan = value as Record<string, unknown>;
-  if (plan.version !== 1 || !Array.isArray(plan.actions) || plan.actions.length === 0) {
-    throw new CliError('UI_VALIDATION_FAILED', 'The UI plan requires version 1 and at least one action');
-  }
-  const object = (item: unknown): item is Record<string, unknown> => typeof item === 'object' && item !== null && !Array.isArray(item);
-  const point = (item: unknown): item is Point => object(item) && Number.isFinite(item.x) && Number.isFinite(item.y);
-  let recording = false;
-  for (const [index, raw] of plan.actions.entries()) {
-    const fail = (message: string): never => { throw new CliError('UI_VALIDATION_FAILED', `Action ${index}: ${message}`); };
-    if (!object(raw) || Object.keys(raw).length !== 1) throw new CliError('UI_VALIDATION_FAILED', `Action ${index}: must contain exactly one action`);
-    const [kind] = Object.keys(raw);
-    const fields = actionFields[kind];
-    if (!fields) throw new CliError('UI_VALIDATION_FAILED', `Action ${index}: unknown action ${kind}`);
-    const input = raw[kind];
-    if (!object(input)) throw new CliError('UI_VALIDATION_FAILED', `Action ${index}: ${kind} must be an object`);
-    for (const field of Object.keys(input)) if (!fields.includes(field)) fail(`${kind} does not accept ${field}`);
-    const optionalString = (field: string) => input[field] === undefined || typeof input[field] === 'string';
-    const checkTarget = () => { const problem = targetProblem(input); if (problem) fail(`${kind} ${problem}`); };
-    if (targetedActions.has(kind)) {
-      const coordinates = input.x !== undefined || input.y !== undefined;
-      if (kind === 'tap' && coordinates) {
-        if (hasTargetFields(input) || !Number.isFinite(input.x) || !Number.isFinite(input.y)) fail('tap needs a target or finite x and y, not both');
-      } else checkTarget();
-    }
-    if (kind === 'wait' && hasTargetFields(input)) checkTarget();
-    if (kind === 'swipe' && input.direction !== undefined && hasTargetFields(input)) checkTarget();
-    if (kind === 'longPress' && hasTargetFields(input)) checkTarget();
-    if (kind === 'type' && typeof input.text !== 'string') fail('type needs string text');
-    if (kind === 'assertValue' && typeof input.value !== 'string') fail('assertValue needs string value');
-    if (kind === 'screenshot' && !optionalString('name')) fail('screenshot name must be a string');
-    if (kind === 'pressKey') {
-      if (!pressKeys.includes(input.key as string)) fail(`pressKey key must be one of ${pressKeys.join(', ')}`);
-      if (input.count !== undefined && !(Number.isSafeInteger(input.count) && (input.count as number) >= 1 && (input.count as number) <= 100)) {
-        fail('pressKey count must be an integer from 1 to 100');
-      }
-    }
-    if (kind === 'scrollUntilVisible') {
-      for (const field of ['target', 'in']) {
-        const nested = input[field];
-        if (nested === undefined && field === 'in') continue;
-        if (!object(nested)) fail(`scrollUntilVisible ${field} must be an object`);
-        const fields = nested as Record<string, unknown>;
-        for (const key of Object.keys(fields)) if (!targetFields.includes(key)) fail(`scrollUntilVisible ${field} does not accept ${key}`);
-        const problem = targetProblem(fields);
-        if (problem) fail(`scrollUntilVisible ${field} ${problem}`);
-      }
-      if (input.direction !== undefined && !swipeDirections.includes(input.direction as string)) {
-        fail(`scrollUntilVisible direction must be one of ${swipeDirections.join(', ')}`);
-      }
-      if (input.maxSwipes !== undefined && !(Number.isSafeInteger(input.maxSwipes) && (input.maxSwipes as number) >= 1 && (input.maxSwipes as number) <= 50)) {
-        fail('scrollUntilVisible maxSwipes must be an integer from 1 to 50');
-      }
-    }
-    if (kind === 'assertText') {
-      const modes = textModes.filter(mode => input[mode] !== undefined);
-      if (modes.length !== 1 || typeof input[modes[0]!] !== 'string') fail('assertText needs exactly one string equals, contains, or matches');
-      if (modes[0] === 'matches') {
-        try { new RegExp(input.matches as string); } catch { fail('assertText matches must be a valid regular expression'); }
-      }
-    }
-    if (kind === 'pressButton' &&!pressButtons.includes(input.button as string)) fail(`pressButton button must be one of ${pressButtons.join(', ')}`);
-    if (kind === 'openUrl') {
-      const parses = (url: string) => { try { new URL(url); return true; } catch { return false; } };
-      if (typeof input.url !== 'string' || !parses(input.url)) fail('openUrl needs a valid url string');
-      if (input.confirm !== undefined && typeof input.confirm !== 'boolean') fail('openUrl confirm must be a boolean');
-    }
-    if (kind === 'launch') {
-      if (input.arguments !== undefined && (!Array.isArray(input.arguments) || !input.arguments.every(item => typeof item === 'string'))) {
-        fail('launch arguments must be an array of strings');
-      }
-      if (input.environment !== undefined && (!object(input.environment)
-        || !Object.entries(input.environment).every(([name, entry]) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(name) && typeof entry === 'string'))) {
-        fail('launch environment must map valid variable names to strings');
-      }
-    }
-    if ('startVideoRecording' in raw || 'stopVideoRecording' in raw) {
-      const keys = Object.keys(raw);
-      if (keys.length !== 1 || !object(raw[keys[0]])) throw new CliError('UI_VALIDATION_FAILED', `Action ${index}: recording action must contain one object`);
-      const value = raw[keys[0]] as Record<string, unknown>;
-      if (keys[0] === 'startVideoRecording') {
-        if (recording || Object.keys(value).some(key => key !== 'name') || (value.name !== undefined && (typeof value.name !== 'string' || !value.name.trim()))) {
-          throw new CliError('UI_VALIDATION_FAILED', `Action ${index}: invalid or nested startVideoRecording`);
-        }
-        recording = true;
-      } else {
-        if (!recording || Object.keys(value).length !== 0) throw new CliError('UI_VALIDATION_FAILED', `Action ${index}: stopVideoRecording has no active recording`);
-        recording = false;
-      }
-      continue;
-    }
-    if ('swipe' in raw) {
-      const swipe = raw.swipe;
-      const directional = object(swipe) && ['up', 'down', 'left', 'right'].includes(String(swipe.direction))
-        && swipe.from === undefined && swipe.to === undefined;
-      const coordinates = object(swipe) && swipe.direction === undefined && !hasTargetFields(swipe)
-        && point(swipe.from) && point(swipe.to)
-        && (swipe.from.x !== swipe.to.x || swipe.from.y !== swipe.to.y);
-      if ((!directional && !coordinates) || (object(swipe) && swipe.duration !== undefined && (!Number.isFinite(swipe.duration) || Number(swipe.duration) <= 0))) {
-        throw new CliError('UI_VALIDATION_FAILED', `Action ${index}: swipe needs a direction or distinct from/to coordinates and a positive duration`);
-      }
-    }
-    if ('wait' in raw) {
-      const wait = raw.wait;
-      const target = object(wait) && hasTargetFields(wait);
-      const pause = object(wait) && !target && wait.timeout === undefined
-        && typeof wait.duration === 'number' && Number.isFinite(wait.duration) && wait.duration >= 0;
-      if (!object(wait) || (!target && !pause) || (target && (wait.duration !== undefined || (wait.timeout !== undefined
-        && (typeof wait.timeout !== 'number' || !Number.isFinite(wait.timeout) || wait.timeout < 0))))) {
-        throw new CliError('UI_VALIDATION_FAILED', `Action ${index}: wait needs a target and optional timeout, or a nonnegative duration`);
-      }
-    }
-    if ('longPress' in raw) {
-      const press = raw.longPress;
-      const target = object(press) && hasTargetFields(press);
-      const coordinates = object(press) && Number.isFinite(press.x) && Number.isFinite(press.y);
-      if (!object(press) || (!target && !coordinates) || (press.duration !== undefined && (!Number.isFinite(press.duration) || Number(press.duration) <= 0))) {
-        throw new CliError('UI_VALIDATION_FAILED', `Action ${index}: longPress needs a target or coordinates and a positive duration`);
-      }
-    }
-  }
-  if (recording) throw new CliError('UI_VALIDATION_FAILED', 'Every startVideoRecording needs a matching stopVideoRecording');
-  return value as UiPlan;
+async function uiUdid(config: LoadedConfig, dependencies: UiDependencies, run: NonNullable<UiDependencies['run']>, booted: boolean): Promise<string> {
+  if (dependencies.resolveUdid) return dependencies.resolveUdid(config, run);
+  // Legacy run injections select a configured fake device without querying the host inventory.
+  if (dependencies.run && config.simulator.udid) return config.simulator.udid;
+  const device = await selectedDevice(config, { runner: (args, options) => run('xcrun', ['simctl', ...args], options) });
+  if (booted) requireBooted(device, config.redactions ?? []);
+  return device.udid;
 }
 
 async function findXctestrun(directory: string): Promise<string | undefined> {
@@ -227,61 +69,31 @@ async function findXctestrun(directory: string): Promise<string | undefined> {
   return undefined;
 }
 
-export function injectEnvironment(value: unknown, environment: Record<string, string>): number {
-  if (!value || typeof value !== 'object') return 0;
-  let count = 0;
-  if (Array.isArray(value)) {
-    for (const item of value) count += injectEnvironment(item, environment);
-    return count;
-  }
-  const record = value as Record<string, unknown>;
-  if (typeof record.TestBundlePath === 'string') {
-    record.EnvironmentVariables = { ...(record.EnvironmentVariables as Record<string, string> | undefined), ...environment };
-    count += 1;
-  }
-  for (const child of Object.values(record)) count += injectEnvironment(child, environment);
-  return count;
-}
-
-const stderrLimit = 4_000;
-
 type Limit = { deadline: Deadline; label: string };
 
 function limitExceeded(limit: Limit, details: Record<string, unknown> = {}): CliError {
   return new CliError('PROCESS_TIMEOUT', `${limit.label} exceeded ${limit.deadline.ms / 1000} s`, { timeoutSeconds: limit.deadline.ms / 1000, ...details });
 }
 
-async function checked(run: NonNullable<Dependencies['run']>, executable: string, args: string[], message: string, secrets: string[],
-  limit: Limit): Promise<ProcessResult> {
-  let result: ProcessResult;
-  try { result = await run(executable, args, { timeoutMs: limit.deadline.remaining() }); }
-  catch (error) { throw isTimeout(error) ? limitExceeded(limit) : error; }
-  if (result.exitCode !== 0) {
-    throw new CliError('UI_DELIVERY_FAILED', message, { exitCode: result.exitCode, stderr: redact(result.stderr, secrets).slice(-stderrLimit) });
-  }
-  return result;
-}
-
-export async function buildUiRunner(config: LoadedConfig, dependencies: Dependencies = {}, rebuild = false) {
-  const run = dependencies.run ?? runProcess;
+export async function buildUiRunner(config: LoadedConfig, dependencies: UiDependencies = {}, rebuild = false) {
   const limit: Limit = dependencies.deadline
     ? { deadline: dependencies.deadline, label: 'UI plan' }
     : { deadline: deadline(dependencies.timeoutMs ?? defaultUiTimeoutMs), label: 'UI runner build' };
-  const udid = await (dependencies.resolveUdid?.(config)
-    ?? (config.simulator.udid || listDevices().then(devices => resolveDevice(devices, config.simulator).udid)));
+  const run = boundedUiRun(dependencies.run ?? runProcess, limit.deadline);
+  const udid = await uiOperation(limit.deadline, () => uiUdid(config, dependencies, run, false));
   const derivedData = path.join(config.root, '.agemu', 'RunnerDerivedData');
   const project = dependencies.runnerProject ?? bundledRunner;
-  let manifest = rebuild ? undefined : await findXctestrun(derivedData).catch(() => undefined);
+  let manifest = rebuild ? undefined : await uiOperation(limit.deadline, () => findXctestrun(derivedData)).catch(error => { if (isTimeout(error)) throw limitExceeded(limit); return undefined; });
   if (manifest) {
-    const builtAt = (await stat(manifest)).mtimeMs;
+    const builtAt = (await uiOperation(limit.deadline, () => stat(manifest!))).mtimeMs;
     const sources = [path.join(project, 'project.pbxproj'), path.join(path.dirname(project), 'AgentRunner', 'AgentRunner.swift')];
-    const changed = await Promise.all(sources.map(source => stat(source).then(info => info.mtimeMs > builtAt).catch(() => false)));
+    const changed = await uiOperation(limit.deadline, () => Promise.all(sources.map(source => stat(source).then(info => info.mtimeMs > builtAt).catch(() => false))));
     if (changed.some(Boolean)) manifest = undefined;
   }
   const cached = Boolean(manifest);
   if (!manifest) {
     const secrets = config.redactions ?? [];
-    const { directory } = await createRun(config.root, dependencies.now?.() ?? new Date());
+    const { directory } = await uiOperation(limit.deadline, () => createRun(config.root, dependencies.now?.() ?? new Date()));
     const buildLog = path.join(directory, 'runner-build.log');
     const log = redact(path.relative(config.root, buildLog), secrets);
     let result: ProcessResult;
@@ -294,142 +106,120 @@ export async function buildUiRunner(config: LoadedConfig, dependencies: Dependen
       const partial = (error instanceof CliError ? error.details?.result : undefined) as Partial<ProcessResult> | undefined;
       const stdout = redact(typeof partial?.stdout === 'string' ? partial.stdout : '', secrets);
       const stderr = redact(typeof partial?.stderr === 'string' ? partial.stderr : '', secrets);
-      await writeBuildLog(buildLog, { stdout, stderr, executionError: redact(error instanceof Error ? error.message : String(error), secrets) });
+      await uiOperation(limit.deadline.expired() ? deadline(1_000) : limit.deadline, () => writeBuildLog(buildLog, { stdout, stderr, executionError: redact(error instanceof Error ? error.message : String(error), secrets) })).catch(() => undefined);
       if (isTimeout(error)) throw limitExceeded(limit, { log });
       throw new CliError('BUILD_FAILED', 'Unable to build the XCTest UI runner', { log, ...buildFailureDetails(stdout, stderr, secrets) });
     }
-    await writeBuildLog(buildLog, { stdout: redact(result.stdout, secrets), stderr: redact(result.stderr, secrets) });
+    await uiOperation(limit.deadline, () => writeBuildLog(buildLog, { stdout: redact(result.stdout, secrets), stderr: redact(result.stderr, secrets) }));
     if (result.exitCode !== 0) {
       throw new CliError('BUILD_FAILED', 'Unable to build the XCTest UI runner', {
         exitCode: result.exitCode, log, ...buildFailureDetails(result.stdout, result.stderr, secrets),
       });
     }
-    manifest = await findXctestrun(derivedData);
+    manifest = await uiOperation(limit.deadline, () => findXctestrun(derivedData));
   }
   if (!manifest) throw new CliError('BUILD_FAILED', 'xcodebuild did not produce an .xctestrun file');
   return { udid, derivedData, manifest, cached };
 }
 
-export async function runUiPlan(config: LoadedConfig, source: { file: string } | { json: string }, dependencies: Dependencies = {}) {
-  const run = dependencies.run ?? runProcess;
+export async function runUiPlan(config: LoadedConfig, source: { file: string } | { json: string }, dependencies: UiDependencies = {}): Promise<UiRunResult> {
+  const limit = dependencies.deadline ?? deadline(dependencies.timeoutMs ?? defaultUiTimeoutMs);
+  const output = redactValue(await executeUiPlan(config, source, { ...dependencies, deadline: limit }), config.redactions ?? []);
+  if (limit.expired()) throw uiFailure('PROCESS_TIMEOUT', uiTimeout(limit).message, { ...output, failedAction: null, timeoutSeconds: limit.ms / 1000 });
+  return output;
+}
+
+/** Internal results stay semantic until assertions/app identity checks have finished. */
+async function executeUiPlan(config: LoadedConfig, source: { file: string } | { json: string }, dependencies: UiDependencies): Promise<UiRunResult> {
+  const started = Date.now();
+  const limit = dependencies.deadline ?? deadline(dependencies.timeoutMs ?? defaultUiTimeoutMs);
+  const run = boundedUiRun(dependencies.run ?? runProcess, limit);
   let value: unknown;
-  try { value = JSON.parse('file' in source ? await readFile(source.file, 'utf8') : source.json) as unknown; }
-  catch (error) { throw new CliError('UI_VALIDATION_FAILED', `Cannot read UI plan: ${error instanceof Error ? error.message : String(error)}`); }
+  try { value = JSON.parse('file' in source ? await uiOperation(limit, () => readFile(source.file, 'utf8')) : source.json) as unknown; }
+  catch (error) {
+    if (isTimeout(error)) throw uiFailure(error.code, error.message, error.details);
+    throw new CliError('UI_VALIDATION_FAILED', `Cannot read UI plan: ${error instanceof Error ? error.message : String(error)}`);
+  }
   const plan = validatePlan(value);
   const backend = dependencies.backend ?? 'auto';
   if (!['auto', 'idb', 'xctest'].includes(backend)) throw new CliError('UI_VALIDATION_FAILED', 'UI backend must be auto, idb, or xctest');
-  const runStarted = Date.now();
-  const limit = dependencies.deadline ?? deadline(dependencies.timeoutMs ?? defaultUiTimeoutMs);
-  const bounded: Dependencies = { ...dependencies, deadline: limit };
-  const now = dependencies.now?.() ?? new Date();
-  const { directory } = await createRun(config.root, now);
-  const udid = await (dependencies.resolveUdid?.(config)
-    ?? (config.simulator.udid || listDevices().then(devices => resolveDevice(devices, config.simulator).udid)));
-  if (plan.actions.some(action => typeof action === 'object' && action !== null && 'startVideoRecording' in action)) {
-    const segments: Array<{ actions: unknown[]; offset: number; recording?: 'start' | 'stop'; name?: string }> = [];
-    let actions: unknown[] = [];
-    let actionsOffset = 0;
-    for (const [planIndex, raw] of plan.actions.entries()) {
-      const action = raw as Record<string, Record<string, unknown>>;
-      if ('startVideoRecording' in action || 'stopVideoRecording' in action) {
-        if (actions.length) segments.push({ actions, offset: actionsOffset });
-        actions = [];
-        actionsOffset = planIndex + 1;
-        segments.push('startVideoRecording' in action
-          ? { actions: [], offset: planIndex, recording: 'start', name: action.startVideoRecording.name as string | undefined }
-          : { actions: [], offset: planIndex, recording: 'stop' });
-      } else actions.push(raw);
-    }
-    if (actions.length) segments.push({ actions, offset: actionsOffset });
-    const actionSegments = segments.filter(segment => !segment.recording);
-    const supportsIdb = actionSegments.every(segment => idbCompatible({ version: 1, actions: segment.actions }));
-    let useIdb = false;
-    if (backend !== 'xctest' && supportsIdb) {
+  let output: UiRunResult | undefined;
+  try {
+    const { directory } = await uiOperation(limit, () => createRun(config.root, dependencies.now?.() ?? new Date()));
+    const udid = await uiOperation(limit, () => uiUdid(config, dependencies, run, true));
+    let launchUrl: string | undefined;
+    if (config.app.type === 'expo' && plan.actions.some(action => action.launch !== undefined)) {
+      // Retain the authoritative cancellation through response-body reads: their abort rejection can
+      // beat projectRequest's own timer and be wrapped as PROCESS_FAILED before this boundary sees it.
+      const cancellation = AbortSignal.timeout(limit.remaining());
       try {
-        const probe = await run('idb', ['ui', 'describe-all', '--api', 'axbridge', '--udid', udid], { timeoutMs: Math.min(8_000, limit.remaining()) });
-        useIdb = probe.exitCode === 0 && Array.isArray(JSON.parse(probe.stdout));
-      } catch { /* XCTest can run the complete plan. */ }
-    }
-    if (!useIdb) {
-      if (backend === 'idb') throw new CliError('UI_DELIVERY_FAILED', 'idb is unavailable or the UI plan is incompatible with idb');
-      const bridge = await createRecordingBridge(udid, directory, config.root, dependencies.startRecording ?? startVideoRecording);
-      try {
-        const result = await runUiSegment(config, plan, udid, directory, run, 'xctest', bounded, bridge.port);
-        return { ...result, durationMs: Date.now() - runStarted, recordings: bridge.recordings };
-      } finally { await bridge.close(); }
-    }
-    const outputs: Array<Record<string, unknown>> = [];
-    const recordings: string[] = [];
-    let active: Recording | undefined;
-    try {
-      for (const [index, segment] of segments.entries()) {
-        if (segment.recording) {
-          const kind = segment.recording === 'start' ? 'startVideoRecording' : 'stopVideoRecording';
-          try {
-            if (segment.recording === 'start') {
-              const name = segment.name?.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 80) || 'video';
-              const file = path.join(directory, `${recordings.length + 1}-${name}.mp4`);
-              active = await (dependencies.startRecording ?? startVideoRecording)(udid, file);
-              recordings.push(path.relative(config.root, file));
-            } else {
-              const recording = active!;
-              active = undefined;
-              await recording.stop();
-            }
-          } catch (error) {
-            const secrets = config.redactions ?? [];
-            const failedAction = { index: segment.offset, kind, message: error instanceof Error ? error.message : String(error) };
-            throw new CliError('UI_DELIVERY_FAILED', redact(failureMessage(failedAction), secrets),
-              redactValue({ failedAction, completed: segment.offset }, secrets));
-          }
-        } else {
-          const location = path.join(directory, `segment-${index}`);
-          await mkdir(location, { recursive: true });
-          try {
-            outputs.push(offsetInspections(await runUiSegment(config, { version: 1, actions: segment.actions }, udid, location, run, 'idb', bounded),
-              segment.offset));
-          } catch (error) {
-            throw offsetFailure(error, segment.offset);
-          }
-        }
+        launchUrl = await uiOperation(limit, () => resolveExpoProjectUrl(config, {
+          ...dependencies, requestTimeoutMs: Math.min(dependencies.requestTimeoutMs ?? 5_000, limit.remaining()),
+          serverStatus: (config) => uiOperation(limit, async () => {
+            if (dependencies.serverStatus) return dependencies.serverStatus(config);
+            const result = await server(config, 'status', { run, deadline: limit });
+            return { running: result.running === true, collision: result.collision === true };
+          }),
+          ...(dependencies.resolveExpoUrl ? { resolveExpoUrl: (port) => uiOperation(limit, () => dependencies.resolveExpoUrl!(port)) } : {}),
+          request: (input, options) => {
+            checkUiDeadline(limit);
+            const signal = AbortSignal.any([...(options?.signal ? [options.signal] : []), cancellation]);
+            return (dependencies.request ?? fetch)(input, { ...options, signal });
+          },
+        }));
+      } catch (error) {
+        if (cancellation.aborted) throw uiTimeout(limit);
+        throw error;
       }
-    } finally {
-      if (active) await active.stop();
     }
-    return redactValue({
-      run: path.relative(config.root, directory), udid, actions: plan.actions.length, durationMs: Date.now() - runStarted, recordings, segments: outputs,
-    }, config.redactions ?? []);
+    const bounded = { ...dependencies, deadline: limit, launchUrl };
+    if (backend !== 'xctest') {
+      output = await tryRunIdbPlan(config, plan, udid, directory, run, limit, bounded);
+      if (!output && backend === 'idb') throw uiFailure('UI_DELIVERY_FAILED', 'idb is unavailable or the UI plan is incompatible with idb');
+    }
+    if (!output) output = await runXctestPlan(config, plan, udid, directory, run, bounded,
+      () => buildUiRunner(config, { ...bounded, run, resolveUdid: async () => udid }));
+    checkUiDeadline(limit);
+    return { ...output, durationMs: Date.now() - started };
+  } catch (error) {
+    const failure = error instanceof CliError ? error : new CliError('UI_DELIVERY_FAILED', error instanceof Error ? error.message : String(error));
+    const details = { ...(output ? { completed: output.completed, screenshots: output.screenshots, recordings: output.recordings,
+      inspections: output.inspections, transcript: output.transcript } : {}), ...failure.details };
+    throw uiFailure(failure.code, redact(failure.message, config.redactions ?? []), redactValue(details, config.redactions ?? []));
   }
-  return { ...await runUiSegment(config, plan, udid, directory, run, backend, bounded), durationMs: Date.now() - runStarted };
 }
 
 export const inspectLaunchHint = 'Launch the app first (agemu app launch); ui inspect never launches it.';
 
 /** Reads the running app's current screen without launching, terminating, or interacting with it. */
 export async function inspectScreen(config: LoadedConfig, options: { backend?: 'auto' | 'idb' | 'xctest'; all?: boolean; timeoutMs?: number },
-  dependencies: Dependencies = {}) {
+  dependencies: UiDependencies = {}) {
   const capturedAt = (dependencies.now?.() ?? new Date()).toISOString();
   const plan = { version: 1, actions: [{ inspect: {} }, { screenshot: { name: 'inspect' } }] };
   const run = dependencies.run ?? runProcess;
   const limit = dependencies.deadline ?? deadline(options.timeoutMs ?? defaultUiTimeoutMs);
   if (options.backend !== 'xctest') {
-    // idb reads whatever is in the foreground, so confirm the configured app is running (read-only).
-    const udid = await (dependencies.resolveUdid?.(config)
-      ?? (config.simulator.udid || listDevices().then(devices => resolveDevice(devices, config.simulator).udid)));
+    const boundedRun = boundedUiRun(run, limit);
+    const udid = await uiOperation(limit, () => uiUdid(config, dependencies, boundedRun, true));
     const bundleId = targetBundleId(config);
     let listed: ProcessResult;
-    try { listed = await run('xcrun', ['simctl', 'spawn', udid, 'launchctl', 'list'], { timeoutMs: Math.min(10_000, limit.remaining()) }); }
-    catch (error) { throw isTimeout(error) ? new CliError('PROCESS_TIMEOUT', `UI plan exceeded ${limit.ms / 1000} s`, { timeoutSeconds: limit.ms / 1000 }) : error; }
-    if (listed.exitCode !== 0 || !listed.stdout.includes(`UIKitApplication:${bundleId}[`)) {
-      const failedAction = { index: 0, kind: 'inspect', message: `${bundleId} is not running` };
-      throw new CliError('UI_DELIVERY_FAILED', redact(`${failureMessage(failedAction)}. ${inspectLaunchHint}`, config.redactions ?? []),
-        redactValue({ failedAction, completed: 0 }, config.redactions ?? []));
+    try { listed = await boundedRun('xcrun', ['simctl', 'spawn', udid, 'launchctl', 'list'], { timeoutMs: 10_000 }); }
+    catch (error) {
+      const timeout = isTimeout(error);
+      throw uiFailure(timeout ? 'PROCESS_TIMEOUT' : 'UI_DELIVERY_FAILED', timeout ? uiTimeout(limit).message : `Cannot verify the running app. ${inspectLaunchHint}`,
+        redactValue({ ...(timeout ? { timeoutSeconds: limit.ms / 1000 } : {}) }, config.redactions ?? []));
+    }
+    const evidence = listed.exitCode === 0 ? appProcessEvidence(listed.stdout, bundleId) : { running: null };
+    if (evidence.running !== true) {
+      const failedAction = { index: 0, kind: 'inspect', message: `${bundleId} ${evidence.running === false ? 'is not running' : 'running state is unavailable'}` };
+      throw uiFailure('UI_DELIVERY_FAILED', redact(`${failureMessage(failedAction)}. ${inspectLaunchHint}`, config.redactions ?? []),
+        redactValue({ failedAction }, config.redactions ?? []));
     }
   }
-  let result: Record<string, unknown>;
+  let result: UiRunResult;
   try {
-    result = await runUiPlan(config, { json: JSON.stringify(plan) },
-      { ...dependencies, backend: options.backend, deadline: limit, preserveApp: true }) as Record<string, unknown>;
+    result = await executeUiPlan(config, { json: JSON.stringify(plan) },
+      { ...dependencies, backend: options.backend, deadline: limit, preserveApp: true });
   } catch (error) {
     const failed = error instanceof CliError ? error.details?.failedAction as FailedAction | undefined : undefined;
     if (error instanceof CliError && error.code === 'UI_DELIVERY_FAILED' && failed?.kind === 'inspect') {
@@ -439,227 +229,15 @@ export async function inspectScreen(config: LoadedConfig, options: { backend?: '
   }
   const inspections = (result.runnerResult as { inspections?: Inspection[] } | undefined)?.inspections ?? [];
   const tree = inspections.find(inspection => inspection.index === 0)?.elements ?? [];
-  if (result.backend === 'idb') {
-    // idb reads whatever app is in the foreground; a running but backgrounded app would be misreported.
-    const bundleId = targetBundleId(config);
-    const displayName = await appDisplayName(run, String(result.udid), bundleId, Math.min(10_000, Math.max(1, limit.remaining())));
-    // The tree is already redacted, so compare against the redacted display name.
-    const name = displayName === undefined ? undefined : redact(displayName, config.redactions ?? []);
-    const foreground = tree.filter(element => element.type === 'application').map(element => element.label).filter(label => label !== undefined);
-    if (name !== undefined && foreground.length > 0 && !foreground.includes(name)) {
-      const failedAction = { index: 0, kind: 'inspect', message: `${bundleId} is not in the foreground (foreground: ${foreground[0]})` };
-      throw new CliError('UI_DELIVERY_FAILED',
-        redact(`${failureMessage(failedAction)}. Bring the app to the foreground first (agemu app launch); ui inspect never launches it.`, config.redactions ?? []),
-        redactValue({ failedAction, completed: 0 }, config.redactions ?? []));
-    }
-  }
   const visible = tree.filter(element => element.visible);
-  return {
+  checkUiDeadline(limit);
+  return redactValue({
+    ...result,
     run: result.run, udid: result.udid, bundleId: result.bundleId, backend: result.backend, capturedAt,
     screenshot: (result.screenshots as string[] | undefined)?.[0],
     elements: options.all ? tree : visible,
     counts: { total: tree.length, visible: visible.length },
+    foreground: null, foregroundUnavailable: 'Neither XCTest app-scoped inspection nor the simctl/idb foreground tree can reliably certify foreground application identity',
     ...(typeof result.screenshotExportError === 'string' ? { screenshotExportError: result.screenshotExportError } : {}),
-  };
-}
-
-export type FailedAction = { index: number; kind: string; message: string };
-
-export function actionKind(action: unknown): string {
-  return typeof action === 'object' && action !== null && !Array.isArray(action) ? Object.keys(action)[0] ?? 'unknown' : 'unknown';
-}
-
-export function failureMessage(failed: FailedAction): string {
-  return `UI action ${failed.index} (${failed.kind}) failed: ${failed.message}`;
-}
-
-/** Maps a segment-relative failure to its index in the submitted plan. The message is already redacted. */
-function offsetFailure(error: unknown, offset: number): unknown {
-  if (!(error instanceof CliError) || !error.details) return error;
-  const failed = error.details.failedAction as FailedAction | undefined;
-  if (!failed || typeof failed.index !== 'number') return error;
-  const failedAction = { ...failed, index: failed.index + offset };
-  // A timeout keeps its "UI plan exceeded" message; only the index moves.
-  return new CliError(error.code, error.code === 'PROCESS_TIMEOUT' ? error.message : failureMessage(failedAction), {
-    ...error.details, failedAction, completed: (typeof error.details.completed === 'number' ? error.details.completed : failed.index) + offset,
-  });
-}
-
-/** Maps segment-relative inspection indexes in a segment result to their indexes in the submitted plan. */
-function offsetInspections(output: Record<string, unknown>, offset: number): Record<string, unknown> {
-  const runnerResult = output.runnerResult as { inspections?: Inspection[] } | undefined;
-  if (!runnerResult || !Array.isArray(runnerResult.inspections)) return output;
-  return { ...output, runnerResult: { ...runnerResult,
-    inspections: runnerResult.inspections.map(inspection => ({ ...inspection, index: inspection.index + offset })) } };
-}
-
-/** Index from the last `AGEMU_ACTION:<n>` marker the runner printed, if any. */
-function lastStarted(stdout: string): number | undefined {
-  let index: number | undefined;
-  for (const line of stdout.split(/\r?\n/)) {
-    const started = line.indexOf('AGEMU_ACTION:');
-    if (started < 0) continue;
-    const match = /^(\d+)/.exec(line.slice(started + 13).trim());
-    if (match) index = Number(match[1]);
-  }
-  return index;
-}
-
-function xctestFailedAction(stdout: string, plan: UiPlan): FailedAction | undefined {
-  const lines = stdout.split(/\r?\n/);
-  const started = lastStarted(stdout);
-  let encodedFailure: string | undefined;
-  for (const line of lines) {
-    const failed = line.indexOf('AGEMU_FAILURE:');
-    if (failed >= 0) encodedFailure = line.slice(failed + 14).trim();
-  }
-  if (encodedFailure) {
-    try {
-      const value = JSON.parse(Buffer.from(encodedFailure, 'base64').toString('utf8')) as unknown;
-      const failure = value as Record<string, unknown>;
-      if (failure && Number.isInteger(failure.index) && typeof failure.kind === 'string' && typeof failure.message === 'string') {
-        return { index: failure.index as number, kind: failure.kind, message: failure.message };
-      }
-    } catch { /* Fall back to the last started action. */ }
-  }
-  if (started === undefined) return undefined;
-  const internal = lines.map(line => /error: -\[(?:\w+\.)?AgentRunner testPlan\] : (.+)$/.exec(line)?.[1]).find(Boolean);
-  return {
-    index: started, kind: actionKind(plan.actions[started]),
-    message: internal?.trim() ?? 'XCTest reported a failure; inspect the result bundle',
-  };
-}
-
-export type ScreenshotExport = { screenshots: string[]; failureScreenshot?: string; screenshotExportError?: string };
-
-/**
- * Exports AgentRunner screenshot attachments from the result bundle to `<directory>/screenshots`, using the idb
- * file naming. Never throws: a failed export yields `screenshotExportError` so it cannot mask the plan outcome.
- */
-export async function exportXctestScreenshots(run: NonNullable<Dependencies['run']>, resultBundle: string, directory: string,
-  root: string, plan: UiPlan, secrets: string[] = []): Promise<ScreenshotExport> {
-  try { await stat(resultBundle); } catch { return { screenshots: [] }; }
-  const exported = path.join(directory, 'attachments');
-  const target = path.join(directory, 'screenshots');
-  try {
-    const result = await run('xcrun', ['xcresulttool', 'export', 'attachments', '--path', resultBundle, '--output-path', exported], { timeoutMs: 120_000 });
-    if (result.exitCode !== 0) throw new Error(result.stderr.trim() || result.stdout.trim() || `xcresulttool exited with ${result.exitCode}`);
-    let text: string;
-    try { text = await readFile(path.join(exported, 'manifest.json'), 'utf8'); }
-    catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { screenshots: [] };
-      throw error;
-    }
-    const manifest = JSON.parse(text) as unknown;
-    if (!Array.isArray(manifest)) throw new Error('xcresulttool returned an invalid attachments manifest');
-    const shots: Array<{ index: number; file: string }> = [];
-    let failureScreenshot: string | undefined;
-    for (const test of manifest) {
-      const attachments = (test as { attachments?: unknown })?.attachments;
-      if (!Array.isArray(attachments)) continue;
-      for (const attachment of attachments as Array<Record<string, unknown>>) {
-        const name = attachment?.suggestedHumanReadableName;
-        const file = attachment?.exportedFileName;
-        if (typeof name !== 'string' || typeof file !== 'string' || path.basename(file) !== file) continue;
-        let destination: string | undefined;
-        const match = /^agemu-(\d+)-([A-Za-z0-9_-]+)/.exec(name);
-        if (match) {
-          const index = Number(match[1]);
-          const action = plan.actions[index] as Record<string, Record<string, unknown>> | undefined;
-          if (!action || typeof action !== 'object' || !('screenshot' in action)) continue;
-          // Xcode appends suffixes such as `_0_<UUID>.png`; the plan supplies the exact stem.
-          const stem = screenshotName(action.screenshot?.name);
-          if (!name.startsWith(`agemu-${index}-${stem}`) || shots.some(shot => shot.index === index)) continue;
-          destination = path.join(target, `${index}-${stem}.png`);
-          shots.push({ index, file: path.relative(root, destination) });
-        } else if (/^agemu-failure/.test(name)) {
-          destination = path.join(target, 'failure.png');
-          failureScreenshot = path.relative(root, destination);
-        }
-        if (!destination) continue;
-        await mkdir(target, { recursive: true });
-        await rename(path.join(exported, file), destination);
-      }
-    }
-    shots.sort((left, right) => left.index - right.index);
-    return { screenshots: shots.map(shot => shot.file), ...(failureScreenshot ? { failureScreenshot } : {}) };
-  } catch (error) {
-    return { screenshots: [], screenshotExportError: redact(error instanceof Error ? error.message : String(error), secrets) };
-  } finally {
-    await rm(exported, { recursive: true, force: true }).catch(() => undefined);
-  }
-}
-
-async function runUiSegment(config: LoadedConfig, plan: UiPlan, udid: string, directory: string,
-  run: NonNullable<Dependencies['run']>, backend: 'auto' | 'idb' | 'xctest', dependencies: Dependencies, videoPort?: number) {
-  const planDeadline = dependencies.deadline ?? deadline(dependencies.timeoutMs ?? defaultUiTimeoutMs);
-  const limit: Limit = { deadline: planDeadline, label: 'UI plan' };
-  if (backend !== 'xctest') {
-    const fast = await tryRunIdbPlan(config, plan, udid, directory, run, planDeadline);
-    if (fast) return fast;
-    if (backend === 'idb') throw new CliError('UI_DELIVERY_FAILED', 'idb is unavailable or the UI plan is incompatible with idb');
-  }
-  const built = await buildUiRunner(config, { ...dependencies, deadline: planDeadline, resolveUdid: async () => udid });
-  const json = await checked(run, 'plutil', ['-convert', 'json', '-o', '-', built.manifest], 'Unable to read the XCTest run manifest', config.redactions ?? [], limit);
-  const manifestValue = JSON.parse(json.stdout) as unknown;
-  const encodedPlan = Buffer.from(JSON.stringify({ ...plan, bundleId: targetBundleId(config) }), 'utf8').toString('base64');
-  if (injectEnvironment(manifestValue, { AGEMU_PLAN_BASE64: encodedPlan, ...(videoPort === undefined ? {} : { AGEMU_VIDEO_PORT: String(videoPort) }) }) === 0) {
-    throw new CliError('BUILD_FAILED', 'The XCTest run manifest contains no test target');
-  }
-  const manifest = path.join(path.dirname(built.manifest), `AgentRunner-${process.pid}-${Date.now()}.xctestrun`);
-  await writeFile(manifest, JSON.stringify(manifestValue), { mode: 0o600 });
-  await checked(run, 'plutil', ['-convert', 'xml1', manifest], 'Unable to write the XCTest run manifest', config.redactions ?? [], limit);
-  const resultBundle = path.join(directory, 'AgentRunner.xcresult');
-  const transcript = path.join(directory, 'xcodebuild.log');
-  // The runner launches inside xcodebuild, so the whole run is the narrowest launch window agemu can observe.
-  if (plan.actions.some(action => actionKind(action) === 'launch')) await writeLaunchMarker(config.root, { at: new Date(), udid: built.udid, bundleId: targetBundleId(config), source: 'ui run' });
-  let result: ProcessResult;
-  try {
-    result = await run('xcodebuild', [
-      'test-without-building', '-xctestrun', manifest, '-destination', `platform=iOS Simulator,id=${built.udid}`,
-      '-resultBundlePath', resultBundle,
-    ], { timeoutMs: planDeadline.remaining() }).finally(() => unlink(manifest).catch(() => undefined));
-  } catch (error) {
-    if (!isTimeout(error)) throw error;
-    const secrets = config.redactions ?? [];
-    const partial = (error.details?.result ?? {}) as Partial<ProcessResult>;
-    const stdout = typeof partial.stdout === 'string' ? partial.stdout : '';
-    const stderr = typeof partial.stderr === 'string' ? partial.stderr : '';
-    await writeFile(transcript, redact(`${stdout}${stderr}`, secrets), { mode: 0o600 });
-    // SIGTERM leaves the runner host and the app running and the result bundle incomplete; no screenshot export.
-    for (const bundle of dependencies.preserveApp ? [runnerBundleId] : [runnerBundleId, targetBundleId(config)]) {
-      await run('xcrun', ['simctl', 'terminate', built.udid, bundle], { timeoutMs: 10_000 }).catch(() => undefined);
-    }
-    const lastStartedAction = lastStarted(stdout);
-    throw limitExceeded(limit, redactValue({
-      transcript: path.relative(config.root, transcript), resultBundle: path.relative(config.root, resultBundle),
-      ...(lastStartedAction === undefined ? {} : { lastStartedAction }),
-    }, secrets));
-  }
-  await writeFile(transcript, redact(`${result.stdout}${result.stderr}`, config.redactions ?? []), { mode: 0o600 });
-  const exported = await exportXctestScreenshots(run, resultBundle, directory, config.root, plan, config.redactions ?? []);
-  if (result.exitCode !== 0) {
-    const secrets = config.redactions ?? [];
-    const failedAction = xctestFailedAction(result.stdout, plan);
-    const details = {
-      exitCode: result.exitCode, resultBundle: path.relative(config.root, resultBundle), transcript: path.relative(config.root, transcript),
-      ...(failedAction ? { failedAction } : {}), completed: failedAction ? failedAction.index : 0, ...exported,
-    };
-    throw new CliError('UI_DELIVERY_FAILED', redact(failedAction ? failureMessage(failedAction) : 'The XCTest UI plan failed', secrets),
-      redactValue(details, secrets));
-  }
-  const marker = result.stdout.split(/\r?\n/).find(line => line.includes('AGEMU_RESULT:'));
-  const decoded = marker ? JSON.parse(Buffer.from(marker.slice(marker.indexOf('AGEMU_RESULT:') + 13), 'base64').toString('utf8')) as unknown : undefined;
-  const runnerResult = decoded && typeof decoded === 'object' && !Array.isArray(decoded) && Array.isArray((decoded as { inspections?: unknown }).inspections)
-    ? { ...decoded, inspections: ((decoded as { inspections: unknown[] }).inspections).map((entry) => {
-      const inspection = (entry ?? {}) as { index?: unknown; nodes?: unknown };
-      return { index: inspection.index, elements: normalizeXctestNodes(inspection.nodes) };
-    }) }
-    : decoded;
-  return redactValue({
-    run: path.relative(config.root, directory), udid: built.udid, bundleId: targetBundleId(config),
-    backend: 'xctest', runnerCached: built.cached,
-    actions: plan.actions.length, runnerResult, resultBundle: path.relative(config.root, resultBundle), transcript: path.relative(config.root, transcript),
-    screenshots: exported.screenshots, ...(exported.screenshotExportError ? { screenshotExportError: exported.screenshotExportError } : {}),
   }, config.redactions ?? []);
 }

@@ -131,15 +131,13 @@ describe('ui inspect', () => {
     return result();
   };
 
-  it('fails on idb when the running app is backgrounded and another app is in the foreground', async () => {
+  it('reports foreground identity as unavailable rather than inferring it from an application label', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'agemu-inspect-'));
     const calls: string[][] = [];
     try {
-      const error = await inspectScreen(inspectConfig(root), { backend: 'idb' }, { run: foregroundRun(calls, 'SpringBoard', appinfo('App')) })
-        .catch((caught: unknown) => caught);
-      expect(error).toMatchObject({ code: 'UI_DELIVERY_FAILED', details: { failedAction: {
-        index: 0, kind: 'inspect', message: 'com.example.app is not in the foreground (foreground: SpringBoard)' } } });
-      expect((error as CliError).message).toMatch(/agemu app launch/);
+      const inspected = await inspectScreen(inspectConfig(root), { backend: 'idb' }, { run: foregroundRun(calls, 'SpringBoard', appinfo('App')) });
+      expect(inspected).toMatchObject({ foreground: null, foregroundUnavailable: expect.stringContaining('Neither XCTest app-scoped inspection') });
+      expect(calls.some(call => call.includes('appinfo'))).toBe(false);
       expect(calls.some(call => call[2] === 'launch' || call[2] === 'terminate')).toBe(false);
     } finally { await rm(root, { recursive: true, force: true }); }
   });
@@ -199,7 +197,7 @@ describe('ui inspect', () => {
           if (executable === 'plutil' && args[1] === 'json') return result(JSON.stringify({ AgentRunner: { TestBundlePath: 'AgentRunner.xctest' } }));
           if (executable === 'xcodebuild') {
             await mkdir(args[args.indexOf('-resultBundlePath') + 1]!, { recursive: true });
-            const encoded = Buffer.from(JSON.stringify({ completed: 2, inspections: [{ index: 0, nodes: [] }] })).toString('base64');
+            const encoded = Buffer.from(JSON.stringify({ completed: 2, bundleId: 'com.example.app', inspections: [{ index: 0, nodes: [] }] })).toString('base64');
             return result(`AGEMU_RESULT:${encoded}\n`);
           }
           if (executable === 'xcrun' && args[0] === 'xcresulttool') return result('', 'export broke', 1);
@@ -262,7 +260,7 @@ describe('UI plan launch marker', () => {
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 
-  it('records an XCTest launch plan just before the runner executes it', async () => {
+  it('records the reached XCTest launch timestamp after runner execution', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'agemu-ui-marker-'));
     const manifest = path.join(root, '.agemu', 'RunnerDerivedData', 'Build', 'Runner.xctestrun');
     let atRun: Awaited<ReturnType<typeof readLaunchMarker>>;
@@ -276,11 +274,15 @@ describe('UI plan launch marker', () => {
             expect(await readLaunchMarker(root)).toBeUndefined();
             return result(JSON.stringify({ AgentRunner: { TestBundlePath: 'Runner.xctest' } }));
           }
-          if (executable === 'xcodebuild' && args[0] === 'test-without-building') atRun = await readLaunchMarker(root);
+          if (executable === 'xcodebuild' && args[0] === 'test-without-building') {
+            atRun = await readLaunchMarker(root);
+            return result(`AGEMU_LAUNCH:${Buffer.from(JSON.stringify({ index: 0, at: '2026-10-05T12:00:00.123Z' })).toString('base64')}\nAGEMU_RESULT:${Buffer.from(JSON.stringify({ completed: 1, bundleId: 'com.example.app', inspections: [] })).toString('base64')}\n`);
+          }
           return result();
         },
-      }).catch(() => undefined);
-      expect(atRun!).toMatchObject({ udid: 'PHONE', bundleId: 'com.example.app', source: 'ui run' });
+      });
+      expect(atRun).toBeUndefined();
+      expect(await readLaunchMarker(root)).toMatchObject({ at: '2026-10-05T12:00:00.123Z', udid: 'PHONE', bundleId: 'com.example.app', source: 'ui run' });
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 });
@@ -311,7 +313,8 @@ describe('UI backend selection', () => {
       });
       expect(events).toEqual(['start:1-first.mp4', 'tap:10', 'tap:30', 'stop', 'start:2-second.mp4', 'tap:50', 'stop']);
       expect(output.recordings).toHaveLength(2);
-      expect(output.segments).toHaveLength(2);
+      expect(output).toMatchObject({ backend: 'idb', bundleId: 'com.example.app', actions: 8, completed: 8, screenshots: [], inspections: [] });
+      expect(output).not.toHaveProperty('segments');
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 
@@ -358,7 +361,7 @@ describe('UI backend selection', () => {
             expect((await fetch(`${url}/start?name=flow`, { method: 'POST' })).status).toBe(200);
             events.push('tap');
             expect((await fetch(`${url}/stop`, { method: 'POST' })).status).toBe(200);
-            return result(`AGEMU_RESULT:${Buffer.from(JSON.stringify({ completed: 5, inspections: [] })).toString('base64')}\n`);
+            return result(`AGEMU_RESULT:${Buffer.from(JSON.stringify({ completed: 5, bundleId: 'com.example.app', inspections: [] })).toString('base64')}\n`);
           }
           return result();
         },
@@ -545,8 +548,9 @@ describe('UI backend selection', () => {
         startRecording: async () => ({ stop: async () => undefined }),
         run: async (executable, args) => executable === 'idb' && args[1] === 'describe-all'
           ? result(JSON.stringify([{ type: 'Button', AXLabel: 'Go', frame: { x: 0, y: 0, width: 10, height: 10 } }])) : result(),
-      }) as { segments: Array<{ runnerResult: { inspections: Array<{ index: number }> } }> };
-      expect(output.segments.map(segment => segment.runnerResult.inspections.map(inspection => inspection.index))).toEqual([[0], [3]]);
+      });
+      expect(output.inspections.map(inspection => inspection.index)).toEqual([0, 3]);
+      expect(output.runnerResult.inspections).toEqual(output.inspections);
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 
@@ -642,18 +646,18 @@ describe('UI backend selection', () => {
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 
-  it('omits failedAction when XCTest fails before any action starts', async () => {
+  it('reports unavailable failedAction explicitly when XCTest fails before any action starts', async () => {
     const root = await cachedRunnerRoot('agemu-xctest-crash-');
     try {
       const error = await runUiPlan(nativeConfig(root), { json: JSON.stringify({ version: 1, actions: [{ inspect: {} }] }) },
         { backend: 'xctest', run: failingXctest('Testing failed: runner crashed\n') }).catch((e: unknown) => e) as { message: string; details: Record<string, unknown> };
       expect(error.message).toBe('The XCTest UI plan failed');
-      expect(error.details.failedAction).toBeUndefined();
+      expect(error.details.failedAction).toBeNull();
       expect(error.details.completed).toBe(0);
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 
-  it('maps an idb segment failure to its index in the submitted plan', async () => {
+  it('reports an idb recording-plan failure by its submitted index', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'agemu-idb-offset-'));
     try {
       const error = await runUiPlan(nativeConfig(root), { json: JSON.stringify({ version: 1, actions: [
@@ -761,7 +765,9 @@ describe('UI backend selection', () => {
       if (executable === 'plutil' && args[1] === 'json') return result(JSON.stringify({ AgentRunner: { TestBundlePath: 'Runner.xctest' } }));
       if (executable === 'xcodebuild' && args[0] === 'test-without-building') {
         await mkdir(args[args.indexOf('-resultBundlePath') + 1], { recursive: true });
-        return result(`AGEMU_RESULT:${Buffer.from(JSON.stringify({ completed: 4, inspections: [] })).toString('base64')}\n`);
+        const manifest = JSON.parse(await readFile(args[args.indexOf('-xctestrun') + 1], 'utf8'));
+        const plan = JSON.parse(Buffer.from(manifest.AgentRunner.EnvironmentVariables.AGEMU_PLAN_BASE64, 'base64').toString());
+        return result(`AGEMU_RESULT:${Buffer.from(JSON.stringify({ completed: 4, bundleId: plan.bundleId, inspections: [{ index: 1, nodes: [] }] })).toString('base64')}\n`);
       }
       if (executable === 'xcrun' && args[0] === 'xcresulttool') return exportAttachments(args[args.indexOf('--output-path') + 1]);
       return result();
@@ -1123,7 +1129,7 @@ describe('UI backend selection', () => {
     const root = await mkdtemp(path.join(tmpdir(), 'agemu-idb-visibility-'));
     try {
       await expect(runIdbAssertion(root, { assertVisible: { label: 'Item 24' } })).rejects.toMatchObject({
-        code: 'UI_DELIVERY_FAILED', details: { failedAction: { index: 0, kind: 'assertVisible', message: 'element is not visible: Item 24 (exists but not hittable)' } },
+        code: 'UI_DELIVERY_FAILED', details: { failedAction: { index: 0, kind: 'assertVisible', message: 'element is not visible: Item 24 (exists but has no on-screen geometry)' } },
       });
       await expect(runIdbAssertion(root, { assertVisible: { label: 'Hidden' } })).rejects.toMatchObject({ code: 'UI_DELIVERY_FAILED' });
       await expect(runIdbAssertion(root, { assertExists: { label: 'Item 24' } })).resolves.toMatchObject({ backend: 'idb', runnerResult: { completed: 1 } });
@@ -1278,7 +1284,7 @@ describe('UI backend selection', () => {
         run: async (executable, args) => {
           if (executable === 'idb') throw new Error('idb is not installed');
           if (executable === 'plutil' && args[1] === 'json') return result(JSON.stringify({ AgentRunner: { TestBundlePath: 'Runner.xctest' } }));
-          if (executable === 'xcodebuild' && args[0] === 'test-without-building') return result(`AGEMU_RESULT:${Buffer.from(JSON.stringify({ completed: 1, inspections: [] })).toString('base64')}\n`);
+          if (executable === 'xcodebuild' && args[0] === 'test-without-building') return result(`AGEMU_RESULT:${Buffer.from(JSON.stringify({ completed: 1, bundleId: 'com.example.app', inspections: [{ index: 0, nodes: [] }] })).toString('base64')}\n`);
           if (executable === 'xcodebuild') throw new Error('The cached runner must be reused');
           return result();
         },

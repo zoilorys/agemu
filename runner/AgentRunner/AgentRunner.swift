@@ -51,12 +51,12 @@ final class AgentRunner: XCTestCase {
     }
     private struct TextAssertion: Decodable, Targeting {
         let identifier: String?; let label: String?; let labelContains: String?; let type: String?; let index: Int?
-        let equals: String?; let contains: String?; let matches: String?
+        let equals: String?; let contains: String?; let matches: String?; let compiledMatches: String?
     }
     private struct OpenUrl: Decodable { let url: String; let confirm: Bool? }
     private struct KeyAction: Decodable { let key: String; let count: Int? }
     private struct ButtonAction: Decodable { let button: String }
-    private struct Launch: Decodable { let arguments: [String]?; let environment: [String: String]? }
+    private struct Launch: Decodable { let arguments: [String]?; let environment: [String: String]?; let projectUrl: String? }
     private struct Target: Decodable, Targeting {
         let identifier: String?; let label: String?; let labelContains: String?; let type: String?; let index: Int?; let x: Double?; let y: Double?
     }
@@ -83,8 +83,9 @@ final class AgentRunner: XCTestCase {
     private struct Node: Encodable {
         let type: String; let identifier: String; let label: String; let value: String
         let x, y, width, height: Double
-        let enabled: Bool; let selected: Bool; let depth: Int
+        let enabled: Bool; let selected: Bool; let depth: Int; let visible: Bool
     }
+    private struct LaunchAttempt: Encodable { let index: Int; let at: String }
     private struct Inspection: Encodable { let index: Int; let nodes: [Node] }
     private struct Result: Encodable { let completed: Int; let bundleId: String; let inspections: [Inspection] }
     private struct Failure: Encodable { let index: Int; let kind: String; let message: String }
@@ -194,7 +195,19 @@ final class AgentRunner: XCTestCase {
             if let launch = action.launch {
                 app.launchArguments = launch.arguments ?? []
                 app.launchEnvironment = launch.environment ?? [:]
+                let timestamp = ISO8601DateFormatter()
+                timestamp.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+                if let encoded = try? JSONEncoder().encode(LaunchAttempt(index: index, at: timestamp.string(from: Date()))) {
+                    print("AGEMU_LAUNCH:\(encoded.base64EncodedString())")
+                    fflush(stdout)
+                }
                 app.launch()
+                if let projectUrl = launch.projectUrl {
+                    guard let url = URL(string: projectUrl) else { return "invalid Expo project URL" }
+                    if #available(iOS 16.4, *) { XCUIDevice.shared.system.open(url) }
+                    else { return "Expo launch requires iOS 16.4 or newer" }
+                    _ = app.wait(for: .runningForeground, timeout: 5)
+                }
             } else if let target = action.tap {
                 try tap(target, in: app)
             } else if let swipe = action.swipe {
@@ -217,8 +230,8 @@ final class AgentRunner: XCTestCase {
             } else if let target = action.assertVisible {
                 let candidate = try element(target, in: app)
                 let exists = candidate.exists
-                if !(exists && candidate.isHittable) {
-                    return "element is not visible: \(target.targetDescription)\(exists ? " (exists but not hittable)" : "")"
+                if !visible(candidate, in: app) {
+                    return "element is not visible: \(target.targetDescription)\(exists ? " (exists but has no on-screen geometry)" : "")"
                 }
             } else if let target = action.assertExists {
                 if !(try element(target, in: app).exists) {
@@ -226,7 +239,7 @@ final class AgentRunner: XCTestCase {
                 }
             } else if let target = action.assertNotVisible {
                 let candidate = try element(target, in: app)
-                if candidate.exists && candidate.isHittable {
+                if visible(candidate, in: app) {
                     return "element is visible: \(target.targetDescription)"
                 }
             } else if let assertion = action.assertValue {
@@ -242,8 +255,14 @@ final class AgentRunner: XCTestCase {
                 add(attachment)
             } else if action.inspect != nil {
                 var nodes: [Node] = []
-                flatten(try app.snapshot(), depth: 0, into: &nodes)
-                inspections.append(Inspection(index: index, nodes: nodes))
+                let snapshot = try app.snapshot()
+                flatten(snapshot, screen: snapshot.frame, foreground: app.state == .runningForeground, depth: 0, into: &nodes)
+                let inspection = Inspection(index: index, nodes: nodes)
+                inspections.append(inspection)
+                if let encoded = try? JSONEncoder().encode(inspection) {
+                    print("AGEMU_INSPECTION:\(encoded.base64EncodedString())")
+                    fflush(stdout)
+                }
             } else if let video = action.startVideoRecording {
                 try recordingRequest("/start?name=\((video.name ?? "video").addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? "video")")
             } else if action.stopVideoRecording != nil {
@@ -267,12 +286,23 @@ final class AgentRunner: XCTestCase {
             } else if let press = action.pressButton {
                 guard press.button == "home" else { return "unsupported button \(press.button)" }
                 // Backgrounds the app; a later action on it needs `launch` first.
+                let before = app.state
+                let started = ProcessInfo.processInfo.systemUptime
                 XCUIDevice.shared.press(.home)
+                // XCTest updates state asynchronously. Wait for any authoritative non-foreground state.
+                let background = NSPredicate(format: "state == %d OR state == %d OR state == %d",
+                    XCUIApplication.State.runningBackground.rawValue,
+                    XCUIApplication.State.runningBackgroundSuspended.rawValue,
+                    XCUIApplication.State.notRunning.rawValue)
+                let settled = XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: background, object: app)], timeout: 5)
+                print("AGEMU_HOME_STATE:before=\(before.rawValue),after=\(app.state.rawValue),elapsed=\(ProcessInfo.processInfo.systemUptime - started)")
+                fflush(stdout)
+                if settled != .completed { return "app did not leave foreground after Home" }
             } else if let open = action.openUrl {
                 guard let url = URL(string: open.url) else { return "invalid url \(open.url)" }
                 // system.open does not wait for the app's accessibility, which a pending SpringBoard prompt would block.
                 if #available(iOS 16.4, *) { XCUIDevice.shared.system.open(url) } else { return "openUrl requires iOS 16.4 or newer" }
-                if open.confirm != false {
+                if open.confirm == true {
                     // iOS shows SpringBoard's "Open in …?" prompt the first time a scheme is opened; the app's own UI is never touched.
                     let prompt = XCUIApplication(bundleIdentifier: "com.apple.springboard").buttons["Open"]
                     if prompt.waitForExistence(timeout: 2) { prompt.tap() }
@@ -320,7 +350,7 @@ final class AgentRunner: XCTestCase {
 
     /// Pre-order (document order) flattening of a snapshot tree.
     @MainActor
-    private func flatten(_ snapshot: XCUIElementSnapshot, depth: Int, into nodes: inout [Node]) {
+    private func flatten(_ snapshot: XCUIElementSnapshot, screen: CGRect, foreground: Bool, depth: Int, into nodes: inout [Node]) {
         let frame = snapshot.frame
         // JSONEncoder rejects non-finite values (e.g. CGRect.null); a zero frame is reported as not visible.
         let finite = { (value: CGFloat) -> Double in value.isFinite ? Double(value) : 0 }
@@ -328,8 +358,9 @@ final class AgentRunner: XCTestCase {
             type: typeName(snapshot.elementType), identifier: snapshot.identifier, label: snapshot.label,
             value: snapshot.value.map { String(describing: $0) } ?? "",
             x: finite(frame.origin.x), y: finite(frame.origin.y), width: finite(frame.size.width), height: finite(frame.size.height),
-            enabled: snapshot.isEnabled, selected: snapshot.isSelected, depth: depth))
-        for child in snapshot.children { flatten(child, depth: depth + 1, into: &nodes) }
+            enabled: snapshot.isEnabled, selected: snapshot.isSelected, depth: depth,
+            visible: visible(frame, screen: screen, foreground: foreground)))
+        for child in snapshot.children { flatten(child, screen: screen, foreground: foreground, depth: depth + 1, into: &nodes) }
     }
 
     private func recordingRequest(_ path: String) throws {
@@ -431,13 +462,29 @@ final class AgentRunner: XCTestCase {
         }
     }
 
-    /// Swipes `in` (or the app) until the target is visible (`exists && isHittable`), at most `maxSwipes` times. Mirrors idb-ui.ts.
+    /// Cached geometry in a background application is not on-screen. Enabled/occluded state is independent.
+    @MainActor
+    private func visible(_ element: XCUIElement, in app: XCUIApplication) -> Bool {
+        guard app.state == .runningForeground, element.exists else { return false }
+        return visible(element.frame, screen: app.frame, foreground: true)
+    }
+
+    private func visible(_ frame: CGRect, screen: CGRect, foreground: Bool) -> Bool {
+        guard foreground else { return false }
+        guard [frame.origin.x, frame.origin.y, frame.width, frame.height].allSatisfy({ $0.isFinite }),
+              frame.width > 0, frame.height > 0 else { return false }
+        guard [screen.origin.x, screen.origin.y, screen.width, screen.height].allSatisfy({ $0.isFinite }) else { return true }
+        guard screen.width > 0, screen.height > 0 else { return false }
+        return frame.minX < screen.maxX && frame.maxX > screen.minX && frame.minY < screen.maxY && frame.maxY > screen.minY
+    }
+
+    /// Swipes `in` (or the app) until the target is visible (nonempty on-screen geometry), at most `maxSwipes` times. Mirrors idb-ui.ts.
     @MainActor
     private func scrollUntilVisible(_ scroll: ScrollUntilVisible, in app: XCUIApplication) throws -> String? {
         let target = try element(scroll.target, in: app)
         let maxSwipes = scroll.maxSwipes ?? 10
         var swipes = 0
-        while !(target.exists && target.isHittable) {
+        while !visible(target, in: app) {
             if swipes >= maxSwipes { return "target not visible after \(swipes) swipes: \(scroll.target.targetDescription)" }
             var surface: XCUIElement = app
             if let container = scroll.`in` {
@@ -470,8 +517,8 @@ final class AgentRunner: XCTestCase {
         } else if let contains = assertion.contains {
             result = ("contains", contains, text.contains(contains))
         } else if let pattern = assertion.matches {
-            // ICU and JavaScript regex dialects differ; an ICU-only rejection is an action failure, not a crash.
-            guard let regex = try? NSRegularExpression(pattern: pattern) else { return "invalid regular expression: \(pattern)" }
+            // The CLI validates and compiles the portable subset for both ICU and JavaScript/u.
+            guard let regex = try? NSRegularExpression(pattern: assertion.compiledMatches ?? pattern) else { return "invalid regular expression: \(pattern)" }
             result = ("matches", pattern, regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) != nil)
         } else {
             return "assertText needs equals, contains, or matches"

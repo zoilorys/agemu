@@ -1,15 +1,20 @@
 import { access, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { createRun } from '../artifacts/runs.js';
+import { createRun, redactValue } from '../artifacts/runs.js';
 import { nativeApp, type LoadedConfig } from '../config/config.js';
 import { CliError } from '../core/errors.js';
+import type { AppState } from '../core/app-state.js';
 import { redact } from '../core/redact.js';
 import { buildFailureDetails, writeBuildLog, type BuildLog } from '../native/build-errors.js';
 import { buildArguments, selectBuildProduct } from '../native/xcodebuild.js';
 import { listDevices, resolveDevice } from '../native/simctl.js';
 import { deadline, runProcess, type ProcessResult, type RunOptions } from '../process/run-process.js';
 
-export type AppState = { appPath: string; bundleId: string; executableName: string; udid: string; configuration: string; updatedAt: string };
+export type { AppState } from '../core/app-state.js';
+export type BuildResult = Omit<AppState, 'updatedAt'> & {
+  appType: LoadedConfig['app']['type']; target: string | null; derivedData: string | null;
+  run: string; logs: { build: string; settings: string | null };
+};
 type Dependencies = {
   run?: (executable: string, args: string[], options?: RunOptions) => Promise<ProcessResult>;
   resolveUdid?: (config: LoadedConfig) => Promise<string>;
@@ -40,7 +45,7 @@ function logFromError(error: unknown, secrets: string[]): BuildLog {
 
 const writeLog = writeBuildLog;
 
-export async function buildApp(config: LoadedConfig, dependencies: Dependencies = {}) {
+export async function buildApp(config: LoadedConfig, dependencies: Dependencies = {}): Promise<BuildResult> {
   if (config.app.type === 'expo' && config.app.launchTarget === 'expo-go') throw new CliError('WORKFLOW_UNSUPPORTED', 'Expo Go uses an existing installed host; no native build is needed');
   const limit = deadline(dependencies.timeoutMs ?? defaultBuildTimeoutMs);
   const baseRun = dependencies.run ?? runProcess;
@@ -101,7 +106,11 @@ export async function buildApp(config: LoadedConfig, dependencies: Dependencies 
     const product = matches[0];
     const state: AppState = { ...product, bundleId: app.bundleId, udid, configuration: 'Debug', updatedAt: now.toISOString() };
     await writeAtomic(path.join(stateDirectory, 'state.json'), state);
-    return { appPath: redact(product.appPath, secrets), bundleId: redact(app.bundleId, secrets), executableName: redact(product.executableName, secrets), udid, configuration: 'Debug', run: createdRun.relativeDirectory, logs: { build: path.relative(config.root, buildLog) } };
+    return redactValue({
+      ...product, appType: config.app.type, bundleId: app.bundleId, udid, configuration: 'Debug',
+      target: null, derivedData: null, run: createdRun.relativeDirectory,
+      logs: { build: path.relative(config.root, buildLog), settings: null },
+    }, secrets);
   }
 
   const buildLog = path.join(runDirectory, 'xcodebuild.log');
@@ -166,15 +175,12 @@ export async function buildApp(config: LoadedConfig, dependencies: Dependencies 
     updatedAt: now.toISOString(),
   };
   await writeAtomic(path.join(stateDirectory, 'state.json'), state);
-  return {
-    appPath: redact(product.appPath, secrets),
-    bundleId: redact(product.bundleId, secrets),
-    executableName: redact(product.executableName, secrets),
-    target: redact(product.target, secrets),
-    udid: redact(udid, secrets),
-    configuration: redact(nativeApp(config).configuration, secrets),
-    derivedData: redact(path.join(stateDirectory, 'DerivedData'), secrets),
+  return redactValue({
+    appType: config.app.type, appPath: product.appPath, bundleId: product.bundleId,
+    executableName: product.executableName, target: product.target, udid,
+    configuration: nativeApp(config).configuration,
+    derivedData: path.join(stateDirectory, 'DerivedData'),
     run: createdRun.relativeDirectory,
-    logs: { build: redact(path.relative(config.root, buildLog), secrets), settings: redact(path.relative(config.root, settingsLog), secrets) },
-  };
+    logs: { build: path.relative(config.root, buildLog), settings: path.relative(config.root, settingsLog) },
+  }, secrets);
 }

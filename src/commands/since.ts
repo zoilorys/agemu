@@ -1,9 +1,8 @@
 import { readLaunchMarker } from '../artifacts/launch-marker.js';
 import { CliError } from '../core/errors.js';
+import { parseDuration } from '../core/log-options.js';
 
 export type SinceWindow = { start: Date; source: 'launch' | 'duration' | 'default' };
-
-const units: Record<string, number> = { s: 1_000, m: 60_000, h: 3_600_000, d: 86_400_000 };
 
 /**
  * Resolves `--since`: `launch` is the latest agemu launch of the expected app (and Simulator, when known);
@@ -11,7 +10,14 @@ const units: Record<string, number> = { s: 1_000, m: 60_000, h: 3_600_000, d: 86
  */
 export async function resolveSince(value: string | undefined, root: string, now: Date, fallbackMs: number,
   expected?: { bundleId: string; udid?: string }): Promise<SinceWindow> {
-  if (value === undefined) return { start: new Date(now.getTime() - fallbackMs), source: 'default' };
+  const startFromDuration = (milliseconds: number): Date => {
+    const start = new Date(now.getTime() - milliseconds);
+    if (!Number.isSafeInteger(milliseconds) || milliseconds < 0 || !Number.isFinite(start.getTime())) {
+      throw new CliError('COMMAND_INVALID', 'The requested time window is outside the supported date range');
+    }
+    return start;
+  };
+  if (value === undefined) return { start: startFromDuration(fallbackMs), source: 'default' };
   if (value === 'launch') {
     const message = 'No agemu launch recorded; launch the app with agemu first';
     const marker = await readLaunchMarker(root);
@@ -24,9 +30,8 @@ export async function resolveSince(value: string | undefined, root: string, now:
     }
     return { start: new Date(marker.at), source: 'launch' };
   }
-  const match = /^(\d+)([smhd])$/.exec(value);
-  if (!match) throw new CliError('COMMAND_INVALID', '--since must be launch or a number followed by s, m, h, or d (for example, 24h)');
-  return { start: new Date(now.getTime() - Number(match[1]) * units[match[2]]), source: 'duration' };
+  const milliseconds = parseDuration(value, { message: '--since must be launch or a number followed by s, m, h, or d (for example, 24h)' });
+  return { start: startFromDuration(milliseconds), source: 'duration' };
 }
 
 /** Local wall-clock time with its UTC offset for `log show --start`, built from local `Date` getters. */

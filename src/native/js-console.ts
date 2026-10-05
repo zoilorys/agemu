@@ -24,10 +24,11 @@ export type WebSocketFactory = (url: string, init: { headers: Record<string, str
 export const nonFuseboxNotice = 'You are using an unsupported debugging client';
 const maxText = 4_000;
 
-// Not the global WebSocket: its close() waits for the peer indefinitely (see websocket.ts).
+// The maintained transport accepts Metro's Origin and bounds the close handshake.
 const defaultWebSocket: WebSocketFactory = (url, init) => connectWebSocket(url, init);
 
 const message = (error: unknown) => error instanceof Error ? error.message : String(error);
+const object = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
 
 export async function listTargets(port: number, timeoutMs: number, fetchImpl: FetchLike = fetch as unknown as FetchLike): Promise<CdpTarget[]> {
   const controller = new AbortController();
@@ -36,7 +37,7 @@ export async function listTargets(port: number, timeoutMs: number, fetchImpl: Fe
     const response = await fetchImpl(`http://127.0.0.1:${port}/json/list`, { signal: controller.signal });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const value = await response.json();
-    if (!Array.isArray(value)) throw new Error('response is not a list');
+    if (!Array.isArray(value) || !value.every(object)) throw new Error('response is not a list of targets');
     return value as CdpTarget[];
   } catch (error) {
     const reason = controller.signal.aborted ? `timed out after ${timeoutMs} ms` : message(error);
@@ -99,7 +100,8 @@ type ConsoleParams = {
 
 /** Maps one Runtime.consoleAPICalled to a message, or undefined when it predates startMs or is React Native's injected notice. */
 export function mapConsoleEvent(params: ConsoleParams, startMs: number, secrets: string[] = []): JsConsoleMessage | undefined {
-  if (typeof params.timestamp !== 'number' || !Number.isFinite(params.timestamp) || params.timestamp < startMs) return undefined;
+  if (typeof params.timestamp !== 'number' || !Number.isFinite(params.timestamp) || params.timestamp < startMs
+    || !Number.isFinite(new Date(params.timestamp).getTime())) return undefined;
   const rendered = renderArgs(params.args, secrets);
   if (rendered.includes(nonFuseboxNotice)) return undefined;
   const frame = params.stackTrace?.callFrames?.[0];
@@ -156,16 +158,20 @@ export function captureConsole(url: string, options: CaptureOptions): Promise<Ca
       let payload: { method?: string; params?: ConsoleParams };
       try {
         const raw = typeof event.data === 'string' ? event.data : new TextDecoder().decode(event.data as ArrayBuffer);
-        payload = JSON.parse(raw) as typeof payload;
+        const parsed: unknown = JSON.parse(raw);
+        if (!object(parsed)) return;
+        payload = parsed as typeof payload;
       } catch { return; }
-      if (payload.method !== 'Runtime.consoleAPICalled' || !payload.params) return;
-      const mapped = mapConsoleEvent(payload.params, options.startMs, options.secrets);
-      if (!mapped) return;
-      try { if (options.onMessage(mapped) === true) settle({ result: { stoppedBy: 'until' } }); }
+      if (payload.method !== 'Runtime.consoleAPICalled' || !object(payload.params)) return;
+      try {
+        const mapped = mapConsoleEvent(payload.params, options.startMs, options.secrets);
+        if (mapped && options.onMessage(mapped) === true) settle({ result: { stoppedBy: 'until' } });
+      }
       catch (error) { settle({ error }); }
     });
     socket.addEventListener('error', (event) => {
-      if (!opened) settle({ error: connectFailure(`error${event.message ? `: ${event.message}` : ''}`) });
+      const detail = event.message ? `: ${event.message}` : '';
+      settle({ error: opened ? new CliError('PROCESS_FAILED', `Metro inspector connection failed${detail}`) : connectFailure(`error${detail}`) });
     });
     socket.addEventListener('close', (event) => {
       if (!opened) { settle({ error: connectFailure(`closed with code ${event.code ?? 'unknown'}${event.reason ? `: ${event.reason}` : ''}`) }); return; }
