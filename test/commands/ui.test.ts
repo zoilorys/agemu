@@ -948,12 +948,13 @@ describe('UI backend selection', () => {
   const tapNameField = ['idb', 'ui', 'tap', 'nameField', '--match-key', 'AXUniqueId', '--expected-key', 'AXUniqueId', '--expected-value', 'nameField',
     '--api', 'axbridge', '--udid', 'PHONE'];
 
-  /** Clears a fake field: a tap leaves the caret at `caret`, and the field shows `placeholder` while empty. */
-  const runIdbClear = async (initial: string, field: { caret: number; placeholder?: string; arrows?: boolean }) => {
+  /** Clears a fake field: a tap leaves the caret at `caret`, the field shows `placeholder` while empty, and it drops every `dropEvery`th delete. */
+  const runIdbClear = async (initial: string, field: { caret: number; placeholder?: string; dropEvery?: number }) => {
     const root = await mkdtemp(path.join(tmpdir(), 'agemu-idb-clear-'));
     const inputs: string[][] = [];
     let text = initial;
     let caret = 0;
+    let deletes = 0;
     try {
       const output = await runUiPlan(nativeConfig(root), { json: JSON.stringify({ version: 1, actions: [{ clear: { identifier: 'nameField' } }] }) }, {
         backend: 'idb',
@@ -966,8 +967,11 @@ describe('UI backend selection', () => {
           }
           inputs.push([executable, ...args]);
           if (args[1] === 'tap') caret = Math.min(text.length, field.caret);
-          if (args[1] === 'key' && args[2] === '79' && field.arrows !== false) caret = Math.min(text.length, caret + 1);
-          if (args[1] === 'key' && args[2] === '42' && caret > 0) { text = text.slice(0, caret - 1) + text.slice(caret); caret -= 1; }
+          if (args[1] === 'key' && args[2] === '79') caret = Math.min(text.length, caret + 1);
+          if (args[1] === 'key' && args[2] === '42' && ++deletes % (field.dropEvery ?? Infinity) !== 0 && caret > 0) {
+            text = text.slice(0, caret - 1) + text.slice(caret);
+            caret -= 1;
+          }
           return result();
         },
       }).catch((error: unknown) => error);
@@ -984,16 +988,17 @@ describe('UI backend selection', () => {
   });
 
   it('fails an idb clear that leaves text behind', async () => {
-    const { output, text } = await runIdbClear('abcdef', { caret: 2, arrows: false });
-    expect(text).toBe('cdef');
+    const { output, text } = await runIdbClear('abcdef', { caret: 6, dropEvery: 2 });
+    expect(text).toBe('a');
     expect(output).toMatchObject({ code: 'UI_DELIVERY_FAILED', details: { failedAction: { index: 0, kind: 'clear', message: 'could not clear nameField' } } });
   });
 
-  it('accepts an idb field that reports its placeholder once empty', async () => {
-    const { output, text } = await runIdbClear('Name', { caret: 1, placeholder: 'Name' });
-    expect(output).toMatchObject({ runnerResult: { completed: 1 } });
-    expect(text).toBe('');
-  });
+  it.each([['other text', 'Ada'], ['text equal to it', 'Name']])('accepts an idb field holding %s that reports its placeholder once empty',
+    async (_case, initial) => {
+      const { output, text } = await runIdbClear(initial, { caret: 1, placeholder: 'Name' });
+      expect(output).toMatchObject({ runnerResult: { completed: 1 } });
+      expect(text).toBe('');
+    });
 
   it.each([['an empty value', ''], ['no value', undefined]])('clears an idb field with %s without keystrokes', async (_case, value) => {
     expect((await runIdbKeys([{ clear: { identifier: 'nameField' } }], value)).inputs).toEqual([tapNameField]);

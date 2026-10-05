@@ -227,13 +227,18 @@ export async function tryRunIdbPlan(config: LoadedConfig, plan: UiPlan, udid: st
         const element = await targetElement(target, tree);
         const old = typeof element.AXValue === 'string' ? element.AXValue : '';
         await press(target, element, tree);
-        if (old.length > 0) {
-          const count = Array.from(old).length;
+        // An empty field reports its placeholder as its value, which idb cannot read. A placeholder is the value a full
+        // delete pass leaves unchanged, so a value left after the first pass gets a second pass to tell them apart.
+        let current = old;
+        for (let pass = 0; current.length > 0; pass += 1) {
+          const count = Array.from(current).length;
           await pressKey(rightArrowKey, count);
           await pressKey(keyCodes.delete!, count);
           const now = (await targetElement(target)).AXValue;
-          // An empty field reports its placeholder as its value, so unchanged text counts as cleared, as on XCTest.
-          if (typeof now === 'string' && now.length > 0 && now !== old) throw new Error(`could not clear ${describeTarget(target)}`);
+          const next = typeof now === 'string' ? now : '';
+          if (next === current) break;
+          if (pass === 1 && next.length > 0) throw new Error(`could not clear ${describeTarget(target)}`);
+          current = next;
         }
       } else if (kind === 'tap' || kind === 'type') {
         if (kind === 'tap' && Number.isFinite(value.x) && Number.isFinite(value.y)) {
