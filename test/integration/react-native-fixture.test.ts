@@ -112,10 +112,6 @@ test.skipIf(!enabled)('drives the bare React Native fixture through the public C
       { wait: { identifier: 'fixtureReady', timeout: 240 } },
       { assertText: { identifier: 'counterValue', equals: 'count 0' } },
       { tap: { identifier: 'draftInput' } },
-      // With a hardware keyboard connected, the first key raises the software keyboard; on the first keyboard use
-      // after a Simulator boot, keys typed in the same burst can be lost. A no-op delete raises it before typing.
-      { pressKey: { key: 'delete' } },
-      { wait: { type: 'button', identifier: 'shift', timeout: 30 } },
       { type: { identifier: 'draftInput', text: token } },
       { assertValue: { identifier: 'draftInput', value: token } },
       { pressKey: { key: 'return' } },
@@ -127,7 +123,7 @@ test.skipIf(!enabled)('drives the bare React Native fixture through the public C
       { assertText: { identifier: 'counterValue', equals: 'count 3' } },
       { screenshot: { name: 'interacted' } },
     ]);
-    expect(interaction).toMatchObject({ backend: 'xctest', udid, completed: 15 });
+    expect(interaction).toMatchObject({ backend: 'xctest', udid, completed: 13 });
     const shot = await png(root, (interaction.screenshots as string[])[0]!);
     expect(shot.height).toBeGreaterThan(shot.width);
     const status = data(await cmd(['app', 'status']), 'app status');
