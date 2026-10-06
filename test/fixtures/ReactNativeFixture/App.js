@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 
 // Every JavaScript load (launch or reload) gets a new ID, so reloads are observable on screen.
@@ -13,7 +13,7 @@ function Button({ testID, title, onPress }) {
 }
 
 export default function App() {
-  const [draft, setDraft] = useState('');
+  const draft = useRef('');
   const [saved, setSaved] = useState('');
   const [count, setCount] = useState(0);
   const [probes, setProbes] = useState(0);
@@ -31,14 +31,14 @@ export default function App() {
       <Text testID="loadId">{`load ${loadId}`}</Text>
       <TextInput
         testID="draftInput"
-        // Uncontrolled: a controlled value drops characters under XCTest's fast typeText.
-        onChangeText={setDraft}
+        // Uncontrolled and kept in a ref: re-rendering on each keystroke drops characters under XCTest's fast typeText.
+        onChangeText={(text) => { draft.current = text; }}
         placeholder="Type a value"
         autoCapitalize="none"
         autoCorrect={false}
         style={styles.input}
       />
-      <Button testID="saveButton" title="Save" onPress={() => setSaved(draft.trim())} />
+      <Button testID="saveButton" title="Save" onPress={() => setSaved(draft.current.trim())} />
       <Text testID="savedValue">{saved ? `saved ${saved}` : 'nothing saved'}</Text>
       <Button testID="incrementButton" title="Increment" onPress={() => setCount(count + 1)} />
       <Text testID="counterValue">{`count ${count}`}</Text>
