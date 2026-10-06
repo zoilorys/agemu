@@ -161,7 +161,7 @@ agemu ui assert-value --id=gestureStatus --value=saved:Ada
 agemu ui screenshot --name=current
 ```
 
-`app status` returns exact UIKit service/PID evidence for `running`/`pid`, or null with a reason when inspection is unavailable/ambiguous. `foreground` is always null with an explicit limitation. `app list` returns a sorted installed app inventory with nullable name/executable/type fields. `app reload` requires a matching ready Metro/Expo project server and requests `/reload`; success confirms request acceptance, not completed app reload. Native apps reject it. Clipboard commands require a booted Simulator; writes preserve exact text through stdin, accept an empty string and exclude input from process arguments and event summaries.
+`app status` returns exact UIKit service/PID evidence for `running`/`pid`, or null with a reason when inspection is unavailable/ambiguous. `foreground` is always null with an explicit limitation. `app list` returns a sorted installed app inventory with nullable name/executable/type fields. `app reload` requires a matching ready Metro/Expo project server. Bare React Native requests Metro's `/reload`; Expo has no such route, so agemu broadcasts `reload` on the server's `/message` socket and fails when no app is connected. Success confirms request delivery, not completed app reload. Native apps reject it. Clipboard commands require a booted Simulator; writes preserve exact text through stdin, accept an empty string and exclude input from process arguments and event summaries.
 
 One-action UI shortcuts use the same validator and executor as plans: `launch`, `terminate`, `tap`, `type`, `clear`, `wait`, `long-press`, `swipe`, `assert-visible`, `assert-exists`, `assert-not-visible`, `assert-value`, `assert-text`, `screenshot`, `press-key`, `press-button` and `open-url`. Targets use `--id`, `--label`, `--label-contains`, `--type` and `--index`. Coordinate swipes accept `--from=x,y --to=x,y`. `--wait-timeout` bounds an element wait; `--timeout` always bounds the whole command. Pass `--confirm` to consent to URL prompts. Recording pairs and nested scroll actions remain ordinary JSON plans.
 
@@ -222,7 +222,7 @@ agemu server stop
 agemu simulator shutdown
 ```
 
-`agemu build` runs `expo run:ios --device <udid> --no-bundler`. It can generate or modify `ios/` files. Review those files after the build. `app launch` opens the running project's development URL in the installed development build.
+`agemu build` runs `expo run:ios --device <udid> --no-bundler`. It can generate or modify `ios/` files. Review those files after the build. `app launch` opens the running project's development URL in the installed development build. Like Expo CLI, it first approves the URL scheme for that app in the Simulator's launch-services preferences, so iOS's first-open "Open in …?" prompt does not block the project.
 
 ## Run Expo Go
 
@@ -240,7 +240,7 @@ agemu server stop
 agemu simulator shutdown
 ```
 
-Expo Go uses its installed host: `agemu build` and `agemu app install` do not apply. `app launch` opens the running project's Expo URL in the host.
+Expo Go uses its installed host: `agemu build` and `agemu app install` do not apply. `app launch` approves the `exp` scheme for the host, then opens the running project's Expo URL in it.
 
 For React Native and Expo, `diagnose` includes server status, the last server output, detected bundling errors, a screenshot, and Simulator logs. The saved server log may be from an earlier run. It does not include JavaScript console messages from inside the app; capture them with `agemu logs js` (see [JavaScript console](#javascript-console)). `logs show` reads Simulator unified logs for the built app or Expo Go host. Inspect `partial` and `failures` when evidence collection fails.
 
@@ -505,7 +505,7 @@ The native test keeps its Xcode DerivedData under `.agemu/native-workflow/<udid>
 
 The authoritative suite is `test/**/*.test.ts`; nested review worktree copies are excluded. Native integration files run serially because they share the fixture app and selected Simulator. See [CONTRIBUTING.md](CONTRIBUTING.md) for the full verification commands.
 
-Bare React Native and Expo project launch/reload contracts are covered by injected processes and real local HTTP peers. This refactor's live verification uses the native fixture; live Expo development and Expo Go workflows remain unverified.
+Bare React Native and Expo project launch/reload contracts are covered by injected processes and real local HTTP and WebSocket peers. Live Expo development-build and Expo Go workflows are covered by the opt-in test described in [test/fixtures/ExpoFixture/README.md](test/fixtures/ExpoFixture/README.md).
 
 ## Contribute
 

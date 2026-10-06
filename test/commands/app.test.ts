@@ -56,6 +56,7 @@ describe('app command', () => {
     await controlApp(expo, 'launch', {}, dependencies);
     expect(fixture.calls.map(call => call.args)).toEqual([
       ['launch', 'PHONE', 'com.example.app'],
+      ['spawn', 'PHONE', 'defaults', 'write', 'com.apple.launchservices.schemeapproval', 'com.apple.CoreSimulator.CoreSimulatorBridge-->exp+example', '-string', 'com.example.app'],
       ['openurl', 'PHONE', 'exp+example://expo-development-client/?url=http%3A%2F%2F127.0.0.1%3A8081'],
     ]);
     fixture.calls.length = 0;

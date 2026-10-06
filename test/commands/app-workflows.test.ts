@@ -3,6 +3,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
+import WebSocket, { WebSocketServer } from 'ws';
 import { reloadApp, resolveExpoProjectUrl, controlApp } from '../../src/commands/app.js';
 import { appStatus, listInstalledApps } from '../../src/commands/app-status.js';
 import { clipboard } from '../../src/commands/clipboard.js';
@@ -71,9 +72,49 @@ describe('project launch and reload', () => {
     expect(requests).toEqual([{ url: '/reload', method: 'GET' }]);
   });
 
-  it('reloads Expo Go through the project server and identifies its host', async () => {
-    const request = (async (url: string | URL | Request) => { expect(String(url)).toBe('http://127.0.0.1:8081/reload'); return new Response('OK'); }) as typeof fetch;
-    await expect(reloadApp(expo, { ...project, request })).resolves.toMatchObject({ bundleId: 'host.exp.Exponent', reloadRequested: true });
+  // Mirrors Expo's /message socket: `getpeers` excludes the caller and returns each peer's raw upgrade query; broadcasts reach every other client.
+  async function messageServer(apps: number, others = 0) {
+    const server = new WebSocketServer({ host: '127.0.0.1', port: 0, path: '/message' });
+    await new Promise(resolve => server.once('listening', resolve));
+    serverClosures.push(() => new Promise<void>(resolve => { for (const client of server.clients) client.terminate(); server.close(() => resolve()); }));
+    const port = (server.address() as { port: number }).port;
+    const received: unknown[] = [];
+    const queries = new Map<WebSocket, string | null>();
+    server.on('connection', (socket, req) => { queries.set(socket, new URL(req.url!, 'ws://localhost').search.slice(1) || null); socket.on('message', data => {
+      const message = JSON.parse(String(data));
+      if (message.method === 'getpeers') {
+        const peers = Object.fromEntries([...server.clients].filter(client => client !== socket).map((client, index) => [String(index), queries.get(client)]));
+        socket.send(JSON.stringify({ version: 2, id: message.id, result: peers }));
+      } else for (const client of server.clients) if (client !== socket) client.send(String(data));
+    }); });
+    for (let index = 0; index < apps + others; index++) {
+      const peer = new WebSocket(`ws://127.0.0.1:${port}/message${index < apps ? '?role=ios' : ''}`);
+      peer.on('message', data => received.push(JSON.parse(String(data))));
+      await new Promise(resolve => peer.once('open', resolve));
+    }
+    return { port, received };
+  }
+
+  it('broadcasts an Expo reload to connected apps over the message socket, not GET /reload', async () => {
+    const { port, received } = await messageServer(1);
+    const config = { ...expo, app: { ...expo.app, port } } as LoadedConfig;
+    const request = (async () => { throw new Error('must not call'); }) as typeof fetch;
+    await expect(reloadApp(config, { ...project, request })).resolves.toMatchObject({ bundleId: 'host.exp.Exponent', port, reloadRequested: true });
+    await expect.poll(() => received).toEqual([{ version: 2, method: 'reload' }]);
+  });
+
+  it('fails an Expo reload when no app is connected to the message socket', async () => {
+    const { port } = await messageServer(0);
+    const config = { ...expo, app: { ...expo.app, port } } as LoadedConfig;
+    await expect(reloadApp(config, project)).rejects.toMatchObject({ code: 'PROCESS_FAILED', message: expect.stringContaining('no app is connected') });
+  });
+
+  it('does not count non-app peers such as a concurrent agemu reload as connected apps', async () => {
+    const { port, received } = await messageServer(0, 1);
+    const config = { ...expo, app: { ...expo.app, port } } as LoadedConfig;
+    const reloads = await Promise.allSettled([reloadApp(config, project), reloadApp(config, project)]);
+    for (const reload of reloads) expect(reload).toMatchObject({ status: 'rejected', reason: { code: 'PROCESS_FAILED', message: expect.stringContaining('no app is connected') } });
+    expect(received).toEqual([]);
   });
 
   it('rejects failed reload HTTP responses and redacts request failures', async () => {

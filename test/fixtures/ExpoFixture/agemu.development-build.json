@@ -1,0 +1,6 @@
+{
+  "version": 2,
+  "platform": "ios",
+  "app": { "type": "expo", "root": ".", "port": 8088, "launchTarget": "development-build", "bundleId": "dev.agemu.expo-fixture" },
+  "simulator": { "udid": "SIMULATOR_UDID" }
+}
