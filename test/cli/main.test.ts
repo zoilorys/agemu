@@ -8,8 +8,12 @@ import { describe, expect, it } from 'vitest';
 
 const run = promisify(execFile);
 const cli = fileURLToPath(new URL('../../dist/cli/main.js', import.meta.url));
+const simulatorDevices = (udid: string, state = 'Booted') => ({ devices: {
+  'com.apple.CoreSimulator.SimRuntime.iOS-18-0': [{ udid, name: 'Phone', state, isAvailable: true }],
+} });
 
-describe('agemu CLI', () => {
+// CLI tests launch real processes, including newly written fixture executables.
+describe('agemu CLI', { timeout: 20000 }, () => {
   it('returns a stable JSON error and nonzero status for an unknown command', async () => {
     await expect(run(process.execPath, [cli, 'not-a-command']))
       .rejects.toMatchObject({
@@ -25,7 +29,7 @@ describe('agemu CLI', () => {
     expect(JSON.parse(stdout).data.help).toContain('ui run               Execute a JSON UI action plan.');
     expect(JSON.parse(stdout).data.help).toContain('app open-url         Open a URL in Simulator.');
     await expect(run(process.execPath, [cli, '--version'])).resolves.toMatchObject({
-      stdout: '{"ok":true,"data":{"version":"0.2.0"}}\n',
+      stdout: '{"ok":true,"data":{"version":"0.2.1"}}\n',
       stderr: '',
     });
   });
@@ -46,6 +50,16 @@ describe('agemu CLI', () => {
         code: 1,
         stdout: expect.stringContaining('"code":"COMMAND_INVALID","message":"--timeout must be whole seconds from 1 to 86400"'),
       });
+  });
+
+  it.each([
+    [['--bogus'], 'COMMAND_INVALID', 'Unknown option --bogus for ui inspect'],
+    [['--all=yes'], 'COMMAND_INVALID', '--all does not take a value'],
+    [['--backend=fast'], 'UI_VALIDATION_FAILED', 'UI backend must be auto, idb, or xctest'],
+    [['--timeout=0'], 'COMMAND_INVALID', '--timeout must be whole seconds from 1 to 86400'],
+  ])('rejects ui inspect %j before loading configuration', async (flags, code, message) => {
+    await expect(run(process.execPath, [cli, 'ui', 'inspect', ...flags]))
+      .rejects.toMatchObject({ code: 1, stdout: expect.stringContaining(`"code":"${code}","message":"${message}"`) });
   });
 
   it('documents timeout defaults in command help', async () => {
@@ -88,22 +102,45 @@ describe('agemu CLI', () => {
     }
   });
 
-  it('routes Expo Go UI launch to its installed host', async () => {
+  it('routes Expo Go UI launch to its installed host and verified project URL', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'agemu-expo-ui-'));
+    const resolvedRoot = await realpath(root);
     const calls = path.join(root, 'calls.txt');
+    const { createServer } = await import('node:http');
+    const project = createServer((request, response) => {
+      if (request.url === '/status') response.end('packager-status:running');
+      else if (request.url?.startsWith('/_expo/open?')) response.setHeader('Content-Type', 'application/json').end(JSON.stringify({ url: `exp://127.0.0.1:${port}` }));
+      else response.writeHead(404).end();
+    });
+    await new Promise<void>(resolve => project.listen(0, '127.0.0.1', resolve));
+    const port = (project.address() as { port: number }).port;
     await writeFile(path.join(root, '.agemu.json'), JSON.stringify({
-      version: 2, platform: 'ios', app: { type: 'expo', root: '.', port: 8081, launchTarget: 'expo-go', hostBundleId: 'host.exp.Exponent' }, simulator: { udid: 'PHONE' },
+      version: 2, platform: 'ios', app: { type: 'expo', root: '.', port, launchTarget: 'expo-go', hostBundleId: 'host.exp.Exponent' }, simulator: { udid: 'PHONE' },
     }));
-    await writeFile(path.join(root, 'idb'), `#!/bin/sh\necho "idb $*" >> "${calls}"\nif [ "$1" = "ui" ] && [ "$2" = "describe-all" ]; then echo '[]'; fi\n`);
-    await writeFile(path.join(root, 'xcrun'), `#!/bin/sh\necho "xcrun $*" >> "${calls}"\n`);
-    await chmod(path.join(root, 'idb'), 0o755);
-    await chmod(path.join(root, 'xcrun'), 0o755);
+    await writeFile(path.join(root, 'idb'), `#!${process.execPath}
+require('node:fs').appendFileSync(${JSON.stringify(calls)}, 'idb ' + process.argv.slice(2).join(' ') + '\\n');
+if (process.argv[2] === 'ui' && process.argv[3] === 'describe-all') process.stdout.write('[]');
+`);
+    await writeFile(path.join(root, 'xcrun'), `#!${process.execPath}
+require('node:fs').appendFileSync(${JSON.stringify(calls)}, 'xcrun ' + process.argv.slice(2).join(' ') + '\\n');
+if (process.argv[3] === 'list') process.stdout.write(${JSON.stringify(JSON.stringify(simulatorDevices('PHONE')))});
+`);
+    // The isolated process fixture supplies the external listener's project identity.
+    await writeFile(path.join(root, 'lsof'), `#!${process.execPath}
+process.stdout.write(process.argv.includes('-Fn') ? ${JSON.stringify('n'+resolvedRoot+'\n')} : ${JSON.stringify(String(process.pid))});
+`);
+    await Promise.all(['idb', 'xcrun', 'lsof'].map(name => chmod(path.join(root, name), 0o755)));
     try {
-      const { stdout } = await run(process.execPath, [cli, 'ui', 'run', '--backend=idb', '--plan-json={"version":1,"actions":[{"launch":{}}]}'], { cwd: root, env: { ...process.env, PATH: `${root}:${process.env.PATH ?? ''}` } });
-      expect(JSON.parse(stdout).data.backend).toBe('idb');
+      const { stdout } = await run(process.execPath, [cli, 'ui', 'run', '--backend=idb', '--plan-json={"version":1,"actions":[{"launch":{}}]}'], { cwd: root, env: { ...process.env, PATH: root } });
+      expect(JSON.parse(stdout).data).toMatchObject({ backend: 'idb', bundleId: 'host.exp.Exponent', actions: 1, completed: 1 });
       const invoked = await readFile(calls, 'utf8');
       expect(invoked).toContain('xcrun simctl launch PHONE host.exp.Exponent');
-    } finally { await rm(root, { recursive: true, force: true }); }
+      expect(invoked).toContain(`xcrun simctl openurl PHONE exp://127.0.0.1:${port}`);
+    } finally {
+      project.closeAllConnections();
+      await new Promise<void>(resolve => project.close(() => resolve()));
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
 
@@ -139,7 +176,10 @@ fi
     try {
       const { stdout } = await run(process.execPath, [cli, 'config', 'show'], { cwd: root });
       const normalizedRoot = await realpath(root);
-      expect(JSON.parse(stdout)).toEqual({
+      expect(JSON.parse(stdout).data).not.toHaveProperty('root');
+      expect(JSON.parse(stdout).data).not.toHaveProperty('redactions');
+      expect(JSON.parse(stdout).data).toMatchObject({ action: 'show', udid: null, bundleId: null, run: null });
+      expect(JSON.parse(stdout)).toMatchObject({
         ok: true,
         data: {
           version: 2 as const, platform: 'ios' as const, app: { type: 'native' as const, project: path.join(normalizedRoot, 'App.xcodeproj'), scheme: 'App', configuration: 'Debug', bundleId: 'com.example.app' }, simulator: { udid: 'fixture' },
@@ -176,11 +216,16 @@ fi
     await writeFile(path.join(root, '.agemu.json'), JSON.stringify({
       version: 2, platform: 'ios', app: { type: 'expo', root: '.', port: 8081, launchTarget: 'development-build', bundleId: 'com.example.expo' }, simulator: { udid: 'fixture' },
     }));
+    await writeFile(path.join(root, 'xcrun'), `#!${process.execPath}
+if (process.argv[3] === 'list') process.stdout.write(${JSON.stringify(JSON.stringify(simulatorDevices('fixture')))});
+`);
+    await chmod(path.join(root, 'xcrun'), 0o755);
+    const env = { PATH: root };
     try {
-      await expect(run(process.execPath, [cli, 'build'], { cwd: root })).rejects.toMatchObject({
+      await expect(run(process.execPath, [cli, 'build'], { cwd: root, env })).rejects.toMatchObject({
         code: 1, stdout: expect.stringContaining('Local Expo CLI is missing'),
       });
-      await expect(run(process.execPath, [cli, 'app', 'install'], { cwd: root })).rejects.toMatchObject({
+      await expect(run(process.execPath, [cli, 'app', 'install'], { cwd: root, env })).rejects.toMatchObject({
         code: 1, stdout: expect.stringContaining('APP_NOT_BUILT'),
       });
     } finally { await rm(root, { recursive: true, force: true }); }
@@ -266,6 +311,7 @@ if (process.argv[3] === 'list') process.stdout.write(${JSON.stringify(JSON.strin
       simulator: { udid: 'PHONE' }, redactions: ['secret-app'],
     }));
     await writeFile(path.join(root, 'xcrun'), `#!${process.execPath}
+if (process.argv[3] === 'list') process.stdout.write(${JSON.stringify(JSON.stringify(simulatorDevices('PHONE')))});
 if (process.argv[3] === 'launch') {
   process.stderr.write('launch denied for secret-app');
   if (require('node:fs').existsSync(${JSON.stringify(failFlag)})) process.exit(1);
@@ -275,7 +321,7 @@ if (process.argv[3] === 'launch') {
     try {
       const success = await run(process.execPath, [cli, 'app', 'launch'], { cwd: root, env: { PATH: root } });
       expect(success.stdout).not.toContain('secret-app');
-      expect(JSON.parse(success.stdout)).toEqual({ ok: true, data: { action: 'launch', udid: 'PHONE', bundleId: 'com.[REDACTED].x' } });
+      expect(JSON.parse(success.stdout)).toMatchObject({ ok: true, data: { action: 'launch', udid: 'PHONE', bundleId: 'com.[REDACTED].x' } });
       await writeFile(failFlag, '');
       const failure = await run(process.execPath, [cli, 'app', 'launch', '--debug'], { cwd: root, env: { PATH: root } })
         .then(() => undefined, (error: { code: number; stdout: string }) => error);
@@ -317,15 +363,40 @@ if (process.argv[3] === 'launch') {
       simulator: { udid: 'PHONE' },
     }));
     await mkdir(path.join(root, '.agemu', 'events.jsonl'), { recursive: true });
-    await writeFile(path.join(root, 'xcrun'), `#!${process.execPath}\n`);
+    await writeFile(path.join(root, 'xcrun'), `#!${process.execPath}
+if (process.argv[3] === 'list') process.stdout.write(${JSON.stringify(JSON.stringify(simulatorDevices('PHONE')))});
+`);
     await chmod(path.join(root, 'xcrun'), 0o755);
     try {
       const { stdout, stderr } = await run(process.execPath, [cli, 'app', 'terminate'], { cwd: root, env: { PATH: root } });
-      expect(JSON.parse(stdout)).toEqual({ ok: true, data: { action: 'terminate', udid: 'PHONE', bundleId: 'com.example.app' } });
+      expect(JSON.parse(stdout)).toMatchObject({ ok: true, data: { action: 'terminate', udid: 'PHONE', bundleId: 'com.example.app' } });
       expect(stderr).toBe('');
     } finally {
       await rm(root, { recursive: true, force: true });
     }
+  });
+
+  it('reports a stopped configured Simulator without attempting an app launch', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-cli-stopped-app-'));
+    const calls = path.join(root, 'calls.txt');
+    await writeFile(path.join(root, '.agemu.json'), JSON.stringify({
+      version: 2, platform: 'ios', app: { type: 'native', project: 'App.xcodeproj', scheme: 'App', configuration: 'Debug', bundleId: 'com.example.app' },
+      simulator: { udid: 'PHONE' },
+    }));
+    await writeFile(path.join(root, 'xcrun'), `#!${process.execPath}
+require('node:fs').appendFileSync(${JSON.stringify(calls)}, process.argv.slice(2).join(' ') + '\\n');
+if (process.argv[3] === 'list') process.stdout.write(${JSON.stringify(JSON.stringify(simulatorDevices('PHONE', 'Shutdown')))});
+`);
+    await chmod(path.join(root, 'xcrun'), 0o755);
+    try {
+      const failure = await run(process.execPath, [cli, 'app', 'launch'], { cwd: root, env: { PATH: root } })
+        .then(() => undefined, (error: { code: number; stdout: string; stderr: string }) => error);
+      expect(failure?.code).toBe(1);
+      expect(failure?.stderr).toBe('');
+      expect(JSON.parse(failure!.stdout).error).toMatchObject({ code: 'SIMULATOR_NOT_BOOTED', details: { udid: 'PHONE', state: 'Shutdown' } });
+      expect(await readFile(calls, 'utf8')).not.toContain('simctl launch');
+      await expect(readFile(path.join(root, '.agemu', 'launch.json'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally { await rm(root, { recursive: true, force: true }); }
   });
 
   it('uses a configured UDID before an explicit name selector', async () => {
@@ -501,6 +572,55 @@ if (process.argv[3] === 'list') process.stdout.write(${JSON.stringify(JSON.strin
     try {
       await expect(run(process.execPath, [cli, ...argv], { cwd: root, env: { PATH: root } }))
         .rejects.toMatchObject({ code: 1, stdout: expect.stringContaining(`"code":"${code}"`) });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('runs no simctl command for app uninstall without --yes', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-cli-test-'));
+    const calls = path.join(root, 'calls.txt');
+    await writeFile(path.join(root, '.agemu.json'), JSON.stringify({
+      version: 2, platform: 'ios', app: { type: 'native', project: 'App.xcodeproj', scheme: 'App', configuration: 'Debug', bundleId: 'com.example.app' },
+      simulator: { udid: 'PHONE' },
+    }));
+    const devices = { devices: { 'com.apple.CoreSimulator.SimRuntime.iOS-18-0': [{ udid: 'PHONE', name: 'Phone', state: 'Booted', isAvailable: true }] } };
+    await writeFile(path.join(root, 'xcrun'), `#!${process.execPath}
+require('node:fs').appendFileSync(${JSON.stringify(calls)}, process.argv.slice(2).join(' ') + '\\n');
+if (process.argv[3] === 'list') process.stdout.write(${JSON.stringify(JSON.stringify(devices))});
+`);
+    await chmod(path.join(root, 'xcrun'), 0o755);
+    const invoked = () => readFile(calls, 'utf8').catch(() => '');
+    try {
+      const failure = await run(process.execPath, [cli, 'app', 'uninstall'], { cwd: root, env: { PATH: root } })
+        .then(() => undefined, (error: { code: number; stdout: string }) => error);
+      expect(failure?.code).toBe(1);
+      expect(JSON.parse(failure!.stdout).error).toMatchObject({ code: 'COMMAND_INVALID', message: expect.stringContaining('com.example.app') });
+      expect(await invoked()).toBe('');
+      const { stdout } = await run(process.execPath, [cli, 'app', 'uninstall', '--yes'], { cwd: root, env: { PATH: root } });
+      expect(JSON.parse(stdout)).toMatchObject({ ok: true, data: { action: 'uninstall', udid: 'PHONE', bundleId: 'com.example.app' } });
+      expect(await invoked()).toContain('simctl uninstall PHONE com.example.app');
+      const events = (await readFile(path.join(root, '.agemu', 'events.jsonl'), 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
+      expect(events.map((event) => [event.command, event.status])).toEqual([['app uninstall', 'error'], ['app uninstall', 'ok']]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses app uninstall for Expo Go before the --yes guard and runs no simctl command', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-cli-test-'));
+    const calls = path.join(root, 'calls.txt');
+    await writeFile(path.join(root, '.agemu.json'), JSON.stringify({
+      version: 2, platform: 'ios', app: { type: 'expo', root: '.', port: 8081, launchTarget: 'expo-go', hostBundleId: 'host.exp.Exponent' }, simulator: { udid: 'PHONE' },
+    }));
+    await writeFile(path.join(root, 'xcrun'), `#!${process.execPath}\nrequire('node:fs').appendFileSync(${JSON.stringify(calls)}, process.argv.slice(2).join(' ') + '\\n');\n`);
+    await chmod(path.join(root, 'xcrun'), 0o755);
+    try {
+      const failure = await run(process.execPath, [cli, 'app', 'uninstall'], { cwd: root, env: { PATH: root } })
+        .then(() => undefined, (error: { code: number; stdout: string }) => error);
+      expect(failure?.code).toBe(1);
+      expect(JSON.parse(failure!.stdout).error.code).toBe('WORKFLOW_UNSUPPORTED');
+      expect(await readFile(calls, 'utf8').catch(() => '')).toBe('');
     } finally {
       await rm(root, { recursive: true, force: true });
     }

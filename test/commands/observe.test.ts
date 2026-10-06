@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -6,12 +6,24 @@ import { observe } from '../../src/commands/diagnostics.js';
 import type { LoadedConfig } from '../../src/config/config.js';
 import type { Device } from '../../src/native/simctl.js';
 import type { ProcessResult } from '../../src/process/run-process.js';
+import { CliError } from '../../src/core/errors.js';
 
 const device: Device = { udid: 'PHONE', name: 'iPhone', runtime: 'iOS-18-0', state: 'Booted', isAvailable: true };
 const processResult = (exitCode: number, stderr = ''): ProcessResult => ({ stdout: '', stderr, exitCode, signal: null, startedAt: '', durationMs: 1 });
 const config = (root: string): LoadedConfig => ({ version: 2 as const, platform: 'ios' as const, app: { type: 'native' as const, project: `${root}/App.xcodeproj`, scheme: 'App', configuration: 'Debug', bundleId: 'com.example.app' }, simulator: { udid: 'PHONE' }, redactions: ['secret-value'], root });
 
 describe('observe command', () => {
+  it('retains screenshot success and the primary timeout when recording events fails', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-observe-event-failure-'));
+    try {
+      await mkdir(path.join(root, '.agemu/events.jsonl'), { recursive: true });
+      const dependencies = { resolveDevice: async () => device, runner: async () => processResult(0) };
+      await expect(observe(config(root), dependencies)).resolves.toMatchObject({ screenshot: expect.stringContaining('screen.png') });
+      await expect(observe(config(root), { ...dependencies, runner: async () => { throw new CliError('PROCESS_TIMEOUT', 'screenshot timed out secret-value'); } }))
+        .rejects.toMatchObject({ code: 'PROCESS_TIMEOUT', message: 'screenshot timed out [REDACTED]', details: { run: expect.stringContaining('.agemu/runs/') } });
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
   it('captures a screenshot using the configured simulator and records app identity', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'agemu-observe-'));
     const calls: string[][] = [];

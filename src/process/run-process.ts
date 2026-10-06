@@ -10,7 +10,7 @@ export type ProcessResult = {
   durationMs: number;
 };
 
-export type RunOptions = { timeoutMs?: number; signal?: AbortSignal; cwd?: string; env?: NodeJS.ProcessEnv };
+export type RunOptions = { timeoutMs?: number; signal?: AbortSignal; cwd?: string; env?: NodeJS.ProcessEnv; stdin?: string | Uint8Array };
 
 export type Deadline = { ms: number; remaining: () => number; expired: () => boolean };
 
@@ -31,6 +31,7 @@ export function runProcess(executable: string, args: string[], options: RunOptio
     let timer: NodeJS.Timeout | undefined;
     let killTimer: NodeJS.Timeout | undefined;
     let termination: CliError | undefined;
+    let inputError: Error | undefined;
     const finish = (fn: () => void) => {
       if (settled) return;
       settled = true;
@@ -54,12 +55,14 @@ export function runProcess(executable: string, args: string[], options: RunOptio
       killTimer = setTimeout(() => child.kill('SIGKILL'), 1_000);
     };
     const abort = () => terminate(new CliError('PROCESS_TIMEOUT', 'Process cancelled'));
-    child.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString(); });
-    child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
+    child.stdout.setEncoding('utf8').on('data', (chunk: string) => { stdout += chunk; });
+    child.stderr.setEncoding('utf8').on('data', (chunk: string) => { stderr += chunk; });
     child.once('error', (error: NodeJS.ErrnoException) => finish(() => reject(new CliError(error.code === 'ENOENT' ? 'TOOL_NOT_FOUND' : 'PROCESS_FAILED', error.message))));
     child.once('close', (exitCode, signal) => finish(() => {
       if (termination) {
         reject(new CliError(termination.code, termination.message, { ...termination.details, result: result(exitCode, signal) }));
+      } else if (inputError && exitCode === 0) {
+        reject(new CliError('PROCESS_FAILED', `Unable to write process stdin: ${inputError.message}`));
       } else {
         resolve(result(exitCode, signal));
       }
@@ -70,5 +73,8 @@ export function runProcess(executable: string, args: string[], options: RunOptio
     if (options.timeoutMs !== undefined) {
       timer = setTimeout(() => terminate(new CliError('PROCESS_TIMEOUT', `Process timed out after ${options.timeoutMs}ms`)), options.timeoutMs);
     }
+    // Content is input data, never part of argv or error details. Always send EOF, including empty input.
+    child.stdin.on('error', error => { inputError = error; });
+    child.stdin.end(options.stdin);
   });
 }

@@ -4,6 +4,31 @@ import { runProcess } from '../../src/process/run-process.js';
 const node = process.execPath;
 
 describe('runProcess', () => {
+  it('sends exact multiline Unicode input on stdin with EOF and excludes it from argv', async () => {
+    const input = '第一行\n$HOME; $(false)\n';
+    const result = await runProcess(node, ['-e', "const chunks = []; process.stdin.on('data', chunk => chunks.push(chunk)); process.stdin.on('end', () => process.stdout.write(JSON.stringify({ args: process.argv.slice(1), input: Buffer.concat(chunks).toString('utf8') })));"], { stdin: input, timeoutMs: 2000 });
+    expect(JSON.parse(result.stdout)).toEqual({ args: [], input });
+    const empty = await runProcess(node, ['-e', "process.stdin.on('end', () => process.stdout.write('EOF')); process.stdin.resume();"], { stdin: '', timeoutMs: 2000 });
+    expect(empty.stdout).toBe('EOF');
+  });
+
+  it('does not crash on broken stdin or replace the child nonzero failure', async () => {
+    const input = 'private-input'.repeat(100_000);
+    const result = await runProcess(node, ['-e', "process.stdin.destroy(); process.stderr.write('rejected'); process.exit(7);"], { stdin: input, timeoutMs: 2000 });
+    expect(result).toMatchObject({ exitCode: 7, stderr: 'rejected' });
+  });
+
+  it('terminates a stalled reader without including stdin in timeout details', async () => {
+    const privateInput = 'PRIVATE_INPUT_0123456789';
+    const error = await runProcess(node, ['-e', 'setTimeout(() => {}, 10_000)'], { stdin: privateInput.repeat(100_000), timeoutMs: 20 }).catch(error => error);
+    expect(error).toMatchObject({ code: 'PROCESS_TIMEOUT' });
+    expect(JSON.stringify(error)).not.toContain(privateInput);
+  });
+
+  it('decodes UTF-8 output across byte boundaries', async () => {
+    const result = await runProcess(node, ['-e', "const value = Buffer.from('秘密'); process.stdout.write(value.subarray(0, 2)); setTimeout(() => process.stdout.end(value.subarray(2)), 20);"], { timeoutMs: 2000 });
+    expect(result.stdout).toBe('秘密');
+  });
   it('passes every argument as data without shell interpretation', async () => {
     const argumentsToPreserve = ['space value', '"quoted"', '; echo injected', '$HOME', ''];
     const result = await runProcess(node, [

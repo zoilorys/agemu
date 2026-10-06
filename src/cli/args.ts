@@ -1,38 +1,18 @@
 import { CliError } from '../core/errors.js';
 
-export type FlagSpec = { kind: 'boolean' | 'value' | 'repeat' };
-export type CommandSpec = {
-  subcommands?: Record<string, Record<string, FlagSpec>>;
-  flags?: Record<string, FlagSpec>;
-};
-export type ParsedArgs = {
-  command?: string;
-  subcommand?: string;
-  flags: Map<string, string[]>;
-  globals: { pretty: boolean; debug: boolean; help: boolean; version: boolean };
-};
+import { commandDefinitions } from './registry.js';
+import type { CommandSpec, ParsedArgs, FlagSpec } from './types.js';
+export type { FlagSpec, CommandSpec, ParsedArgs } from './types.js';
+export { value, values } from './options.js';
 
-const boolean: FlagSpec = { kind: 'boolean' };
-const single: FlagSpec = { kind: 'value' };
-const repeat: FlagSpec = { kind: 'repeat' };
-const selector = { udid: single, name: single, runtime: single };
-const logOptions = { last: single, level: single, limit: single };
-const launchOptions = { arg: repeat, env: repeat };
-
-export const commandSpecs: Record<string, CommandSpec> = {
-  setup: { flags: { 'expo-go': boolean, udid: single, port: single } },
-  config: { subcommands: { show: {} } },
-  simulator: { subcommands: { list: {}, boot: selector, shutdown: selector } },
-  build: { flags: { timeout: single } },
-  server: { subcommands: { start: {}, status: {}, stop: {} } },
-  app: { subcommands: { install: {}, launch: launchOptions, terminate: {}, restart: launchOptions, 'open-url': { url: single } } },
-  observe: { flags: {} },
-  logs: { subcommands: { show: logOptions } },
-  diagnose: { flags: logOptions },
-  ui: { subcommands: { 'build-runner': { timeout: single }, run: { plan: single, 'plan-json': single, backend: single, timeout: single } } },
-  doctor: { flags: {} },
-  clean: { flags: { runs: boolean, 'derived-data': boolean, 'older-than': single, 'dry-run': boolean } },
-};
+export const commandSpecs: Record<string, CommandSpec> = {};
+for (const definition of commandDefinitions) {
+  const [command, subcommand] = definition.key.split(' ');
+  if (subcommand) {
+    const spec = commandSpecs[command] ??= { subcommands: {} };
+    spec.subcommands![subcommand] = definition.flags;
+  } else commandSpecs[command] = { flags: definition.flags };
+}
 
 const globalNames = ['pretty', 'debug', 'help', 'version'] as const;
 type GlobalName = typeof globalNames[number];
@@ -114,12 +94,4 @@ export function parseArgs(argv: string[]): ParsedArgs {
     flags.set(name, [...(existing ?? []), value]);
   }
   return { command, subcommand, flags, globals };
-}
-
-export function value(parsed: ParsedArgs, name: string): string | undefined {
-  return parsed.flags.get(name)?.[0];
-}
-
-export function values(parsed: ParsedArgs, name: string): string[] {
-  return parsed.flags.get(name) ?? [];
 }

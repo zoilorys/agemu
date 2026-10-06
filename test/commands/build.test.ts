@@ -35,7 +35,8 @@ describe('build command', () => {
         if (executable === 'plutil') return processResult(args[1] === 'CFBundleIdentifier' ? 'com.example.expo' : 'Expo');
         return processResult(`CONFIGURATION_BUILD_DIR = ${path.dirname(appPath)}\nUNLOCALIZED_RESOURCES_FOLDER_PATH = Expo.app\n`);
       };
-      await buildApp(expo, { run, resolveUdid: async () => 'PHONE' });
+      const result = await buildApp(expo, { run, resolveUdid: async () => 'PHONE' });
+      expect(result).toMatchObject({ appType: 'expo', target: null, derivedData: null, logs: { settings: null, build: expect.stringContaining('expo-build.log') } });
       expect(JSON.parse(await readFile(path.join(root, '.agemu/state.json'), 'utf8'))).toMatchObject({ appPath, bundleId: 'com.example.expo' });
       await expect(buildApp(expo, { run: async (executable, args) => executable === 'plutil' ? processResult(args[1] === 'CFBundleIdentifier' ? 'com.wrong.app' : 'Expo') : processResult(`CONFIGURATION_BUILD_DIR = ${path.dirname(appPath)}\nUNLOCALIZED_RESOURCES_FOLDER_PATH = Expo.app\n`), resolveUdid: async () => 'PHONE' })).rejects.toMatchObject({ code: 'BUILD_FAILED' });
       expect(JSON.parse(await readFile(path.join(root, '.agemu/state.json'), 'utf8'))).toMatchObject({ appPath, bundleId: 'com.example.expo' });
@@ -51,7 +52,7 @@ describe('build command', () => {
         resolveUdid: async () => 'PHONE', now: () => new Date('2026-09-21T12:00:00.000Z'),
         run: async (_executable, args) => { calls.push(args); return responses.shift()!; },
       });
-      expect(result).toMatchObject({ appPath: '/products/[REDACTED]/App.app', bundleId: 'com.example.app', target: '[REDACTED]-App', udid: 'PHONE' });
+      expect(result).toMatchObject({ appType: 'native', appPath: '/products/[REDACTED]/App.app', bundleId: 'com.example.app', target: '[REDACTED]-App', udid: 'PHONE', derivedData: path.join(root, '.agemu/DerivedData'), logs: { settings: expect.stringContaining('build-settings.log') } });
       expect(calls).toHaveLength(2);
       expect(await readFile(path.join(root, result.logs.build), 'utf8')).toBe('compile [REDACTED]\n--- stderr ---\n');
       expect(JSON.parse(await readFile(path.join(root, '.agemu/state.json'), 'utf8'))).toMatchObject({

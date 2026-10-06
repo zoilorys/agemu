@@ -1,13 +1,19 @@
+import { closeSync, openSync, writeSync } from 'node:fs';
 import { mkdir, open, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { appendEvent, createRun, redactValue, type Run } from '../artifacts/runs.js';
-import type { AppState } from './build.js';
-import { nativeApp, targetBundleId, type LoadedConfig } from '../config/config.js';
+import { bestEffortEvent, createRun, redactValue, type Run } from '../artifacts/runs.js';
+import { readAppState, type AppState } from '../core/app-state.js';
+import { logLimit, parseCaptureDuration, parseDuration, parseUntil } from '../core/log-options.js';
+import { targetBundleId, type LoadedConfig } from '../config/config.js';
 import { CliError } from '../core/errors.js';
 import { redact } from '../core/redact.js';
 import { installedExpoGoHost } from '../native/expo-go.js';
 import { server } from './server.js';
-import { listDevices, resolveDevice, simctl, type Device, type SimctlRunner } from '../native/simctl.js';
+import { listCrashes } from './crashes.js';
+import { localTimestamp, loggedBefore, resolveSince, type SinceWindow } from './since.js';
+import { streamLines } from '../process/stream-lines.js';
+import { simctl, type Device, type SimctlRunner } from '../native/simctl.js';
+import { requireBooted, selectedDevice } from '../native/simctl-commands.js';
 
 type Dependencies = {
   runner?: SimctlRunner;
@@ -17,22 +23,18 @@ type Dependencies = {
   readEvents?: (file: string) => Promise<string>;
   serverStatus?: typeof server;
   readServerOutput?: (file: string) => Promise<string>;
+  crashDirectory?: string;
 };
-export type LogOptions = { last?: string; level?: string; limit?: number };
+export type LogOptions = { last?: string; since?: string; level?: string; limit?: number };
+export type DiagnosticEvidence = Record<string, unknown> & {
+  build: AppState | null; host: { bundleId: string; executableName: string } | null;
+  availability: { build: { applicable: boolean; available: boolean }; host: { applicable: boolean; available: boolean } };
+};
 
 const allowedLevels = new Set(['default', 'info', 'debug', 'error', 'fault']);
 
-async function configuredDevice(config: LoadedConfig): Promise<Device> {
-  return resolveDevice(await listDevices(), config.simulator);
-}
-
 async function state(config: LoadedConfig, dependencies: Dependencies): Promise<AppState> {
-  const file = path.join(config.root, '.agemu', 'state.json');
-  try {
-    return dependencies.readState ? await dependencies.readState(file) : JSON.parse(await readFile(file, 'utf8')) as AppState;
-  } catch (error) {
-    throw new CliError('APP_NOT_BUILT', `Cannot read app state: ${error instanceof Error ? error.message : String(error)}`);
-  }
+  return readAppState(path.join(config.root, '.agemu', 'state.json'), config.redactions ?? [], dependencies.readState);
 }
 
 function safeRelative(root: string, file: string, secrets: string[]): string {
@@ -43,8 +45,9 @@ async function runContext(config: LoadedConfig, dependencies: Dependencies): Pro
   const now = dependencies.now?.() ?? new Date();
   const [run, device] = await Promise.all([
     createRun(config.root, now),
-    dependencies.resolveDevice ? dependencies.resolveDevice(config) : configuredDevice(config),
+    dependencies.resolveDevice ? dependencies.resolveDevice(config) : selectedDevice(config, { runner: dependencies.runner }),
   ]);
+  requireBooted(device, config.redactions ?? []);
   return { run, now, device };
 }
 
@@ -69,7 +72,7 @@ function bundlingErrors(output: string): string[] {
 
 export async function observe(config: LoadedConfig, dependencies: Dependencies = {}) {
   const secrets = config.redactions ?? [];
-  const bundleId = config.app.type === 'expo' ? (config.app.launchTarget === 'development-build' ? config.app.bundleId : config.app.hostBundleId) : config.app.bundleId;
+  const bundleId = targetBundleId(config);
   const { run, now, device } = await runContext(config, dependencies);
   const directory = path.join(run.directory, 'screenshots');
   const screenshot = path.join(directory, 'screen.png');
@@ -82,12 +85,12 @@ export async function observe(config: LoadedConfig, dependencies: Dependencies =
       run: run.relativeDirectory, screenshot: safeRelative(config.root, screenshot, secrets), capturedAt: now.toISOString(),
       simulator: redactValue(device, secrets), bundleId: redact(bundleId, secrets),
     };
-    await appendEvent(config.root, { at: now.toISOString(), command: 'observe', status: 'ok', data }, secrets);
+    await bestEffortEvent(config.root, { at: now.toISOString(), command: 'observe', status: 'ok', data }, secrets);
     return data;
   } catch (error) {
     const details = { run: run.relativeDirectory, simulator: redactValue(device, secrets), bundleId: redact(bundleId, secrets) };
-    await appendEvent(config.root, { at: now.toISOString(), command: 'observe', status: 'error', error: failure(error, secrets), details }, secrets);
-    throw new CliError('PROCESS_FAILED', redact(error instanceof Error ? error.message : String(error), secrets), details);
+    await bestEffortEvent(config.root, { at: now.toISOString(), command: 'observe', status: 'error', error: failure(error, secrets), details }, secrets);
+    throw new CliError(error instanceof CliError ? error.code : 'PROCESS_FAILED', redact(error instanceof Error ? error.message : String(error), secrets), details);
   }
 }
 
@@ -108,19 +111,22 @@ function logArguments(level: string, app: Pick<AppState, 'executableName'>): str
 
 export async function showLogs(config: LoadedConfig, options: LogOptions = {}, dependencies: Dependencies = {}) {
   const secrets = config.redactions ?? [];
-  const last = options.last ?? '30s';
+  if (options.since !== undefined && options.last !== undefined) throw new CliError('COMMAND_INVALID', 'Use either --since or --last');
+  const last = options.since === undefined ? options.last ?? '30s' : undefined;
   const level = options.level ?? 'default';
-  const limit = options.limit ?? 100;
-  if (!/^\d+[smhd]$/.test(last)) throw new CliError('COMMAND_INVALID', '--last must be a number followed by s, m, h, or d');
+  const limit = logLimit(options.limit);
+  if (last !== undefined) parseDuration(last, { maxMs: 8_640_000_000_000_000, message: '--last must be a number followed by s, m, h, or d' });
   if (!allowedLevels.has(level)) throw new CliError('COMMAND_INVALID', '--level must be default, info, debug, error, or fault');
-  if (!Number.isSafeInteger(limit) || limit < 0 || limit > 10_000) throw new CliError('COMMAND_INVALID', '--limit must be an integer from 0 to 10000');
   const { run, now, device } = await runContext(config, dependencies);
+  const window = options.since === undefined ? undefined
+    : await resolveSince(options.since, config.root, now, 0, { bundleId: targetBundleId(config), udid: device.udid });
   const app = config.app.type === 'expo' && config.app.launchTarget === 'expo-go'
     ? await installedExpoGoHost(device.udid, config.app.hostBundleId, dependencies.runner ?? simctl)
     : await state(config, dependencies);
   if (app.bundleId !== targetBundleId(config) || ('udid' in app && app.udid !== device.udid)) throw new CliError('APP_NOT_BUILT', 'Cached app state does not match the configured app and simulator');
   const artifact = path.join(run.directory, 'logs.txt');
-  const args = ['spawn', device.udid, 'log', 'show', '--last', last, ...logArguments(level, app), '--style', 'compact'];
+  const range = window ? ['--start', localTimestamp(window.start)] : ['--last', last!];
+  const args = ['spawn', device.udid, 'log', 'show', ...range, ...logArguments(level, app), '--style', 'compact'];
   let result;
   try { result = await (dependencies.runner ?? simctl)(args); }
   catch (error) {
@@ -130,7 +136,7 @@ export async function showLogs(config: LoadedConfig, options: LogOptions = {}, d
     const full = redact(`${typeof captured.stdout === 'string' ? captured.stdout : ''}${typeof captured.stderr === 'string' ? captured.stderr : ''}`, secrets);
     await writeFile(artifact, full, { mode: 0o600 });
     const details = { artifact: safeRelative(config.root, artifact, secrets), run: run.relativeDirectory };
-    await appendEvent(config.root, { at: now.toISOString(), command: 'logs show', status: 'error', args, error: failure(error, secrets), details }, secrets);
+    await bestEffortEvent(config.root, { at: now.toISOString(), command: 'logs show', status: 'error', args, error: failure(error, secrets), details }, secrets);
     throw new CliError(error instanceof CliError ? error.code : 'PROCESS_FAILED', redact(error instanceof Error ? error.message : String(error), secrets), details);
   }
   const full = redact(`${result.stdout}${result.stderr}`, secrets);
@@ -138,35 +144,135 @@ export async function showLogs(config: LoadedConfig, options: LogOptions = {}, d
   if (result.exitCode !== 0) {
     const details = { artifact: safeRelative(config.root, artifact, secrets), run: run.relativeDirectory };
     const error = new CliError('PROCESS_FAILED', redact(result.stderr.trim() || 'Log collection failed', secrets), details);
-    await appendEvent(config.root, { at: now.toISOString(), command: 'logs show', status: 'error', args, error: failure(error, secrets), details }, secrets);
+    await bestEffortEvent(config.root, { at: now.toISOString(), command: 'logs show', status: 'error', args, error: failure(error, secrets), details }, secrets);
     throw error;
   }
-  const lines = full.split(/\r?\n/).filter((line, index, all) => line || index < all.length - 1);
+  // `log show --start` has second precision; drop entries from earlier in the start second.
+  const lines = full.split(/\r?\n/).filter((line, index, all) => (line || index < all.length - 1) && !(window && loggedBefore(line, window.start)));
   const data = {
-    run: run.relativeDirectory, udid: redact(device.udid, secrets), bundleId: redact(targetBundleId(config), secrets), last, level,
+    run: run.relativeDirectory, udid: redact(device.udid, secrets), bundleId: redact(targetBundleId(config), secrets),
+    ...(window ? { since: { start: window.start.toISOString(), source: window.source } } : { last }), level,
     logs: limit === 0 ? [] : lines.slice(-limit), truncated: lines.length > limit,
     artifact: safeRelative(config.root, artifact, secrets), capturedAt: now.toISOString(),
   };
-  await appendEvent(config.root, { at: now.toISOString(), command: 'logs show', status: 'ok', args, data }, secrets);
+  await bestEffortEvent(config.root, { at: now.toISOString(), command: 'logs show', status: 'ok', args, data }, secrets);
+  return data;
+}
+
+export type StreamLogOptions = { duration?: string; until?: string; level?: string; limit?: number };
+type StreamDependencies = Dependencies & { stream?: typeof streamLines };
+
+// log stream takes --level info|debug; error and fault narrow the predicate as in log show.
+function streamArguments(level: string, app: Pick<AppState, 'executableName'>): string[] {
+  if (level === 'info' || level === 'debug') return ['--level', level, '--predicate', predicate(app)];
+  return logArguments(level, app);
+}
+
+export async function streamLogs(config: LoadedConfig, options: StreamLogOptions = {}, dependencies: StreamDependencies = {}) {
+  const secrets = config.redactions ?? [];
+  const level = options.level ?? 'default';
+  const limit = logLimit(options.limit);
+  const durationMs = parseCaptureDuration(options.duration);
+  if (!allowedLevels.has(level)) throw new CliError('COMMAND_INVALID', '--level must be default, info, debug, error, or fault');
+  const until = parseUntil(options.until);
+  const { run, now, device } = await runContext(config, dependencies);
+  const app = config.app.type === 'expo' && config.app.launchTarget === 'expo-go'
+    ? await installedExpoGoHost(device.udid, config.app.hostBundleId, dependencies.runner ?? simctl)
+    : await state(config, dependencies);
+  if (app.bundleId !== targetBundleId(config) || ('udid' in app && app.udid !== device.udid)) throw new CliError('APP_NOT_BUILT', 'Cached app state does not match the configured app and simulator');
+  const artifact = path.join(run.directory, 'logs-stream.txt');
+  const args = ['spawn', device.udid, 'log', 'stream', '--style', 'compact', ...streamArguments(level, app)];
+  // Only the returned tail stays in memory; every line is appended to the artifact as it arrives.
+  const lines: string[] = [];
+  let total = 0;
+  let matchedLine: string | undefined;
+  const fd = openSync(artifact, 'w', 0o600);
+  const base = { run: run.relativeDirectory, udid: redact(device.udid, secrets), bundleId: redact(targetBundleId(config), secrets), duration: options.duration!, level };
+  const recordError = async (error: CliError) => {
+    await bestEffortEvent(config.root, { at: now.toISOString(), command: 'logs stream', status: 'error', args, error: failure(error, secrets), details: error.details }, secrets);
+    return error;
+  };
+  let outcome;
+  try {
+    outcome = await (dependencies.stream ?? streamLines)('xcrun', ['simctl', ...args], {
+      durationMs,
+      onLine: (raw) => {
+        if (total === 0 && raw.startsWith('Filtering the log data using')) return false;
+        const line = redact(raw, secrets);
+        total += 1;
+        writeSync(fd, `${line}\n`);
+        if (limit > 0) { lines.push(line); if (lines.length > limit) lines.shift(); }
+        if (until?.test(line)) { matchedLine = line; return true; }
+        return false;
+      },
+    });
+  } catch (error) {
+    closeSync(fd);
+    const details = { artifact: safeRelative(config.root, artifact, secrets), run: run.relativeDirectory };
+    throw await recordError(new CliError(error instanceof CliError ? error.code : 'PROCESS_FAILED', redact(error instanceof Error ? error.message : String(error), secrets), details));
+  }
+  closeSync(fd);
+  const artifactPath = safeRelative(config.root, artifact, secrets);
+  if (outcome.stoppedBy === 'exit' && outcome.exitCode !== 0) {
+    const details = { artifact: artifactPath, run: run.relativeDirectory, exitCode: outcome.exitCode, signal: outcome.signal };
+    throw await recordError(new CliError('PROCESS_FAILED', redact(outcome.stderr.trim() || 'Log streaming exited before the duration elapsed', secrets), details));
+  }
+  const data = {
+    ...base, stoppedBy: outcome.stoppedBy, matched: matchedLine !== undefined, ...(matchedLine !== undefined ? { matchedLine } : {}),
+    logs: lines, truncated: total > limit, artifact: artifactPath, capturedAt: now.toISOString(),
+  };
+  await bestEffortEvent(config.root, { at: now.toISOString(), command: 'logs stream', status: 'ok', args, data: { ...data, logs: undefined } }, secrets);
   return data;
 }
 
 export async function diagnose(config: LoadedConfig, options: LogOptions = {}, dependencies: Dependencies = {}) {
   const now = dependencies.now?.() ?? new Date();
   const secrets = config.redactions ?? [];
-  const evidence: Record<string, unknown> = {};
+  const expoGo = config.app.type === 'expo' && config.app.launchTarget === 'expo-go';
+  const availability = {
+    build: { applicable: !expoGo, available: false }, host: { applicable: expoGo, available: false },
+  };
+  const evidence: DiagnosticEvidence = { build: null, host: null, availability };
   const failures: Record<string, unknown> = {};
-  try { evidence.simulator = redactValue(await (dependencies.resolveDevice ? dependencies.resolveDevice(config) : configuredDevice(config)), secrets); }
+  if (options.since !== undefined && options.last !== undefined) throw new CliError('COMMAND_INVALID', 'Use either --since or --last');
+  let device: Device | undefined;
+  try { device = await (dependencies.resolveDevice ? dependencies.resolveDevice(config) : selectedDevice(config, { runner: dependencies.runner })); evidence.simulator = redactValue(device, secrets); }
   catch (error) { failures.simulator = failure(error, secrets); }
-  if (config.app.type === 'expo' && config.app.launchTarget === 'expo-go') evidence.host = { bundleId: redact(config.app.hostBundleId, secrets) };
-  else try { evidence.build = redactValue(await state(config, dependencies), secrets); }
-  catch (error) { failures.build = failure(error, secrets); }
+  // An explicit --since must resolve; by default the latest matching agemu launch scopes the evidence when there is one.
+  const expected = { bundleId: targetBundleId(config), udid: device?.udid };
+  let since = options.since;
+  let window: SinceWindow;
+  if (since !== undefined) window = await resolveSince(since, config.root, now, 0, expected);
+  else if (options.last === undefined) {
+    try { window = await resolveSince('launch', config.root, now, 0, expected); since = 'launch'; }
+    catch { window = await resolveSince(undefined, config.root, now, 3_600_000); }
+  } else window = await resolveSince(undefined, config.root, now, 3_600_000);
+  if (expoGo) {
+    try {
+      if (!device) throw new CliError('SIMULATOR_NOT_FOUND', 'Cannot inspect the Expo Go host without the configured simulator');
+      evidence.host = redactValue(await installedExpoGoHost(device.udid, targetBundleId(config), dependencies.runner ?? simctl), secrets);
+      availability.host.available = true;
+    } catch (error) { failures.host = failure(error, secrets); }
+  } else try {
+    const built = await state(config, dependencies);
+    if (built.bundleId !== targetBundleId(config) || (device && built.udid !== device.udid)) {
+      throw new CliError('APP_NOT_BUILT', 'Cached app state does not match the configured app and simulator');
+    }
+    evidence.build = redactValue(built, secrets);
+    availability.build.available = true;
+  } catch (error) { failures.build = failure(error, secrets); }
   try { evidence.observation = await observe(config, { ...dependencies, now: () => now }); }
   catch (error) { failures.observation = failure(error, secrets); }
-  try { evidence.logs = { source: 'Simulator unified log', ...(await showLogs(config, options, { ...dependencies, now: () => now })) }; }
+  try { evidence.logs = { source: 'Simulator unified log', ...(await showLogs(config, { ...options, since }, { ...dependencies, now: () => now })) }; }
   catch (error) { failures.logs = failure(error, secrets); }
+  try {
+    evidence.crashes = { source: 'Simulator crash reports', ...(await listCrashes(config, since === undefined ? { sinceMs: 3_600_000 } : { since }, {
+      directory: dependencies.crashDirectory, now: () => now, readState: dependencies.readState,
+      resolveDevice: dependencies.resolveDevice, runner: dependencies.runner,
+    })) };
+  } catch (error) { failures.crashes = failure(error, secrets); }
   if (config.app.type !== 'native') {
-    const serverEvidence: Record<string, unknown> = { source: 'Metro/Expo server', consoleCoverage: 'Server output and bundling errors only; in-app JavaScript console and React Native DevTools are not captured' };
+    const serverEvidence: Record<string, unknown> = { source: 'Metro/Expo server', consoleCoverage: 'Server output and bundling errors only; capture in-app JavaScript console output with agemu logs js --duration=30s' };
     evidence.server = serverEvidence;
     try {
       const status = await (dependencies.serverStatus ?? server)(config, 'status');
@@ -191,7 +297,16 @@ export async function diagnose(config: LoadedConfig, options: LogOptions = {}, d
     evidence.recentErrors = redactValue(String(contents).split('\n').filter(Boolean).map((line) => JSON.parse(line) as Record<string, unknown>)
       .filter((event) => event.status === 'error').slice(-10), secrets);
   } catch { evidence.recentErrors = []; }
-  const data = { generatedAt: now.toISOString(), bundleId: redact(targetBundleId(config), secrets), partial: Object.keys(failures).length > 0, evidence, failures };
-  await appendEvent(config.root, { at: now.toISOString(), command: 'diagnose', status: data.partial ? 'partial' : 'ok', data }, secrets);
+  const crashWindow = { start: window.start.toISOString(), source: window.source };
+  let logWindow: Record<string, string> = crashWindow;
+  if (since === undefined) {
+    const last = options.last ?? '30s';
+    const start = await resolveSince(last, config.root, now, 0).then((value) => value.start.toISOString(), () => undefined);
+    logWindow = { ...(start ? { start } : {}), source: options.last === undefined ? 'default' : 'duration', last };
+  }
+  const data = {
+    generatedAt: now.toISOString(), appType: config.app.type, bundleId: redact(targetBundleId(config), secrets),
+    window: { logs: logWindow, crashes: crashWindow }, partial: Object.keys(failures).length > 0, evidence, failures };
+  await bestEffortEvent(config.root, { at: now.toISOString(), command: 'diagnose', status: data.partial ? 'partial' : 'ok', data }, secrets);
   return data;
 }
