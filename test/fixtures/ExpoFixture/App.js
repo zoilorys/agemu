@@ -44,10 +44,10 @@ export default function App() {
     <View style={styles.screen}>
       <Text testID="fixtureTitle" style={styles.title}>agemu Expo fixture</Text>
       <Text testID="sessionValue">{`session:${session}`}</Text>
+      {/* Uncontrolled: a lagging JS thread would otherwise write stale `value` state over native keystrokes. */}
       <TextInput
         testID="draftInput"
         style={styles.input}
-        value={draft}
         onChangeText={setDraft}
         placeholder="draft"
         autoCapitalize="none"
