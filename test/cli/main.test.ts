@@ -30,7 +30,7 @@ describe('agemu CLI', { timeout: 20000 }, () => {
     expect(JSON.parse(stdout).data.help).toContain('ui run               Execute a JSON UI action plan.');
     expect(JSON.parse(stdout).data.help).toContain('app open-url         Open a URL in Simulator.');
     await expect(run(process.execPath, [cli, '--version'])).resolves.toMatchObject({
-      stdout: '{"ok":true,"data":{"version":"0.2.1"}}\n',
+      stdout: '{"ok":true,"data":{"version":"0.3.0"}}\n',
       stderr: '',
     });
   });
