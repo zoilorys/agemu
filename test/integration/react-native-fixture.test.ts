@@ -112,7 +112,12 @@ test.skipIf(!enabled)('drives the bare React Native fixture through the public C
       { wait: { identifier: 'fixtureReady', timeout: 240 } },
       { assertText: { identifier: 'counterValue', equals: 'count 0' } },
       { tap: { identifier: 'draftInput' } },
+      // With a hardware keyboard connected, the first key raises the software keyboard; on the first keyboard use
+      // after a Simulator boot, keys typed in the same burst can be lost. A no-op delete raises it before typing.
+      { pressKey: { key: 'delete' } },
+      { wait: { type: 'button', identifier: 'shift', timeout: 30 } },
       { type: { identifier: 'draftInput', text: token } },
+      { assertValue: { identifier: 'draftInput', value: token } },
       { pressKey: { key: 'return' } },
       { tap: { identifier: 'saveButton' } },
       { assertText: { identifier: 'savedValue', equals: `saved ${token}` } },
@@ -122,7 +127,7 @@ test.skipIf(!enabled)('drives the bare React Native fixture through the public C
       { assertText: { identifier: 'counterValue', equals: 'count 3' } },
       { screenshot: { name: 'interacted' } },
     ]);
-    expect(interaction).toMatchObject({ backend: 'xctest', udid, completed: 12 });
+    expect(interaction).toMatchObject({ backend: 'xctest', udid, completed: 15 });
     const shot = await png(root, (interaction.screenshots as string[])[0]!);
     expect(shot.height).toBeGreaterThan(shot.width);
     const status = data(await cmd(['app', 'status']), 'app status');
@@ -159,13 +164,23 @@ test.skipIf(!enabled)('drives the bare React Native fixture through the public C
     expect(persisted.map((message) => message.text)).toContain(`agemu-rn-probe info ${token} ${sequence}`);
 
     expect(data(await cmd(['app', 'reload']), 'app reload')).toMatchObject({ udid, bundleId, port, reloadRequested: true });
-    let reloaded = await inspect();
-    for (let attempt = 0; attempt < 3 && reloaded.get('loadId') === firstLoad; attempt += 1) reloaded = await inspect();
     // A JavaScript reload re-evaluates the bundle and resets React state inside the same native process.
-    expect(reloaded.get('loadId')).toMatch(/^load [0-9a-z]+$/);
-    expect(reloaded.get('loadId')).not.toBe(firstLoad);
-    expect(reloaded.get('counterValue')).toBe('count 0');
-    expect(reloaded.get('savedValue')).toBe('nothing saved');
+    // The screen may briefly show the old bundle or nothing, so poll until the new bundle has rendered.
+    const reloadedState = (screen: Map<string, string | undefined>) => ({
+      loadId: screen.get('loadId'), counterValue: screen.get('counterValue'), savedValue: screen.get('savedValue'),
+    });
+    const isReloaded = (state: ReturnType<typeof reloadedState>) => /^load [0-9a-z]+$/.test(state.loadId ?? '')
+      && state.loadId !== firstLoad && state.counterValue === 'count 0' && state.savedValue === 'nothing saved';
+    const deadline = Date.now() + 120_000;
+    let reloaded = reloadedState(await inspect());
+    while (!isReloaded(reloaded) && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+      reloaded = reloadedState(await inspect());
+    }
+    expect(reloaded, `reload did not render a new bundle with reset state (first ${firstLoad})`).toMatchObject({
+      loadId: expect.stringMatching(/^load [0-9a-z]+$/), counterValue: 'count 0', savedValue: 'nothing saved',
+    });
+    expect(reloaded.loadId).not.toBe(firstLoad);
     expect(data(await cmd(['app', 'status']), 'app status after reload')).toMatchObject({ running: true, pid });
 
     const observation = data(await cmd(['observe']), 'observe');
