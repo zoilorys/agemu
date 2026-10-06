@@ -52,8 +52,10 @@ async function fixture(stage: Stage) {
     : { type: 'expo', root: '.', port, launchTarget: 'expo-go', hostBundleId: 'host.exp.Exponent' };
   await writeFile(path.join(root, '.agemu.json'), JSON.stringify({ version: 2, platform: 'ios', app, simulator: { udid: 'PHONE' } }));
   const quote = (text: string) => "'" + text.replaceAll("'", "'\\''") + "'";
-  const shell = (name: string, body: string) => `#!/bin/sh
-log() { printf '{"executable":"${name}","args":["%s"],"pid":%s,"event":"start"}\\n' "$*" "$$" >> ${quote(calls)}; }
+  const shell = (body: string) => `#!/bin/sh
+if [ "$1" = --warmup ]; then exit 0; fi
+tool="\${0##*/}"
+log() { printf '{"executable":"%s","args":["%s"],"pid":%s,"event":"start"}\\n' "$tool" "$*" "$$" >> ${quote(calls)}; }
 log "$@"
 stalled() {
   trap 'kill "$sleeper" 2>/dev/null; wait "$sleeper" 2>/dev/null; printf "{\\\"pid\\\":%s,\\\"event\\\":\\\"terminated\\\"}\\n" "$$" >> ${quote(calls)}; exit 0' TERM
@@ -65,30 +67,36 @@ stalled() {
 }
 ${body}
 `;
-  await writeFile(path.join(root, 'xcrun'), shell('xcrun', `
+  const scripts: Record<string, string> = {};
+  scripts.xcrun = `
 if [ "$2" = list ]; then
   ${stage === 'inventory' ? `stalled ${quote(inventory)}` : `${stage === 'readiness' || stage === 'url-body' ? '/bin/sleep 0.4;' : ''} printf '%s' ${quote(inventory)}`}
 fi
 if [ "$4" = launchctl ]; then printf 'PID Status Label\\n123 0 UIKitApplication:com.example.app[a]\\n'; fi
-`), { mode: 0o700 });
-  await writeFile(path.join(root, 'xcodebuild'), shell('xcodebuild', 'exit 1'), { mode: 0o700 });
+`;
+  scripts.xcodebuild = 'exit 1';
   const tree = JSON.stringify([{ type: 'Application', AXLabel: 'App', frame: { x: 0, y: 0, width: 400, height: 800 } }]);
-  await writeFile(path.join(root, 'idb'), shell('idb', `
+  scripts.idb = `
 if [ "$2" = describe-all ]; then printf '%s' ${quote(tree)}; fi
 if [ "$1" = screenshot ]; then printf screen > "$2"; fi
-`), { mode: 0o700 });
-  await writeFile(path.join(root, 'lsof'), shell('lsof', `
+`;
+  scripts.lsof = `
 case " $* " in
   *" -t "*) ${stage === 'occupant' || stage === 'cumulative' ? "stalled '4242'" : "printf '4242\\n'"} ;;
   *) ${stage === 'project' ? `stalled ${quote(`n${await realpath(root)}\n`)}` : `printf '%s' ${quote(`n${await realpath(root)}\n`)}`} ;;
 esac
-`), { mode: 0o700 });
-  await writeFile(path.join(root, 'ps'), shell('ps', `
+`;
+  scripts.ps = `
 case " $* " in
   *" lstart= "*) ${stage === 'identity' ? "stalled 'Mon Oct  5 12:00:00 2026 node server-child r010-token'" : "printf 'Mon Oct  5 12:00:00 2026 node server-child r010-token\\n'"} ;;
   *) ${stage === 'parent' ? `stalled '${process.pid}'` : `printf '${process.pid}\\n'`} ;;
 esac
-`), { mode: 0o700 });
+`;
+  await writeFile(path.join(root, 'probe'), shell(`case "$tool" in\n${Object.entries(scripts).map(([name, body]) => `${name})\n${body}\n;;`).join('\n')}\nesac`), { mode: 0o700 });
+  await Promise.all(Object.keys(scripts).map(name => symlink('probe', path.join(root, name))));
+  // macOS may inspect a new executable for seconds on its first launch. Keep
+  // that one-time cost outside deadlines intended to cancel a specific probe.
+  await execute(path.join(root, 'probe'), ['--warmup']);
   if (owned) {
     await mkdir(path.join(root, '.agemu'));
     await writeFile(path.join(root, '.agemu', 'server.json'), JSON.stringify({ root: await realpath(root), port, pid: process.pid,

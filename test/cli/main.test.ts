@@ -12,7 +12,8 @@ const simulatorDevices = (udid: string, state = 'Booted') => ({ devices: {
   'com.apple.CoreSimulator.SimRuntime.iOS-18-0': [{ udid, name: 'Phone', state, isAvailable: true }],
 } });
 
-describe('agemu CLI', () => {
+// CLI tests launch real processes, including newly written fixture executables.
+describe('agemu CLI', { timeout: 20000 }, () => {
   it('returns a stable JSON error and nonzero status for an unknown command', async () => {
     await expect(run(process.execPath, [cli, 'not-a-command']))
       .rejects.toMatchObject({

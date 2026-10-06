@@ -159,7 +159,7 @@ process.stdin.on('end', () => fs.writeFileSync(${JSON.stringify(captured)}, JSON
       if (beforePath === undefined) delete process.env.PATH; else process.env.PATH = beforePath;
       await rm(directory, { recursive: true, force: true });
     }
-  });
+  }, 20000);
   it('preserves exact multiline Unicode content on read and sends write content through stdin dependency', async () => {
     const text = '第一行\nspace value\n$HOME; $(false)\n';
     const calls: string[][] = [];

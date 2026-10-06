@@ -169,6 +169,8 @@ describe('command discovery and dispatch', () => {
     try {
       await writeFile(path.join(f.root, '.agemu.json'), JSON.stringify({ version: 2, platform: 'ios', app: { ...nativeApp, type: 'react-native', root: '.', port }, simulator: { udid: 'PHONE' } }));
       await writeFile(path.join(f.root, 'lsof'), `#!${process.execPath}\nconst args = process.argv.slice(2); process.stdout.write(args.includes('-t') ? '4242\\n' : ${JSON.stringify(`n${await realpath(f.root)}\n`)});\n`, { mode: 0o700 });
+      // Exclude macOS's first-launch inspection from the server probe's budget.
+      await run(path.join(f.root, 'lsof'), ['-t'], { cwd: f.root, env: f.env });
       const catalog = await f.execute(['commands']);
       expect(catalog.commands.find((command: { command: string }) => command.command === 'app reload').availability.available).toBe(true);
       const result = await f.execute(['app', 'reload']);
