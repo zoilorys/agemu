@@ -24,8 +24,9 @@ const append = (chunk: string) => {
   const safe = redact(raw, secrets).slice(0, -(longestSecret - 1) || undefined);
   writeFileSync(log, safe.slice(-limit), { mode: 0o600 });
 };
-// The caller's NODE_ENV describes the caller (e.g. "test" under Vitest), not this dev server; React Native's dev middleware refuses to start with NODE_ENV=test.
-const { NODE_ENV: _callerNodeEnv, ...env } = process.env;
+// React Native's dev middleware refuses to start with NODE_ENV=test (e.g. agemu under Vitest); any other NODE_ENV is the caller's choice and passes through.
+const env = { ...process.env };
+if (env.NODE_ENV === 'test') delete env.NODE_ENV;
 const child = spawn(process.execPath, [cli, 'start', ...(expoMode ? [`--${expoMode}`] : []), '--port', port], { cwd: root, env, stdio: ['ignore', 'pipe', 'pipe'] });
 child.stdout.setEncoding('utf8').on('data', append);
 child.stderr.setEncoding('utf8').on('data', append);
