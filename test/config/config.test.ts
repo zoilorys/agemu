@@ -4,6 +4,7 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { loadConfig, nativeApp } from '../../src/config/config.js';
 import { resolveDevice } from '../../src/native/simctl.js';
+import { writeConfig } from '../helpers/config.js';
 
 const valid = {
   version: 2 as const, platform: 'ios' as const, app: { type: 'native' as const, project: 'App/App.xcodeproj',
@@ -14,9 +15,19 @@ const valid = {
 };
 
 describe('config', () => {
-  it('resolves a single relative project path from the supplied root', async () => {
+  it('asks to move a legacy project-root .agemu.json instead of reporting it missing', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'agemu-config-'));
     await writeFile(path.join(root, '.agemu.json'), JSON.stringify(valid));
+    try {
+      await expect(loadConfig(root)).rejects.toMatchObject({ code: 'CONFIG_INVALID', message: expect.stringContaining('Move .agemu.json to .agemu/config.json') });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('resolves a single relative project path from the supplied root', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-config-'));
+    await writeConfig(root, JSON.stringify(valid));
     try {
       await expect(loadConfig(root)).resolves.toMatchObject({ app: { project: path.join(root, 'App/App.xcodeproj') }, root });
     } finally {
@@ -26,7 +37,7 @@ describe('config', () => {
 
   it('reports both configured build sources with their paths', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'agemu-config-'));
-    await writeFile(path.join(root, '.agemu.json'), JSON.stringify({ ...valid, app: { ...valid.app, workspace: 'App/App.xcworkspace' }, token: 'secret' }));
+    await writeConfig(root, JSON.stringify({ ...valid, app: { ...valid.app, workspace: 'App/App.xcworkspace' }, token: 'secret' }));
     try {
       await expect(loadConfig(root)).rejects.toMatchObject({
         code: 'CONFIG_INVALID',
@@ -46,7 +57,7 @@ describe('config', () => {
   it('rejects version 1, another platform, and mixed app fields before commands run', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'agemu-config-'));
     try {
-      await writeFile(path.join(root, '.agemu.json'), JSON.stringify({ ...valid, version: 1, platform: 'android', app: { ...valid.app, port: 8081 } }));
+      await writeConfig(root, JSON.stringify({ ...valid, version: 1, platform: 'android', app: { ...valid.app, port: 8081 } }));
       await expect(loadConfig(root)).rejects.toMatchObject({
         code: 'CONFIG_INVALID',
         details: { issues: expect.arrayContaining([
@@ -61,7 +72,7 @@ describe('config', () => {
   it('loads React Native paths for native execution', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'agemu-config-'));
     try {
-      await writeFile(path.join(root, '.agemu.json'), JSON.stringify({
+      await writeConfig(root, JSON.stringify({
         ...valid,
         app: { ...valid.app, type: 'react-native', root: 'mobile', port: 8081 },
       }));

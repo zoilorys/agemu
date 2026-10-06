@@ -2,7 +2,7 @@ import { readdir, writeFile, access, readFile } from 'node:fs/promises';
 import { createInterface } from 'node:readline/promises';
 import path from 'node:path';
 import { CliError } from '../core/errors.js';
-import type { DebugConfig } from '../config/config.js';
+import { configFile, ensureStateDirectory, type DebugConfig } from '../config/config.js';
 import { listDevices, type Device } from '../native/simctl.js';
 import { installedExpoGoHosts } from '../native/expo-go.js';
 import { runProcess, type ProcessResult, type RunOptions } from '../process/run-process.js';
@@ -111,10 +111,10 @@ async function chooseDevice(devices: Device[], interactive: boolean, udid?: stri
 export async function setup(root = process.cwd(), interactive = true, expoGo = false, dependencies: { listDevices?: typeof listDevices; installedExpoGoHosts?: typeof installedExpoGoHosts; udid?: string; run?: Run; port?: number } = {}): Promise<{ file: string; config: DebugConfig }> {
   const run = dependencies.run ?? runProcess;
   const port = dependencies.port ?? 8081;
-  const file = path.join(root, '.agemu.json');
+  const file = configFile(root);
   try {
     await access(file);
-    throw new CliError('CONFIG_INVALID', '.agemu.json already exists; edit it directly to change your setup');
+    throw new CliError('CONFIG_INVALID', '.agemu/config.json already exists; edit it directly to change your setup');
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
   }
@@ -138,6 +138,7 @@ export async function setup(root = process.cwd(), interactive = true, expoGo = f
       ? { type: 'expo', root: '.', port, launchTarget: 'expo-go', hostBundleId: await choose('Expo Go host', hosts, item => item, interactive) }
       : { type: 'expo', root: '.', port, launchTarget: 'development-build', bundleId: await resolveExpoBundleId(root, run) };
     const config: DebugConfig = { version: 2, platform: 'ios', app, simulator: { udid: device.udid } };
+    await ensureStateDirectory(root);
     await writeFile(file, `${JSON.stringify(config, null, 2)}\n`, { flag: 'wx' });
     return { file, config };
   }
@@ -155,6 +156,7 @@ export async function setup(root = process.cwd(), interactive = true, expoGo = f
     ? { type: reactNative ? 'react-native' : 'native', ...(reactNative ? { root: '.', port } : {}), project: source, scheme, configuration: 'Debug', bundleId } as DebugConfig['app']
     : { type: reactNative ? 'react-native' : 'native', ...(reactNative ? { root: '.', port } : {}), workspace: source, scheme, configuration: 'Debug', bundleId } as DebugConfig['app'];
   const config: DebugConfig = { version: 2, platform: 'ios', app, simulator: { udid: device.udid } };
+  await ensureStateDirectory(root);
   await writeFile(file, `${JSON.stringify(config, null, 2)}\n`, { flag: 'wx' });
   return { file, config };
 }

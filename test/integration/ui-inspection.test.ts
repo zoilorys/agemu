@@ -3,6 +3,7 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, test } from 'vitest';
+import { writeConfig } from '../helpers/config.js';
 
 type CliResult = { ok: true; data: Record<string, unknown> } | { ok: false; error: { code: string; message: string; details?: Record<string, unknown> } };
 
@@ -47,9 +48,9 @@ describe.skipIf(!enabled)('ui inspection fixture', () => {
       simulator: { udid },
     }, null, 2)}\n`;
     await mkdir(root, { recursive: true });
-    await writeFile(path.join(root, '.agemu.json'), config('dev.agemu.agemu-native-fixture'));
+    await writeConfig(root, config('dev.agemu.agemu-native-fixture'));
     await mkdir(springboardRoot, { recursive: true });
-    await writeFile(path.join(springboardRoot, '.agemu.json'), config('com.apple.springboard'));
+    await writeConfig(springboardRoot, config('com.apple.springboard'));
 
     const listed = data(await run(['simulator', 'list']), 'simulator list');
     const selected = (listed.devices as Array<{ udid: string; state: string }>).find((device) => device.udid === udid);

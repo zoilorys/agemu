@@ -1,6 +1,6 @@
 import { existsSync } from 'node:fs';
 import path from 'node:path';
-import { loadConfig, type LoadedConfig } from '../config/config.js';
+import { configFile, loadConfig, type LoadedConfig } from '../config/config.js';
 import { listDevices, resolveDevice, type Device, type SimctlRunner } from '../native/simctl.js';
 import { requireBooted } from '../native/simctl-commands.js';
 import type { ParsedArgs } from './types.js';
@@ -16,7 +16,7 @@ export class CommandContext {
     return this.loaded ??= loadConfig(this.root).then(config => { this.secrets = config.redactions ?? []; return config; });
   }
   async optionalConfig(): Promise<LoadedConfig | undefined> {
-    return existsSync(path.join(this.root, '.agemu.json')) ? this.config() : undefined;
+    return existsSync(configFile(this.root)) || existsSync(path.join(this.root, '.agemu.json')) ? this.config() : undefined;
   }
   async device(booted = false, runner?: SimctlRunner): Promise<Device> {
     const device = await (this.selected ??= this.select(runner));

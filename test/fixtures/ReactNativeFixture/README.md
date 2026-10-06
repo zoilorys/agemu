@@ -28,13 +28,13 @@ pnpm build
 AGEMU_REACT_NATIVE_FIXTURE=1 AGEMU_REACT_NATIVE_SIMULATOR_UDID=<udid> pnpm exec vitest run test/integration/react-native-fixture.test.ts
 ```
 
-The test writes `.agemu/react-native-fixture/<udid>/.agemu.json` and drives `doctor`, `simulator boot`, `build`, `app install`, `server start|status|stop`, `app launch|status|reload|terminate`, `ui run`, `ui inspect`, `logs js`, and `observe`. It types a random token, saves it, increments the counter, captures console probes carrying the token, and checks that `app reload` gives a new load ID and resets the counter in the same process. Evidence stays under `.agemu/react-native-fixture/<udid>/.agemu/`. The test stops only its own Metro server and app, and shuts the Simulator down only if it booted it. Without `AGEMU_REACT_NATIVE_FIXTURE=1`, the root `pnpm test` skips it without side effects.
+The test writes `.agemu/react-native-fixture/<udid>/.agemu/config.json` and drives `doctor`, `simulator boot`, `build`, `app install`, `server start|status|stop`, `app launch|status|reload|terminate`, `ui run`, `ui inspect`, `logs js`, and `observe`. It types a random token, saves it, increments the counter, captures console probes carrying the token, and checks that `app reload` gives a new load ID and resets the counter in the same process. Evidence stays under `.agemu/react-native-fixture/<udid>/.agemu/`. The test stops only its own Metro server and app, and shuts the Simulator down only if it booted it. Without `AGEMU_REACT_NATIVE_FIXTURE=1`, the root `pnpm test` skips it without side effects.
 
 The test fails with setup instructions if `node_modules`, `ios/Pods` or `dist/` is missing or stale. It does not install dependencies.
 
 ## Run manually
 
-From this directory (the generated `.agemu.json` and `.agemu/` are ignored):
+From this directory (the generated `.agemu/` is ignored):
 
 ```sh
 agemu setup --udid=<udid> --port=8087

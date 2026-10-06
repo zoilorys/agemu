@@ -1,7 +1,7 @@
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { recordCommand } from '../artifacts/runs.js';
-import { targetBundleId } from '../config/config.js';
+import { configFile, targetBundleId } from '../config/config.js';
 import { CliError } from '../core/errors.js';
 import { commandResult, type CommandTarget } from '../core/command-result.js';
 import { parseCaptureDuration, parseUntil } from '../core/log-options.js';
@@ -70,7 +70,7 @@ const uiDependencies = (context: CommandContext, parsed: ParsedArgs) => ({
 });
 
 const baseDefinitions: CommandDefinition[] = [
-  definition('setup', 'Create .agemu.json for this project.', { 'expo-go': boolean, udid: nonEmpty, port: { ...single, integer: { min: 1, max: 65535, default: 8081 } } },
+  definition('setup', 'Create .agemu/config.json for this project.', { 'expo-go': boolean, udid: nonEmpty, port: { ...single, integer: { min: 1, max: 65535, default: 8081 } } },
     (context, parsed) => setup(context.root, true, parsed.flags.has('expo-go'), { udid: value(parsed, 'udid'), port: numberOption(parsed, 'port') }), independent),
   definition('config show', 'Show the resolved app configuration.', {}, async context => { const { root: _, redactions: __, ...safe } = await context.config(); return safe; }, { target: 'none', recording: 'none' }),
   definition('simulator list', 'List available simulators.', {}, async () => ({ devices: await listDevices() }), independent),
@@ -91,7 +91,7 @@ const baseDefinitions: CommandDefinition[] = [
     return eraseSimulator(await context.device(), true, context.secrets);
   }, { configuration: 'optional', target: 'device', destructive: true, prepare: parsed => {
     validateSelector(parsed);
-    if (!existsSync(path.join(process.cwd(), '.agemu.json')) && !value(parsed, 'udid')) throw new CliError('COMMAND_INVALID', 'simulator erase without .agemu.json requires --udid');
+    if (!existsSync(configFile(process.cwd())) && !value(parsed, 'udid')) throw new CliError('COMMAND_INVALID', 'simulator erase without .agemu/config.json requires --udid');
   } }),
   definition('build', 'Build the configured iOS app.', { timeout: timeout(1800) }, async (context, parsed) => buildApp(await context.config(), { timeoutMs: timeoutOption(parsed), resolveUdid: async () => (await context.config()).simulator.udid ?? (await context.device()).udid }), { runtimes: built }),
   ...(['start', 'status', 'stop'] as const).map(action => definition(`server ${action}`, action === 'start' ? "Start or reuse this project's Metro or Expo server." : action === 'status' ? 'Inspect server readiness and ownership.' : 'Stop an agemu-owned server.', {}, async context => server(await context.config(), action), { runtimes: javascript, target: 'none' })),
@@ -106,13 +106,13 @@ const baseDefinitions: CommandDefinition[] = [
       return controlApp(config, action, { arguments: values(parsed, 'arg'), environment: values(parsed, 'env'), url: value(parsed, 'url') }, context.appDependencies());
     }, { ...(action === 'uninstall' ? { destructive: true } : {}), ...(action === 'install' || action === 'uninstall' ? { runtimes: built } : {}), prepare: parsed => { launchEnvironment(parsed); } })),
   definition('app status', 'Report running app/PID and unavailable foreground state.', {}, async context => appStatus(await context.config(), context.simulatorDependencies())),
-  definition('app reload', 'Request a reload from the verified project Metro server.', {}, async context => reloadApp(await context.config(), context.simulatorDependencies()), { runtimes: javascript }),
+  definition('app reload', 'Request a reload through the verified Metro or Expo server.', {}, async context => reloadApp(await context.config(), context.simulatorDependencies()), { runtimes: javascript }),
   definition('app list', 'List installed apps on the selected Simulator.', {}, async context => listInstalledApps(await context.config(), context.simulatorDependencies()), { target: 'device' }),
   ...(['read', 'write'] as ClipboardAction[]).map(action => definition(`clipboard ${action}`, action === 'read' ? 'Read Simulator clipboard text.' : 'Write exact Simulator clipboard text.', action === 'write' ? { text: { ...single, required: true } } : {},
     async (context, parsed) => clipboard(await context.config(), action, { text: value(parsed, 'text') }, context.simulatorDependencies()), { target: 'device' })),
   ...(['grant', 'revoke', 'reset'] as PrivacyAction[]).map(action => definition(`privacy ${action}`, `${action[0].toUpperCase()}${action.slice(1)} the app permission.`, { service: nonEmpty, ...(action === 'reset' ? { 'all-apps': boolean } : {}) }, async (context, parsed) => privacy(await context.config(), action, { service: value(parsed, 'service'), allApps: parsed.flags.has('all-apps') }, context.simulatorDependencies()))),
   definition('push', 'Send a simulated remote notification to the app.', { payload: single, 'payload-json': single }, async (context, parsed) => push(await context.config(), { payload: value(parsed, 'payload'), payloadJson: value(parsed, 'payload-json') }, context.simulatorDependencies())),
-  ...(['set', 'clear', 'list', 'run'] as LocationAction[]).map(action => definition(`location ${action}`, `${action[0].toUpperCase()}${action.slice(1)} the simulated location.`, action === 'set' ? { coordinate: nonEmpty } : action === 'run' ? { scenario: nonEmpty } : {}, async (context, parsed) => location(await context.config(), action, { coordinate: value(parsed, 'coordinate'), scenario: value(parsed, 'scenario') }, context.simulatorDependencies()), { target: 'device', ...(action === 'list' ? { recording: 'none' } : {}) })),
+  ...(['set', 'clear', 'list', 'run'] as LocationAction[]).map(action => definition(`location ${action}`, ({ set: 'Set the simulated location.', clear: 'Clear the simulated location.', list: 'List location scenarios.', run: 'Run a location scenario.' })[action], action === 'set' ? { coordinate: nonEmpty } : action === 'run' ? { scenario: nonEmpty } : {}, async (context, parsed) => location(await context.config(), action, { coordinate: value(parsed, 'coordinate'), scenario: value(parsed, 'scenario') }, context.simulatorDependencies()), { target: 'device', ...(action === 'list' ? { recording: 'none' } : {}) })),
   definition('observe', 'Capture a simulator screenshot.', {}, async context => observe(await context.config(), context.evidenceDependencies()), { recording: 'handler' }),
   definition('logs show', 'Read recent app logs.', logOptions, async (context, parsed) => showLogs(await context.config(), logs(parsed), context.evidenceDependencies()), { recording: 'handler', prepare: validateLogs }),
   definition('logs stream', 'Capture live app logs for a bounded time.', { duration: single, until: single, level: logOptions.level, limit: logOptions.limit }, async (context, parsed) => streamLogs(await context.config(), { duration: value(parsed, 'duration'), until: value(parsed, 'until'), level: value(parsed, 'level'), limit: numberOption(parsed, 'limit') }, context.evidenceDependencies()), { recording: 'handler', prepare: validateCapture }),

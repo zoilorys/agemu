@@ -27,7 +27,7 @@ npm ci --prefix test/fixtures/ExpoFixture
 
 ```sh
 cd test/fixtures/ExpoFixture
-sed "s/SIMULATOR_UDID/<udid>/" agemu.development-build.json > .agemu.json
+mkdir -p .agemu && sed "s/SIMULATOR_UDID/<udid>/" agemu.development-build.json > .agemu/config.json
 agemu simulator boot && agemu build && agemu app install
 agemu server start && agemu app launch
 agemu ui run --backend=xctest --plan-json='{"version":1,"actions":[{"wait":{"identifier":"fixtureTitle","timeout":300}}]}'
@@ -41,7 +41,7 @@ Expo Go needs no agemu build or install. Install the official client listed for 
 ```sh
 cd test/fixtures/ExpoFixture
 node scripts/install-expo-go.mjs <udid>
-sed "s/SIMULATOR_UDID/<udid>/" agemu.expo-go.json > .agemu.json
+mkdir -p .agemu && sed "s/SIMULATOR_UDID/<udid>/" agemu.expo-go.json > .agemu/config.json
 agemu server start && agemu app launch
 ```
 
