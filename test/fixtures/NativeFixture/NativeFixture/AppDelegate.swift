@@ -5,6 +5,8 @@ final class AppDelegate: UIResponder, UIApplicationDelegate, UIScrollViewDelegat
     var window: UIWindow?
     private let gestureStatus = UILabel()
     private let nameField = UITextField() // ui-inspection
+    private let codeField = UITextField() // ui-inspection
+    private let codeRestField = UITextField() // ui-inspection
 
     func application(
         _ application: UIApplication,
@@ -46,6 +48,20 @@ final class AppDelegate: UIResponder, UIApplicationDelegate, UIScrollViewDelegat
         saveDraftButton.accessibilityIdentifier = "saveDraftButton"
         saveDraftButton.addTarget(self, action: #selector(didTapSaveDraft), for: .touchUpInside)
         controller.view.addSubview(saveDraftButton)
+
+        // Like a one-digit code input: the first character moves focus to the next field.
+        codeField.frame = CGRect(x: 150, y: 196, width: 60, height: 36)
+        codeField.placeholder = "Code"
+        codeField.borderStyle = .roundedRect
+        codeField.accessibilityIdentifier = "codeField"
+        codeField.addTarget(self, action: #selector(didEditCode), for: .editingChanged)
+        controller.view.addSubview(codeField)
+
+        codeRestField.frame = CGRect(x: 220, y: 196, width: 100, height: 36)
+        codeRestField.placeholder = "Rest"
+        codeRestField.borderStyle = .roundedRect
+        codeRestField.accessibilityIdentifier = "codeRestField"
+        controller.view.addSubview(codeRestField)
         // END ui-inspection controls
 
         let scroll = UIScrollView(frame: CGRect(x: 0, y: 240, width: window.bounds.width, height: window.bounds.height - 240))
@@ -87,6 +103,10 @@ final class AppDelegate: UIResponder, UIApplicationDelegate, UIScrollViewDelegat
 
     @objc private func didTapSaveDraft() {
         setGestureStatus("draft")
+    }
+
+    @objc private func didEditCode() {
+        if codeField.text?.isEmpty == false { codeRestField.becomeFirstResponder() }
     }
 
     func application(

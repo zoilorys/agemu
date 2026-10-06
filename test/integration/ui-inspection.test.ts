@@ -148,6 +148,20 @@ describe.skipIf(!enabled)('ui inspection fixture', () => {
     expect(opened).toMatchObject({ backend: 'xctest', runnerResult: { completed: 2 } });
   }, 300_000);
 
+  // After a launch the software keyboard is hidden, so the runner types the first character, waits for the keyboard, then
+  // types the rest; the rest must follow focus to the next field rather than target the original one.
+  test('types across a field that moves focus after its first character', async () => {
+    const typed = data(await run(['ui', 'run', '--backend=xctest', '--plan-json=' + JSON.stringify({
+      version: 1, actions: [
+        { launch: {} },
+        { type: { identifier: 'codeField', text: '1234' } },
+        { assertValue: { identifier: 'codeField', value: '1' } },
+        { assertValue: { identifier: 'codeRestField', value: '234' } },
+      ],
+    })]), 'ui run type across focus change');
+    expect(typed).toMatchObject({ backend: 'xctest', runnerResult: { completed: 4 } });
+  }, 300_000);
+
   test('opens a deep link and terminates the app within a plan', async () => {
     const opened = data(await run(['ui', 'run', '--backend=xctest', '--plan-json=' + JSON.stringify({
       version: 1, actions: [

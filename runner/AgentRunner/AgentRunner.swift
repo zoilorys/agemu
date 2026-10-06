@@ -217,7 +217,20 @@ final class AgentRunner: XCTestCase {
             } else if let type = action.type {
                 let element = try element(type, in: app)
                 element.tap()
-                element.typeText(type.text)
+                // With a hardware keyboard connected, the first key raises the software keyboard; keys sent while it starts
+                // (first use after a Simulator boot) are lost. The hidden keyboard and its keys already exist but have no
+                // on-screen frame, so type one character, wait for the keyboard to show, then type the rest. The rest goes to
+                // the focused responder, as one typeText call would: a field may move focus after the first character.
+                let keyboard = app.keyboards.firstMatch
+                if let first = type.text.first, !visible(keyboard, in: app) {
+                    element.typeText(String(first))
+                    let deadline = Date().addingTimeInterval(5)
+                    while !visible(keyboard, in: app) && Date() < deadline { Thread.sleep(forTimeInterval: 0.1) }
+                    let rest = String(type.text.dropFirst())
+                    if !rest.isEmpty { app.typeText(rest) }
+                } else {
+                    element.typeText(type.text)
+                }
             } else if let wait = action.wait {
                 if let duration = wait.duration {
                     Thread.sleep(forTimeInterval: duration)
