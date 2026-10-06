@@ -16,8 +16,6 @@ const mode = process.env.AGEMU_EXPO_MODE ?? 'development-build';
 const port = Number(process.env.AGEMU_EXPO_PORT ?? 8088);
 const bundleId = 'dev.agemu.expo-fixture';
 const expoGoHost = 'host.exp.Exponent';
-const projectUrl = mode === 'expo-go' ? `exp://127.0.0.1:${port}`
-  : `exp+expo-fixture://expo-development-client/?url=${encodeURIComponent(`http://127.0.0.1:${port}`)}`;
 
 // Vitest sets NODE_ENV=test, which makes the Expo dev server refuse to start; run agemu as a user shell would.
 const userEnvironment = Object.fromEntries(Object.entries(process.env).filter(([name]) => name !== 'NODE_ENV' && !name.startsWith('VITEST')));
@@ -123,13 +121,9 @@ test.skipIf(!enabled)(`proves the public Expo ${mode} workflow on the fixture`, 
     expect(started).toMatchObject({ running: true, owned: true, reused: false, port });
     expect(data(await run(root, ['server', 'status']), 'server status')).toMatchObject({ running: true, owned: true, port, pid: started.pid });
 
-    // iOS asks "Open in …?" before a scheme first reaches the host, and `app launch` (simctl openurl) never answers it.
-    // Answer it through the public confirming open-url while the host is running, then prove a fresh `app launch`.
-    data(await run(root, ['app', 'launch']), 'first app launch');
-    launched = true;
-    data(await run(root, ['ui', 'open-url', '--backend=xctest', '--confirm', `--url=${projectUrl}`]), 'first-open consent');
-    data(await run(root, ['app', 'terminate']), 'terminate after consent');
+    // `app launch` alone must get past iOS's first "Open in …?" prompt for the project scheme.
     data(await run(root, ['app', 'launch']), 'app launch');
+    launched = true;
     // The first bundle can take minutes on a cold Metro cache.
     const opened = await ui(root, 'wait for fixture UI', [{ wait: { identifier: 'fixtureTitle', timeout: 300 } }, { inspect: {} }]);
     // Expo Go shows its developer-menu introduction once per install; the development build disables it in app.json.
@@ -207,7 +201,7 @@ test.skipIf(!enabled)(`proves the public Expo ${mode} workflow on the fixture`, 
     };
     if (launched) await cleanup('app terminate', ['app', 'terminate']);
     if (serverStarted) await cleanup('server stop', ['server', 'stop']);
-    if (installedByTest) await cleanup('app uninstall', ['app', 'uninstall']);
+    if (installedByTest) await cleanup('app uninstall', ['app', 'uninstall', '--yes']);
     if (bootedByTest) await cleanup('simulator shutdown', ['simulator', 'shutdown']);
   }
 }, 3_600_000);

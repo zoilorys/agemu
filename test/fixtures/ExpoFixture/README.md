@@ -45,11 +45,9 @@ sed "s/SIMULATOR_UDID/<udid>/" agemu.expo-go.json > .agemu.json
 agemu server start && agemu app launch
 ```
 
-## First open and reload
+## First open
 
-iOS asks "Open in …?" the first time a scheme reaches the app, and `agemu app launch` does not answer it. With the server running and the app launched, confirm once with `agemu ui open-url --backend=xctest --confirm --url=<project URL>` (`exp://127.0.0.1:8088` for Expo Go, `exp+expo-fixture://expo-development-client/?url=http%3A%2F%2F127.0.0.1%3A8088` for the development build). Expo Go also shows a one-time developer-menu introduction; tap `Continue`.
-
-Known agemu defect: `agemu app reload` requests `GET /reload`, which the Expo dev server does not route; it answers with the project manifest and HTTP 200, so agemu reports `reloadRequested: true` but no app reloads. Expo reloads clients through Metro's `/message` socket (`{"version":2,"method":"reload"}`), which does reset the fixture. The integration test asserts the observable reload and therefore fails at that step until agemu is fixed.
+`agemu app launch` approves the project scheme for the target app in the Simulator's launch-services preferences before opening the project URL, so iOS's "Open in …?" prompt does not appear. Expo Go also shows a one-time developer-menu introduction; tap `Continue`.
 
 ## Live integration test
 
@@ -62,4 +60,4 @@ AGEMU_EXPO_FIXTURE=1 AGEMU_EXPO_SIMULATOR_UDID=<udid> pnpm exec vitest run test/
 AGEMU_EXPO_FIXTURE=1 AGEMU_EXPO_MODE=expo-go AGEMU_EXPO_SIMULATOR_UDID=<udid> pnpm exec vitest run test/integration/expo-fixture.test.ts
 ```
 
-`AGEMU_EXPO_PORT` overrides the default port 8088. The test drives only public agemu commands against the given UDID: doctor, boot, build and install (development build), server start/status, app launch, XCTest UI plans, observe, `logs js`, app reload, terminate and server stop. It asserts real UI text, PNG screenshots, captured console messages and a reload that resets the counter and session. It stops only its own server, uninstalls the development build only if it installed it, shuts the Simulator down only if it booted it, and keeps evidence under `.agemu/expo-fixture/<udid>/<mode>/`.
+`AGEMU_EXPO_PORT` overrides the default port 8088. The test drives only public agemu commands against the given UDID: doctor, boot, build and install (development build), server start/status, app launch, XCTest UI plans, observe, `logs js`, app reload, terminate and server stop. It asserts that `app launch` alone loads the project, real UI text, PNG screenshots, captured console messages and a reload that resets the counter and session. It stops only its own server, uninstalls the development build only if it installed it, shuts the Simulator down only if it booted it, and keeps evidence under `.agemu/expo-fixture/<udid>/<mode>/`.
