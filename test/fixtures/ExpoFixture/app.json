@@ -1,0 +1,21 @@
+{
+  "expo": {
+    "name": "ExpoFixture",
+    "slug": "expo-fixture",
+    "version": "1.0.0",
+    "platforms": [
+      "ios"
+    ],
+    "ios": {
+      "bundleIdentifier": "dev.agemu.expo-fixture",
+      "infoPlist": {
+        "EXDevMenuIsOnboardingFinished": true,
+        "EXDevMenuShowsAtLaunch": false,
+        "EXDevMenuShowFloatingActionButton": false
+      }
+    },
+    "plugins": [
+      "expo-dev-client"
+    ]
+  }
+}
