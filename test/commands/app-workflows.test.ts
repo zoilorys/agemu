@@ -72,24 +72,25 @@ describe('project launch and reload', () => {
     expect(requests).toEqual([{ url: '/reload', method: 'GET' }]);
   });
 
-  // Mirrors Expo's /message socket: `getpeers` excludes the caller, and broadcasts reach every other client.
-  async function messageServer(apps: number) {
+  // Mirrors Expo's /message socket: `getpeers` excludes the caller and returns each peer's raw upgrade query; broadcasts reach every other client.
+  async function messageServer(apps: number, others = 0) {
     const server = new WebSocketServer({ host: '127.0.0.1', port: 0, path: '/message' });
     await new Promise(resolve => server.once('listening', resolve));
     serverClosures.push(() => new Promise<void>(resolve => { for (const client of server.clients) client.terminate(); server.close(() => resolve()); }));
     const port = (server.address() as { port: number }).port;
     const received: unknown[] = [];
-    server.on('connection', socket => socket.on('message', data => {
+    const queries = new Map<WebSocket, string | null>();
+    server.on('connection', (socket, req) => { queries.set(socket, new URL(req.url!, 'ws://localhost').search.slice(1) || null); socket.on('message', data => {
       const message = JSON.parse(String(data));
       if (message.method === 'getpeers') {
-        const peers = Object.fromEntries([...server.clients].filter(client => client !== socket).map((_, index) => [String(index), {}]));
+        const peers = Object.fromEntries([...server.clients].filter(client => client !== socket).map((client, index) => [String(index), queries.get(client)]));
         socket.send(JSON.stringify({ version: 2, id: message.id, result: peers }));
       } else for (const client of server.clients) if (client !== socket) client.send(String(data));
-    }));
-    for (let index = 0; index < apps; index++) {
-      const app = new WebSocket(`ws://127.0.0.1:${port}/message`);
-      app.on('message', data => received.push(JSON.parse(String(data))));
-      await new Promise(resolve => app.once('open', resolve));
+    }); });
+    for (let index = 0; index < apps + others; index++) {
+      const peer = new WebSocket(`ws://127.0.0.1:${port}/message${index < apps ? '?role=ios' : ''}`);
+      peer.on('message', data => received.push(JSON.parse(String(data))));
+      await new Promise(resolve => peer.once('open', resolve));
     }
     return { port, received };
   }
@@ -106,6 +107,14 @@ describe('project launch and reload', () => {
     const { port } = await messageServer(0);
     const config = { ...expo, app: { ...expo.app, port } } as LoadedConfig;
     await expect(reloadApp(config, project)).rejects.toMatchObject({ code: 'PROCESS_FAILED', message: expect.stringContaining('no app is connected') });
+  });
+
+  it('does not count non-app peers such as a concurrent agemu reload as connected apps', async () => {
+    const { port, received } = await messageServer(0, 1);
+    const config = { ...expo, app: { ...expo.app, port } } as LoadedConfig;
+    const reloads = await Promise.allSettled([reloadApp(config, project), reloadApp(config, project)]);
+    for (const reload of reloads) expect(reload).toMatchObject({ status: 'rejected', reason: { code: 'PROCESS_FAILED', message: expect.stringContaining('no app is connected') } });
+    expect(received).toEqual([]);
   });
 
   it('rejects failed reload HTTP responses and redacts request failures', async () => {

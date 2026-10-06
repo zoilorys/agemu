@@ -1,8 +1,9 @@
 import { access, mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { spawn } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
 import { expect, test } from 'vitest';
 
 type CliResult = { ok: true; data: Record<string, unknown> } | { ok: false; error: { code: string; message: string; details?: Record<string, unknown> } };
@@ -16,6 +17,9 @@ const mode = process.env.AGEMU_EXPO_MODE ?? 'development-build';
 const port = Number(process.env.AGEMU_EXPO_PORT ?? 8088);
 const bundleId = 'dev.agemu.expo-fixture';
 const expoGoHost = 'host.exp.Exponent';
+const target = mode === 'expo-go' ? expoGoHost : bundleId;
+// The key `expo run:ios` and `agemu app launch` write so iOS skips the "Open in …?" prompt for the project scheme.
+const approvalKey = `com.apple.CoreSimulator.CoreSimulatorBridge-->${mode === 'expo-go' ? 'exp' : 'exp+expo-fixture'}`;
 
 // Vitest sets NODE_ENV=test, which makes the Expo dev server refuse to start; run agemu as a user shell would.
 const userEnvironment = Object.fromEntries(Object.entries(process.env).filter(([name]) => name !== 'NODE_ENV' && !name.startsWith('VITEST')));
@@ -38,6 +42,20 @@ function run(root: string, args: string[]): Promise<CliResult> {
 function data(result: CliResult, step: string): Record<string, unknown> {
   if (!result.ok) throw new Error(`${step}: ${result.error.code}: ${result.error.message} ${JSON.stringify(result.error.details ?? {}).slice(0, 2000)}`);
   return result.data;
+}
+
+const execFileAsync = promisify(execFile);
+const approvals = (udid: string, verb: 'read' | 'write' | 'delete', ...value: string[]) =>
+  execFileAsync('xcrun', ['simctl', 'spawn', udid, 'defaults', verb, 'com.apple.launchservices.schemeapproval', approvalKey, ...value]);
+const missing = (error: unknown) => /does not exist|not found/.test(String((error as { stderr?: unknown }).stderr));
+
+async function readApproval(udid: string): Promise<string | undefined> {
+  try { return (await approvals(udid, 'read')).stdout.trim(); }
+  catch (error) { if (missing(error)) return undefined; throw error; }
+}
+
+async function deleteApproval(udid: string): Promise<void> {
+  await approvals(udid, 'delete').catch((error: unknown) => { if (!missing(error)) throw error; });
 }
 
 const plan = (actions: unknown[]) => `--plan-json=${JSON.stringify({ version: 1, actions })}`;
@@ -82,9 +100,10 @@ test.skipIf(!enabled)(`proves the public Expo ${mode} workflow on the fixture`, 
   await mkdir(root, { recursive: true });
   const token = `run-${randomUUID().slice(0, 8)}`;
   let bootedByTest = false;
-  let launched = false;
+  let mayRun = false;
   let serverStarted = false;
-  let installedByTest = false;
+  let installed: string[] | undefined;
+  let approval: { value: string | undefined } | undefined;
 
   await writeFile(path.join(root, '.agemu.json'), `${JSON.stringify({
     version: 2, platform: 'ios',
@@ -101,13 +120,17 @@ test.skipIf(!enabled)(`proves the public Expo ${mode} workflow on the fixture`, 
 
     data(await run(root, ['simulator', 'boot']), 'simulator boot');
     bootedByTest = selected.state !== 'Booted';
-    const installed = (data(await run(root, ['app', 'list']), 'app list').apps as Array<{ bundleId: string }>).map((app) => app.bundleId);
+    installed = (data(await run(root, ['app', 'list']), 'app list').apps as Array<{ bundleId: string }>).map((app) => app.bundleId);
+
+    approval = { value: await readApproval(udid) };
 
     if (mode === 'development-build') {
+      // `expo run:ios` installs, opens and approves the scheme for the app itself, even if it later fails.
+      mayRun = true;
       const build = data(await run(root, ['build']), 'build');
       expect(build).toMatchObject({ appType: 'expo', bundleId, udid, executableName: 'ExpoFixture' });
       data(await run(root, ['app', 'install']), 'app install');
-      installedByTest = !installed.includes(bundleId);
+      data(await run(root, ['app', 'terminate']), 'app terminate after build');
     } else {
       if (!installed.includes(expoGoHost)) throw new Error(`Expo Go is not installed on ${udid}; see test/fixtures/ExpoFixture/README.md`);
       expect(await run(root, ['build'])).toMatchObject({ ok: false, error: { code: 'WORKFLOW_UNSUPPORTED' } });
@@ -122,8 +145,9 @@ test.skipIf(!enabled)(`proves the public Expo ${mode} workflow on the fixture`, 
     expect(data(await run(root, ['server', 'status']), 'server status')).toMatchObject({ running: true, owned: true, port, pid: started.pid });
 
     // `app launch` alone must get past iOS's first "Open in …?" prompt for the project scheme.
+    await deleteApproval(udid);
+    mayRun = true;
     data(await run(root, ['app', 'launch']), 'app launch');
-    launched = true;
     // The first bundle can take minutes on a cold Metro cache.
     const opened = await ui(root, 'wait for fixture UI', [{ wait: { identifier: 'fixtureTitle', timeout: 300 } }, { inspect: {} }]);
     // Expo Go shows its developer-menu introduction once per install; the development build disables it in app.json.
@@ -141,6 +165,7 @@ test.skipIf(!enabled)(`proves the public Expo ${mode} workflow on the fixture`, 
     ]);
     const session = label(loaded.inspections, 'sessionValue');
     expect(session).toMatch(/^session:[a-z0-9]+$/);
+    expect(await readApproval(udid)).toBe(target);
 
     const observed = data(await run(root, ['observe']), 'observe');
     const screenshot = await readFile(path.join(root, String(observed.screenshot)));
@@ -190,7 +215,7 @@ test.skipIf(!enabled)(`proves the public Expo ${mode} workflow on the fixture`, 
     expect(reloadedSession).not.toBe(session);
 
     data(await run(root, ['app', 'terminate']), 'app terminate');
-    launched = false;
+    mayRun = false;
     expect(data(await run(root, ['server', 'stop']), 'server stop')).toMatchObject({ stopped: true, port });
     serverStarted = false;
     expect(data(await run(root, ['server', 'status']), 'server status after stop')).toMatchObject({ running: false, owned: false });
@@ -199,9 +224,21 @@ test.skipIf(!enabled)(`proves the public Expo ${mode} workflow on the fixture`, 
       const result = await run(root, args);
       if (!result.ok) console.error(`${step} failed; evidence retained at ${root}: ${result.error.message}`);
     };
-    if (launched) await cleanup('app terminate', ['app', 'terminate']);
+    if (mayRun) await cleanup('app terminate', ['app', 'terminate']);
     if (serverStarted) await cleanup('server stop', ['server', 'stop']);
-    if (installedByTest) await cleanup('app uninstall', ['app', 'uninstall', '--yes']);
+    // Reconcile the device rather than trusting flags: a failed build may still have installed the app.
+    if (mode === 'development-build' && installed && !installed.includes(bundleId)) {
+      const now = await run(root, ['app', 'list']);
+      if (!now.ok) console.error(`app list failed; evidence retained at ${root}: ${now.error.message}`);
+      else if ((now.data.apps as Array<{ bundleId: string }>).some((app) => app.bundleId === bundleId)) {
+        await cleanup('app uninstall', ['app', 'uninstall', '--yes']);
+      }
+    }
+    if (approval) {
+      const { value } = approval;
+      await (value === undefined ? deleteApproval(udid) : approvals(udid, 'write', '-string', value))
+        .catch((error: unknown) => console.error(`scheme approval restore failed: ${String(error)}`));
+    }
     if (bootedByTest) await cleanup('simulator shutdown', ['simulator', 'shutdown']);
   }
 }, 3_600_000);

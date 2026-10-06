@@ -193,9 +193,15 @@ export async function resolveExpoProjectUrl(config: LoadedConfig, dependencies: 
   return url;
 }
 
+// Expo returns each peer's raw upgrade query string; RN CLI may return it parsed. Apps connect with role=ios|android.
+function isAppPeer(query: unknown) {
+  const role = typeof query === 'string' ? new URLSearchParams(query).get('role') : typeof query === 'object' && query !== null ? (query as { role?: unknown }).role : undefined;
+  return role === 'ios' || role === 'android';
+}
+
 /**
  * Expo's dev server has no `/reload` route (it answers unknown paths with the manifest), so Expo reloads are
- * broadcast on Metro's `/message` socket after `getpeers` proves at least one other client is connected.
+ * broadcast on Metro's `/message` socket after `getpeers` shows at least one connected app.
  */
 function broadcastReload(port: number, factory: WebSocketFactory, signal: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -214,7 +220,7 @@ function broadcastReload(port: number, factory: WebSocketFactory, signal: AbortS
       let value: { id?: unknown; result?: unknown };
       try { value = JSON.parse(String(event.data)); } catch { return; }
       if (value.id !== id) return;
-      if (typeof value.result !== 'object' || value.result === null || Object.keys(value.result).length === 0) {
+      if (typeof value.result !== 'object' || value.result === null || !Object.values(value.result).some(isAppPeer)) {
         finish(new Error('no app is connected to the project server'));
         return;
       }
