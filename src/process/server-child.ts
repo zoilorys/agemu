@@ -24,7 +24,9 @@ const append = (chunk: string) => {
   const safe = redact(raw, secrets).slice(0, -(longestSecret - 1) || undefined);
   writeFileSync(log, safe.slice(-limit), { mode: 0o600 });
 };
-const child = spawn(process.execPath, [cli, 'start', ...(expoMode ? [`--${expoMode}`] : []), '--port', port], { cwd: root, stdio: ['ignore', 'pipe', 'pipe'] });
+// The caller's NODE_ENV describes the caller (e.g. "test" under Vitest), not this dev server; React Native's dev middleware refuses to start with NODE_ENV=test.
+const { NODE_ENV: _callerNodeEnv, ...env } = process.env;
+const child = spawn(process.execPath, [cli, 'start', ...(expoMode ? [`--${expoMode}`] : []), '--port', port], { cwd: root, env, stdio: ['ignore', 'pipe', 'pipe'] });
 child.stdout.setEncoding('utf8').on('data', append);
 child.stderr.setEncoding('utf8').on('data', append);
 child.on('error', error => { append(error.message); process.exitCode = 1; });

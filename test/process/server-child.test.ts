@@ -21,4 +21,19 @@ describe('server supervisor output', () => {
       await expect(readFile(secrets)).rejects.toMatchObject({ code: 'ENOENT' });
     } finally { await rm(root, { recursive: true, force: true }); }
   });
+
+  it('starts the project server without the caller NODE_ENV', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-supervisor-'));
+    const cli = path.join(root, 'cli.cjs');
+    const log = path.join(root, 'metro.log');
+    const secrets = path.join(root, 'redactions.json');
+    try {
+      await writeFile(cli, "process.stdout.write(`NODE_ENV=${process.env.NODE_ENV ?? 'unset'} MARKER=${process.env.AGEMU_TEST_MARKER}`);");
+      await writeFile(secrets, '[]', { mode: 0o600 });
+      const supervisor = fileURLToPath(new URL('../../dist/process/server-child.js', import.meta.url));
+      const result = await runProcess(process.execPath, [supervisor, 'test-token', root, '8081', cli, log, secrets], { timeoutMs: 3000, env: { ...process.env, NODE_ENV: 'test', AGEMU_TEST_MARKER: 'kept' } });
+      expect(result.exitCode).toBe(0);
+      expect(await readFile(log, 'utf8')).toBe('NODE_ENV=unset MARKER=kept');
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
 });

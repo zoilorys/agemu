@@ -15,12 +15,9 @@ const enabled = process.env.AGEMU_REACT_NATIVE_FIXTURE === '1';
 const bundleId = 'dev.agemu.react-native-fixture';
 const port = 8087;
 
-// Vitest sets NODE_ENV=test; Metro inherits it through agemu and @react-native/dev-middleware then refuses to start.
-const { NODE_ENV: _, ...env } = process.env;
-
 function run(root: string, args: string[]): Promise<CliResult> {
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [cli, ...args], { cwd: root, env, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(process.execPath, [cli, ...args], { cwd: root, stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '';
     let stderr = '';
     child.stdout.setEncoding('utf8').on('data', (chunk) => { stdout += chunk; });
