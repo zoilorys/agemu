@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { runUiPlan } from '../../src/commands/ui.js';
 import { loadConfig } from '../../src/config/config.js';
 import type { Deadline } from '../../src/process/run-process.js';
+import { writeConfig } from '../helpers/config.js';
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -15,7 +16,7 @@ afterEach(async () => {
 async function fixture() {
   const root = await mkdtemp(path.join(tmpdir(), 'agemu-expo-deadline-'));
   roots.push(root);
-  await writeFile(path.join(root, '.agemu.json'), JSON.stringify({ version: 2, platform: 'ios',
+  await writeConfig(root, JSON.stringify({ version: 2, platform: 'ios',
     app: { type: 'expo', root: '.', port: 8081, launchTarget: 'expo-go', hostBundleId: 'host.exp.Exponent' },
     simulator: { udid: 'PHONE' }, redactions: ['secret-token'] }));
   const cancellation = new AbortController();

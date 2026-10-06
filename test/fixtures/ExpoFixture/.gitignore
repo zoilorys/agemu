@@ -3,5 +3,4 @@ node_modules/
 ios/
 android/
 .agemu/
-.agemu.json
 .expo-go/

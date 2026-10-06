@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { expect, test } from 'vitest';
+import { writeConfig } from '../helpers/config.js';
 
 type CliResult = { ok: true; data: Record<string, unknown> } | { ok: false; error: { code: string; message: string; details?: Record<string, unknown> } };
 
@@ -44,7 +45,7 @@ test.skipIf(!enabled)('proves the public native workflow', async (context) => {
   let retainEvidence = false;
   let evidence = root;
 
-  await writeFile(path.join(root, '.agemu.json'), `${JSON.stringify({
+  await writeConfig(root, `${JSON.stringify({
     version: 2 as const, platform: 'ios' as const, app: { type: 'native' as const, project: fixtureProject,
     scheme: 'NativeFixture',
     configuration: 'Debug',

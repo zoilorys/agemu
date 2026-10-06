@@ -2,6 +2,7 @@ import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promise
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { runProcess } from '../../src/process/run-process.js';
 import { resolveExpoBundleId, setup } from '../../src/commands/setup.js';
 import type { ProcessResult } from '../../src/process/run-process.js';
 
@@ -30,10 +31,23 @@ describe('Xcode setup discovery', () => {
       await mkdir(path.join(root, 'App.xcodeproj'));
       const calls: string[][] = [];
       await setup(root, false, false, { listDevices: async () => [phone], run: xcodebuild(calls) });
-      const config = JSON.parse(await readFile(path.join(root, '.agemu.json'), 'utf8'));
+      const config = JSON.parse(await readFile(path.join(root, '.agemu', 'config.json'), 'utf8'));
       expect(config.app).toMatchObject({ type: 'native', project: 'App.xcodeproj', scheme: 'App', bundleId: 'com.example.app' });
       expect(config.app.port).toBeUndefined();
       expect(calls[1]).toContain('-json');
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('keeps the config and later evidence out of the enclosing git repository', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agemu-ignored-'));
+    try {
+      await runProcess('git', ['init', '-q'], { cwd: root });
+      await mkdir(path.join(root, 'App.xcodeproj'));
+      await setup(root, false, false, { listDevices: async () => [phone], run: xcodebuild([]) });
+      await mkdir(path.join(root, '.agemu', 'runs', 'r1'), { recursive: true });
+      await writeFile(path.join(root, '.agemu', 'runs', 'r1', 'screen.png'), '');
+      const status = await runProcess('git', ['status', '--porcelain', '--untracked-files=all'], { cwd: root });
+      expect(status.stdout.split('\n').filter(line => line.includes('.agemu'))).toEqual([]);
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 
@@ -43,7 +57,7 @@ describe('Xcode setup discovery', () => {
       await writeFile(path.join(root, 'package.json'), JSON.stringify({ dependencies: { 'react-native': '*' } }));
       await mkdir(path.join(root, 'ios/App.xcodeproj'), { recursive: true });
       await setup(root, false, false, { listDevices: async () => [phone], run: xcodebuild([]), port: 8082 });
-      const config = JSON.parse(await readFile(path.join(root, '.agemu.json'), 'utf8'));
+      const config = JSON.parse(await readFile(path.join(root, '.agemu', 'config.json'), 'utf8'));
       expect(config.app).toMatchObject({ type: 'react-native', port: 8082, bundleId: 'com.example.app' });
     } finally { await rm(root, { recursive: true, force: true }); }
   });
@@ -54,7 +68,7 @@ describe('Xcode setup discovery', () => {
       await mkdir(path.join(root, 'App.xcodeproj'));
       await expect(setup(root, false, false, { listDevices: async () => [phone], run: xcodebuild([]), port: 8082 }))
         .rejects.toMatchObject({ code: 'COMMAND_INVALID' });
-      await expect(access(path.join(root, '.agemu.json'))).rejects.toMatchObject({ code: 'ENOENT' });
+      await expect(access(path.join(root, '.agemu', 'config.json'))).rejects.toMatchObject({ code: 'ENOENT' });
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 
@@ -117,7 +131,7 @@ describe('Expo setup discovery', () => {
       await writeFile(path.join(root, 'package.json'), JSON.stringify({ dependencies: { expo: '*' } }));
       await writeFile(path.join(root, 'app.json'), JSON.stringify({ expo: { ios: { bundleIdentifier: 'com.example.dev' } } }));
       await setup(root, false, false, { listDevices: async () => [phone], port: 19000 });
-      expect(JSON.parse(await readFile(path.join(root, '.agemu.json'), 'utf8')).app.port).toBe(19000);
+      expect(JSON.parse(await readFile(path.join(root, '.agemu', 'config.json'), 'utf8')).app.port).toBe(19000);
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 

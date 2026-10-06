@@ -3,6 +3,7 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, test } from 'vitest';
+import { writeConfig } from '../helpers/config.js';
 
 type CliResult = { ok: true; data: Record<string, unknown> } | { ok: false; error: { code: string; message: string; details?: Record<string, unknown> } };
 
@@ -42,7 +43,7 @@ describe.skipIf(!enabled)('diagnostics evidence on Simulator', () => {
 
   beforeAll(async () => {
     await mkdir(root, { recursive: true });
-    await writeFile(path.join(root, '.agemu.json'), `${JSON.stringify({
+    await writeConfig(root, `${JSON.stringify({
       version: 2, platform: 'ios', app: { type: 'native', project: fixtureProject, scheme: 'NativeFixture', configuration: 'Debug', bundleId: 'dev.agemu.agemu-native-fixture' },
       simulator: { udid },
     }, null, 2)}\n`);
@@ -157,7 +158,7 @@ describe.skipIf(!enabled)('diagnostics evidence on Simulator', () => {
 });
 
 // The sample (prototype findings) logs `agemu-js-probe`, `agemu-js-probe-warn`, and `agemu-js-probe-error` every 2 s.
-// Uses the sample's own .agemu.json (port and Simulator); the Simulator must be booted with Expo Go installed.
+// Uses the sample's own .agemu/config.json (port and Simulator); the Simulator must be booted with Expo Go installed.
 const jsSample = process.env.AGEMU_JS_SAMPLE;
 
 describe.skipIf(!jsSample)('logs js on the Expo sample', () => {

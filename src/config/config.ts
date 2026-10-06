@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises';
+import { access, mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { CliError } from '../core/errors.js';
 
@@ -63,17 +63,28 @@ function validate(value: unknown): Issue[] {
   if (value.redactions !== undefined && (!Array.isArray(value.redactions) || value.redactions.some(item => typeof item !== 'string'))) issues.push({ path: 'redactions', message: 'must be an array of strings' });
   return issues;
 }
+export const stateDirectory = (root: string) => path.join(root, '.agemu');
+export const configFile = (root: string) => path.join(stateDirectory(root), 'config.json');
+const exists = (file: string) => access(file).then(() => true, () => false);
+/** Create .agemu/ with a .gitignore that hides everything agemu writes from the repository. */
+export async function ensureStateDirectory(root: string): Promise<void> {
+  await mkdir(stateDirectory(root), { recursive: true });
+  await writeFile(path.join(stateDirectory(root), '.gitignore'), '*\n', { flag: 'wx' }).catch(error => { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; });
+}
 export function nativeApp(config: LoadedConfig): NativeApp | ReactNativeApp {
   if (config.app.type !== 'native' && config.app.type !== 'react-native') throw new CliError('WORKFLOW_UNSUPPORTED', `${config.app.type} workflow is not implemented yet`);
   return config.app;
 }
 export async function loadConfig(root = process.cwd()): Promise<LoadedConfig> {
-  const file = path.join(root, '.agemu.json');
+  const file = configFile(root);
   let value: unknown;
   try { value = JSON.parse(await readFile(file, 'utf8')); }
-  catch (error) { throw new CliError('CONFIG_INVALID', `Cannot read ${file}: ${error instanceof Error ? error.message : String(error)}`); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT' && await exists(path.join(root, '.agemu.json'))) throw new CliError('CONFIG_INVALID', 'Move .agemu.json to .agemu/config.json; agemu no longer reads the project root file');
+    throw new CliError('CONFIG_INVALID', `Cannot read ${file}: ${error instanceof Error ? error.message : String(error)}`);
+  }
   const issues = validate(value);
-  if (issues.length) throw new CliError('CONFIG_INVALID', 'Invalid .agemu.json', { issues });
+  if (issues.length) throw new CliError('CONFIG_INVALID', 'Invalid .agemu/config.json', { issues });
   const config = value as DebugConfig;
   const app = { ...config.app };
   if ('project' in app && app.project) app.project = path.resolve(root, app.project);

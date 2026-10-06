@@ -8,9 +8,15 @@ A value starting with -- requires the --name=value form (for example, --arg=--ve
 
 export const commandGuides: Record<string, string> = {
   server: `agemu server start\n  Start or reuse this project's Metro or Expo server. Expo development builds use --dev-client.\n\nagemu server status\n  Report server readiness and ownership; an unverified port occupant is a collision.\n\nagemu server stop\n  Stop only a server started by agemu for this project.`,
-  setup: `agemu setup [--expo-go] [--udid=ID] [--port=PORT]\n  Detect native iOS, bare React Native, or Expo and write version 2 .agemu.json.\n  Only iOS application targets are offered as bundle IDs; test, widget, and extension targets are skipped.\n  --port sets the Metro or Expo server port (default 8081, 1 to 65535); native projects reject it.\n  --udid selects a Simulator; noninteractive setup otherwise uses the sole booted Simulator.\n  Interactive Expo setup asks for the launch target; noninteractive setup selects a development build. Setup does not install dependencies or generate native files.\n  --expo-go requires an installed Expo Go host on the selected Simulator.`,
+  setup: `agemu setup [--expo-go] [--udid=ID] [--port=PORT]\n  Detect native iOS, bare React Native, or Expo and write version 2 .agemu/config.json.\n  Paths in the config are relative to the project root. Setup also writes .agemu/.gitignore so agemu files stay out of the repository.\n  Only iOS application targets are offered as bundle IDs; test, widget, and extension targets are skipped.\n  --port sets the Metro or Expo server port (default 8081, 1 to 65535); native projects reject it.\n  --udid selects a Simulator; noninteractive setup otherwise uses the sole booted Simulator.\n  Interactive Expo setup asks for the launch target; noninteractive setup selects a development build. Setup does not install dependencies or generate native files.\n  --expo-go requires an installed Expo Go host on the selected Simulator.
+  If setup cannot run, write the file by hand:
+    {"version": 2, "platform": "ios", "simulator": {"udid": "ID"} (or {"name": "NAME", "runtime"?: "RUNTIME"}), "redactions"?: [strings to mask], "app": one of
+      {"type": "native", "project"|"workspace": PATH, "scheme": S, "configuration": "Debug", "bundleId": B}
+      {"type": "react-native", "root": ".", "port": 8081, "project"|"workspace": PATH, "scheme": S, "configuration": "Debug", "bundleId": B}
+      {"type": "expo", "root": ".", "port": 8081, "launchTarget": "development-build", "bundleId": B}
+      {"type": "expo", "root": ".", "port": 8081, "launchTarget": "expo-go", "hostBundleId": INSTALLED_EXPO_GO_BUNDLE_ID}}`,
   config: `agemu config show
-  Show the resolved .agemu.json configuration, excluding internal paths and redaction values.`,
+  Show the resolved .agemu/config.json configuration, excluding internal paths and redaction values.`,
   simulator: `agemu simulator list
   List available iOS Simulator devices.
 
@@ -40,14 +46,14 @@ agemu simulator add-media --file=PATH [--file=PATH ...] [selector]
 
 agemu simulator create --name=NAME --device-type=TYPE [--runtime=RUNTIME]
   Create a Simulator and return it. TYPE is a device type name or identifier (for example, "iPhone SE (3rd generation)");
-  RUNTIME is an available iOS runtime identifier, name, or version (default: simctl's choice). Needs no .agemu.json.
+  RUNTIME is an available iOS runtime identifier, name, or version (default: simctl's choice). Needs no .agemu/config.json.
 
 agemu simulator delete --udid=ID --yes
-  Permanently delete the Simulator with that UDID and all its data, shutting it down first. Never infers the device; needs no .agemu.json.
+  Permanently delete the Simulator with that UDID and all its data, shutting it down first. Never infers the device; needs no .agemu/config.json.
 
 agemu simulator erase --yes [selector]
   Shut down the selected Simulator if needed and erase all its content and settings (installed apps are removed;
-  run "app install" again). Without .agemu.json, --udid is required. Without --yes nothing is changed.`,
+  run "app install" again). Without .agemu/config.json, --udid is required. Without --yes nothing is changed.`,
   build: `agemu build [--timeout=SECONDS]
   Build native, bare React Native, or Expo development apps for the selected Simulator.
   --timeout limits the whole build (default 1800 s, 1 to 86400); a timeout fails with PROCESS_TIMEOUT and keeps the log.
@@ -132,6 +138,8 @@ agemu ui run (--plan=FILE | --plan-json=JSON) [--backend=auto|idb|xctest] [--tim
   Run a JSON UI action plan and save results under .agemu/runs/.
   --timeout limits the whole plan, including a runner build (default 900 s, 1 to 86400). After an XCTest PROCESS_TIMEOUT agemu terminates the runner and the app.
   Pass JSON inline for short plans, or use a file for longer plans.
+  A plan is {"version": 1, "actions": [...]}; each action is an object with exactly one key, for example
+  {"tap": {"identifier": "save"}}. Targets use identifier, label, labelContains, type, and index; tap also accepts x and y.
   auto uses idb when its companion supports the plan, then falls back to XCTest.
   Use xctest to keep an .xcresult bundle; idb saves a transcript and screenshots.
   Build and install the app first, except Expo Go, which uses an installed host. Swipe accepts duration in seconds; wait accepts a target with timeout or a duration-only pause. Actions include launch, wait, type, tap, swipe, longPress,

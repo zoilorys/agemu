@@ -4,6 +4,7 @@ import { randomBytes } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { expect, test } from 'vitest';
+import { writeConfig } from '../helpers/config.js';
 
 type CliResult = { ok: true; data: Record<string, unknown> } | { ok: false; error: { code: string; message: string; details?: Record<string, unknown> } };
 type Element = { identifier?: string; label?: string; value?: string };
@@ -63,7 +64,7 @@ test.skipIf(!enabled)('drives the bare React Native fixture through the public C
 
   const root = path.join(repository, '.agemu', 'react-native-fixture', udid);
   await mkdir(root, { recursive: true });
-  await writeFile(path.join(root, '.agemu.json'), `${JSON.stringify({
+  await writeConfig(root, `${JSON.stringify({
     version: 2, platform: 'ios',
     app: { type: 'react-native', root: fixture, port, workspace: path.join(fixture, 'ios/ReactNativeFixture.xcworkspace'), scheme: 'ReactNativeFixture', configuration: 'Debug', bundleId },
     simulator: { udid },

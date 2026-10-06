@@ -1,30 +1,51 @@
 ---
 name: agemu
-description: Build, verify, and debug native iOS, bare React Native, and Expo apps in Simulator. Use in iOS app repositories, including those without .agemu.json.
+description: Build, verify, and debug native iOS, bare React Native, and Expo apps in Simulator. Use in iOS app repositories, including ones agemu has not set up yet.
 ---
 
 # iOS Simulator development
 
-Use the installed `agemu` CLI from the app root. Run `agemu commands` or `agemu capabilities --runtime=<profile>` to discover flags, bounds, runtime support and backend limitations; discovery does not certify live readiness.
+Use the installed `agemu` CLI from the app root. Every response is JSON (`ok`, `data` or `error.code`). This skill covers the core flows; for everything else run `agemu --help`, `agemu <command> --help`, `agemu commands` (flags, bounds, runtime support) or `agemu capabilities` (UI actions, backend limits).
 
-1. Inspect `.agemu.json`. If absent, identify the app type and an available Simulator with `agemu simulator list`. Use `agemu setup --udid=ID`, or add `--expo-go` for Expo Go. For React Native or Expo, add `--port=PORT` when the server does not use 8081. Without `--udid`, noninteractive setup selects the sole booted Simulator when several are installed; otherwise it needs an unambiguous selection. If setup cannot run, write a version 2 config using the [config examples](../../../../../README.md#configure-an-app). Set the selected Simulator UDID. Ask only for choices the repository cannot settle.
-2. Run `agemu doctor`. Resolve reported prerequisites before the run; checks marked `advisory: true` do not affect `ready`. Install project dependencies through the project's own instructions. Expo development builds need `expo-dev-client`; Expo Go needs an installed host on the selected Simulator.
-3. Boot the selected Simulator. For native iOS, run `agemu build`, `agemu app install`, then `agemu app launch`. For bare React Native, build and install, then run `agemu server start` and `agemu app launch`. For Expo development builds, run build, install, server start, and app launch in that order. `agemu build` invokes `expo run:ios` and may generate or modify `ios/`; inspect the diff. For Expo Go, run only `agemu server start` and `agemu app launch`; its installed host needs no agemu build or install. On `BUILD_FAILED`, read `details.errors` (or `details.tail`) and the plain-text `details.log`.
-4. Verify the feature with `agemu observe` and a bounded `agemu ui run` plan. Run `agemu ui inspect` (the app must already be running; it never launches it) to find identifiers before writing a plan; prefer identifier, then label/labelContains with `type`, then coordinates, and use `scrollUntilVisible` before interacting with off-screen rows. `inspect` plan results are in top-level `inspections` (also `runnerResult.inspections` for compatibility). idb depth is null and neither backend certifies foreground identity (`foreground: null`); bring the app forward before idb inspection. Set swipe `duration` when gesture speed matters. Follow animations with `{ "wait": { "duration": 0.5 } }` before a screenshot, and follow taps with a wait or assertion for the expected screen; prefer `assertVisible` for nonempty on-screen geometry (hittability is separate), `assertExists` for off-screen elements, `assertNotVisible` for absence, and `assertValue` for field values. To capture video, place `{ "startVideoRecording": { "name": "flow" } }` before the first action to show and `{ "stopVideoRecording": {} }` after the last. Keep all actions for one clip inside that pair; use another pair for a separate clip. Use `--backend=xctest` for an `.xcresult`, or let the CLI select `idb` when suitable. Pass `--timeout=SECONDS` for long flows. Inspect the returned backend, `screenshots`, `recordings` paths, and other artifacts. A plan stops at the first failed action; on `UI_DELIVERY_FAILED`, read `details.failedAction` (`index`, `kind`, `message`, or null when no action failed), `details.completed` and accumulated `screenshots`, `recordings` and `inspections`; open `details.failureScreenshot` when present. Recording preserves the flat result and original submitted indexes.
-5. On failure, run `agemu diagnose --last=1m --level=info --limit=200`. Inspect `partial`, `failures`, `recentErrors`, the screenshot, logs, and server evidence. For React Native and Expo, server output shows bundling errors but does not capture all in-app JavaScript console messages or DevTools. Saved server output may belong to an earlier run. `PROCESS_TIMEOUT` means `--timeout=SECONDS` expired (defaults: `build` 1800, `ui build-runner` and `ui run` 900); raise it for a large first build. UI deadlines cover prerequisites, build, execution, recording and export; bounded cleanup follows expiry. Event recording is best effort and never replaces command success or the primary error.
-6. Terminate the app used for this run. For React Native or Expo, run `agemu server stop`; it stops only agemu-owned servers. Shut down the selected Simulator. Preserve `.agemu/` evidence unless the task calls for removal; for housekeeping use `agemu clean --runs --older-than=7d` or `agemu clean --derived-data` (add `--dry-run` to preview).
-7. Use `agemu privacy grant` instead of tapping permission prompts; use `simulator status-bar --preset=clean` and `simulator ui --appearance` before screenshots; destructive commands need `--yes` and explicit user intent.
+## Set up
 
-After a crash or unexpected exit, run `agemu crashes list --since=launch`; to wait for a log line, use `agemu logs stream --duration=30s --until=<regex>` instead of sleeping.
+1. If `.agemu/config.json` is absent, set the project up yourself without asking the user to: `agemu simulator list`, then `agemu setup --udid=ID` (add `--expo-go` for Expo Go, `--port=PORT` if Metro/Expo is not on 8081). If setup cannot run, write the file using the format in `agemu setup --help`. Ask only for choices the repository cannot settle. If a legacy `.agemu.json` exists in the project root, move it to `.agemu/config.json`.
+2. `agemu doctor`; fix what blocks `ready` (`advisory: true` checks do not). Install project dependencies the project's own way.
 
-For React Native or Expo JavaScript console output (`console.log`, `warn`, `error`), run `agemu logs js --duration=30s --until=<regex>` while the server is running and the app is loaded; it returns only messages logged during the capture.
+## Run
 
-Keep one run ID in launch arguments, environment, and notes when a task needs correlation. `agemu server status` reports readiness and ownership; resolve any port collision before launch. For Expo, `app launch` requires a running project server and opens its URL in the configured development build or Expo Go host.
+Boot first: `agemu simulator boot`.
 
-Use `agemu app status` for running/PID evidence, `app list` for installed inventory, and `app reload` for React Native/Expo reload requests through the matching project server. Foreground identity remains unavailable. `clipboard write --text=TEXT` and `clipboard read` preserve exact Simulator content; writes use stdin. For one step, use `ui tap --id=ID`, `ui type --id=ID --text=TEXT`, `ui assert-value --id=ID --value=VALUE`, or `ui screenshot --name=NAME`; these use the plan validator/executor. `--wait-timeout` is an element-wait limit; `--timeout` bounds the whole command.
+| App | Flow |
+| --- | --- |
+| Native iOS | `build` → `app install` → `app launch` |
+| Bare React Native, Expo dev build | `build` → `app install` → `server start` → `app launch` |
+| Expo Go | `server start` → `app launch` (no build/install) |
 
-UI `openUrl` confirms prompts only with explicit `confirm: true` (shortcut: `--confirm`). `assertText.matches` uses portable Unicode scalar regex with ASCII d/w/s shorthands, strict end anchor, classes/groups/alternation/quantifiers; lookaround, backreferences, flags and Unicode properties are rejected before device work. Log `--until` remains a JavaScript regex tested against redacted text.
+For Expo, `build` runs `expo run:ios` and may change `ios/`; inspect the diff. On `BUILD_FAILED`, read `details.errors` and `details.log`. `PROCESS_TIMEOUT` means `--timeout=SECONDS` expired; raise it for a large first build. Use `app reload` (RN/Expo) and `app restart` to iterate.
 
-XCTest visibility also requires the configured app's `runningForeground` state. Background/stopped cached nodes retain their frames but normalize to `visible: false`; this does not certify foreground identity. Disabled or occluded elements in a foreground app still use geometry.
+## Verify
 
-Dispatched results preserve aliases and add `action`, nullable `udid`/`bundleId`/`run`, ISO `capturedAt`, and grouped `artifacts` arrays (`screenshots`, `recordings`, `logs`, `reports`, `files`) with nullable transcript/backend evidence. Read explicit build/host applicability and availability in diagnostics instead of guessing from omitted fields.
+- `agemu ui inspect` (app must already be running) to find element identifiers.
+- One step: `agemu ui tap --id=ID`, `ui type --id=ID --text=TEXT`, `ui assert-visible --label=TEXT`, `ui screenshot --name=NAME`.
+- Flows: `agemu ui run --plan-json='{"version":1,"actions":[...]}'` (or `--plan=FILE`). Example actions: `{"tap":{"identifier":"save"}}`, `{"wait":{"identifier":"done","timeout":5}}`, `{"wait":{"duration":0.5}}`, `{"assertVisible":{"label":"Saved"}}`, `{"scrollUntilVisible":{"target":{"identifier":"row42"}}}`, `{"screenshot":{"name":"saved"}}`. Wrap actions in `{"startVideoRecording":{"name":"flow"}}` … `{"stopVideoRecording":{}}` for video. Full action list: `agemu ui run --help`.
+- Prefer `identifier`, then `label`/`labelContains` with `type`, then coordinates. Wait or assert after taps and before screenshots.
+- A plan stops at the first failure (`UI_DELIVERY_FAILED`): read `details.failedAction`, `details.completed`, and open `details.failureScreenshot`.
+- `agemu observe` takes a plain screenshot. Foreground identity is never certified; `app status` reports running/PID only.
+
+## Debug
+
+- `agemu diagnose --last=1m --level=info --limit=200`: screenshot, logs, crashes, server output; check `partial` and `failures`.
+- `agemu crashes list --since=launch` after a crash.
+- `agemu logs stream --duration=30s --until=REGEX` instead of sleeping for a log line.
+- `agemu logs js --duration=30s --until=REGEX` for RN/Expo `console.*` (server running, app loaded; only messages logged during capture).
+
+## Clean up
+
+`app terminate`, `server stop` (RN/Expo; stops only agemu-owned servers), `simulator shutdown`. Keep `.agemu/` evidence unless asked; `agemu clean --runs --older-than=7d` for housekeeping.
+
+## Rules
+
+- Use `agemu privacy grant --service=NAME` instead of tapping permission prompts.
+- For clean screenshots: `simulator status-bar --preset=clean`, `simulator ui --appearance=dark|light`.
+- Destructive commands (`app uninstall`, `simulator erase`, `simulator delete`) need `--yes` and explicit user intent.

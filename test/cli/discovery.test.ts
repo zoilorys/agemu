@@ -6,6 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { describe, expect, it } from 'vitest';
+import { writeConfig } from '../helpers/config.js';
 const run = promisify(execFile);
 const cli = fileURLToPath(new URL('../../dist/cli/main.js', import.meta.url));
 const devices = (state = 'Booted') => ({ devices: { 'com.apple.CoreSimulator.SimRuntime.iOS-18-0': [{ udid: 'PHONE', name: 'Phone', state, isAvailable: true }] } });
@@ -15,7 +16,7 @@ async function fixture(state = 'Booted') {
   const root = await mkdtemp(path.join(tmpdir(), 'agemu-cli-discovery-'));
   const calls = path.join(root, 'calls.jsonl');
   const pasteboard = path.join(root, 'pasteboard');
-  await writeFile(path.join(root, '.agemu.json'), JSON.stringify({ version: 2, platform: 'ios', app: nativeApp, simulator: { udid: 'PHONE' }, redactions: ['top-secret'] }));
+  await writeConfig(root, JSON.stringify({ version: 2, platform: 'ios', app: nativeApp, simulator: { udid: 'PHONE' }, redactions: ['top-secret'] }));
   await writeFile(path.join(root, 'xcrun'), `#!${process.execPath}
 const fs = require('node:fs');
 const args = process.argv.slice(2);
@@ -63,7 +64,7 @@ describe('command discovery and dispatch', () => {
       expect(expo.ui.actions.startVideoRecording.backends).toContain('idb');
       expect(expo.ui.toolAvailability).toMatchObject({ idb: null, xctest: null, reason: expect.any(String) });
       // A broken local config must not prevent obtaining the static command vocabulary.
-      await writeFile(path.join(root, '.agemu.json'), '{broken');
+      await writeConfig(root, '{broken');
       const broken = JSON.parse((await run(process.execPath, [cli, 'commands'], { cwd: root })).stdout).data;
       expect(broken.configurationAvailability.available).toBe(false);
     } finally { await rm(root, { recursive: true, force: true }); }
@@ -167,7 +168,7 @@ describe('command discovery and dispatch', () => {
     await new Promise<void>(resolve => listener.listen(0, '127.0.0.1', resolve));
     const port = (listener.address() as { port: number }).port;
     try {
-      await writeFile(path.join(f.root, '.agemu.json'), JSON.stringify({ version: 2, platform: 'ios', app: { ...nativeApp, type: 'react-native', root: '.', port }, simulator: { udid: 'PHONE' } }));
+      await writeConfig(f.root, JSON.stringify({ version: 2, platform: 'ios', app: { ...nativeApp, type: 'react-native', root: '.', port }, simulator: { udid: 'PHONE' } }));
       await writeFile(path.join(f.root, 'lsof'), `#!${process.execPath}\nconst args = process.argv.slice(2); process.stdout.write(args.includes('-t') ? '4242\\n' : ${JSON.stringify(`n${await realpath(f.root)}\n`)});\n`, { mode: 0o700 });
       // Exclude macOS's first-launch inspection from the server probe's budget.
       await run(path.join(f.root, 'lsof'), ['-t'], { cwd: f.root, env: f.env });

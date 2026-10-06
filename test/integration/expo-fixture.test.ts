@@ -5,6 +5,7 @@ import { execFile, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { expect, test } from 'vitest';
+import { writeConfig } from '../helpers/config.js';
 
 type CliResult = { ok: true; data: Record<string, unknown> } | { ok: false; error: { code: string; message: string; details?: Record<string, unknown> } };
 type JsMessage = { level: string; text: string };
@@ -105,7 +106,7 @@ test.skipIf(!enabled)(`proves the public Expo ${mode} workflow on the fixture`, 
   let installed: string[] | undefined;
   let approval: { value: string | undefined } | undefined;
 
-  await writeFile(path.join(root, '.agemu.json'), `${JSON.stringify({
+  await writeConfig(root, `${JSON.stringify({
     version: 2, platform: 'ios',
     app: { type: 'expo', root: fixture, port, launchTarget: mode, ...(mode === 'expo-go' ? { hostBundleId: expoGoHost } : { bundleId }) },
     simulator: { udid },

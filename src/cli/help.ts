@@ -16,10 +16,10 @@ export function helpFor(command?: string, subcommand?: string): string {
   }
   return `agemu [--pretty] [--debug] <command> [options]
 Build, run, inspect, and control an iOS app in Simulator. Responses are JSON.
-Run from a directory containing .agemu.json (except setup, discovery, --help, and --version).
+Run from the project root. agemu keeps its configuration (.agemu/config.json, created by setup) and evidence in .agemu/.
 
 Commands:
-${commandDefinitions.map(definition => `  ${definition.key.padEnd(21)}${definition.description}`).join('\n')}
+${commandDefinitions.map(definition => `  ${definition.key.padEnd(20)} ${definition.description}`).join('\n')}
 
 Run "agemu <command> --help" for command options and examples.
 

@@ -4,6 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { afterAll, beforeAll, describe, expect, test, type TestContext } from 'vitest';
+import { writeConfig } from '../helpers/config.js';
 
 // Uses only the Simulator named by AGEMU_NATIVE_SIMULATOR_UDID. Never erase or delete it;
 // erase/delete cases must create and remove their own throwaway device.
@@ -50,7 +51,7 @@ describe.skipIf(!enabled)('simulator control on a real Simulator', () => {
 
   beforeAll(async () => {
     await mkdir(root, { recursive: true });
-    await writeFile(path.join(root, '.agemu.json'), `${JSON.stringify({
+    await writeConfig(root, `${JSON.stringify({
       version: 2, platform: 'ios', app: { type: 'native', project: fixtureProject, scheme: 'NativeFixture', configuration: 'Debug', bundleId },
       simulator: { udid },
     }, null, 2)}\n`);
@@ -144,7 +145,7 @@ describe.skipIf(!enabled)('simulator control on a real Simulator', () => {
 
   test('throwaway Simulator is created, erased, guarded against unconfirmed delete, and deleted', async (context) => {
     ready(context);
-    // No .agemu.json here, so erase cannot fall back to the assigned Simulator.
+    // No .agemu/config.json here, so erase cannot fall back to the assigned Simulator.
     const bare = path.join(repository, '.agemu', 'simulator-lifecycle');
     await mkdir(bare, { recursive: true });
     const listed = async () => (data(await run(bare, ['simulator', 'list']), 'simulator list').devices as Array<{ udid: string }>).map((device) => device.udid);

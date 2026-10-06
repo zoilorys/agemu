@@ -12,6 +12,7 @@ import { parseArgs } from '../../src/cli/args.js';
 import { CommandContext } from '../../src/cli/context.js';
 import { loadConfig } from '../../src/config/config.js';
 import { deadline, runProcess, type Deadline } from '../../src/process/run-process.js';
+import { writeConfig } from '../helpers/config.js';
 const execute = promisify(execFile);
 const project = fileURLToPath(new URL('../..', import.meta.url));
 let isolated: string;
@@ -50,7 +51,7 @@ async function fixture(stage: Stage) {
   const app = stage === 'inventory' || stage === 'none'
     ? { type: 'native', project: 'App.xcodeproj', scheme: 'App', configuration: 'Debug', bundleId: 'com.example.app' }
     : { type: 'expo', root: '.', port, launchTarget: 'expo-go', hostBundleId: 'host.exp.Exponent' };
-  await writeFile(path.join(root, '.agemu.json'), JSON.stringify({ version: 2, platform: 'ios', app, simulator: { udid: 'PHONE' } }));
+  await writeConfig(root, JSON.stringify({ version: 2, platform: 'ios', app, simulator: { udid: 'PHONE' } }));
   const quote = (text: string) => "'" + text.replaceAll("'", "'\\''") + "'";
   const shell = (body: string) => `#!/bin/sh
 if [ "$1" = --warmup ]; then exit 0; fi
@@ -98,7 +99,7 @@ esac
   // that one-time cost outside deadlines intended to cancel a specific probe.
   await execute(path.join(root, 'probe'), ['--warmup']);
   if (owned) {
-    await mkdir(path.join(root, '.agemu'));
+    await mkdir(path.join(root, '.agemu'), { recursive: true });
     await writeFile(path.join(root, '.agemu', 'server.json'), JSON.stringify({ root: await realpath(root), port, pid: process.pid,
       startedAt: 'Mon Oct  5 12:00:00 2026', token: 'r010-token', command: 'expo start --go', log: path.join(root, '.agemu', 'metro.log') }));
   }

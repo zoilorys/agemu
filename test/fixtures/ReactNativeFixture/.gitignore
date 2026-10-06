@@ -6,5 +6,4 @@ ios/*.xcworkspace/
 ios/.xcode.env.local
 xcuserdata/
 .metro-health-check*
-.agemu.json
 .agemu/

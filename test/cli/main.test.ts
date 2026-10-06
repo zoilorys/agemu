@@ -5,6 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { describe, expect, it } from 'vitest';
+import { writeConfig } from '../helpers/config.js';
 
 const run = promisify(execFile);
 const cli = fileURLToPath(new URL('../../dist/cli/main.js', import.meta.url));
@@ -89,7 +90,7 @@ describe('agemu CLI', { timeout: 20000 }, () => {
 
   it('validates inline UI plans before starting the runner', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'agemu-cli-test-'));
-    await writeFile(path.join(root, '.agemu.json'), JSON.stringify({
+    await writeConfig(root, JSON.stringify({
       version: 2 as const, platform: 'ios' as const, app: { type: 'native' as const, project: 'App.xcodeproj', scheme: 'App', configuration: 'Debug', bundleId: 'com.example.app' }, simulator: { udid: 'fixture' },
     }));
     try {
@@ -114,7 +115,7 @@ describe('agemu CLI', { timeout: 20000 }, () => {
     });
     await new Promise<void>(resolve => project.listen(0, '127.0.0.1', resolve));
     const port = (project.address() as { port: number }).port;
-    await writeFile(path.join(root, '.agemu.json'), JSON.stringify({
+    await writeConfig(root, JSON.stringify({
       version: 2, platform: 'ios', app: { type: 'expo', root: '.', port, launchTarget: 'expo-go', hostBundleId: 'host.exp.Exponent' }, simulator: { udid: 'PHONE' },
     }));
     await writeFile(path.join(root, 'idb'), `#!${process.execPath}
@@ -146,7 +147,7 @@ process.stdout.write(process.argv.includes('-Fn') ? ${JSON.stringify('n'+resolve
 
   it('routes Expo Go logs and diagnose through host-aware handlers', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'agemu-expo-diagnostics-'));
-    await writeFile(path.join(root, '.agemu.json'), JSON.stringify({
+    await writeConfig(root, JSON.stringify({
       version: 2, platform: 'ios', app: { type: 'expo', root: '.', port: 8081, launchTarget: 'expo-go', hostBundleId: 'host.exp.Exponent' }, simulator: { udid: 'PHONE' },
     }));
     await writeFile(path.join(root, 'xcrun'), `#!/bin/sh
@@ -170,7 +171,7 @@ fi
 
   it('shows normalized config without its internal root', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'agemu-cli-test-'));
-    await writeFile(path.join(root, '.agemu.json'), JSON.stringify({
+    await writeConfig(root, JSON.stringify({
       version: 2 as const, platform: 'ios' as const, app: { type: 'native' as const, project: 'App.xcodeproj', scheme: 'App', configuration: 'Debug', bundleId: 'com.example.app' }, simulator: { udid: 'fixture' }, redactions: ['actual-secret'],
     }));
     try {
@@ -192,7 +193,7 @@ fi
 
   it('envelopes missing process tools from a command', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'agemu-cli-test-'));
-    await writeFile(path.join(root, '.agemu.json'), JSON.stringify({
+    await writeConfig(root, JSON.stringify({
       version: 2 as const, platform: 'ios' as const, app: { type: 'native' as const, project: 'App.xcodeproj',
       scheme: 'App',
       configuration: 'Debug',
@@ -213,7 +214,7 @@ fi
 
   it('routes Expo build and install through their workflow handlers', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'agemu-expo-cli-'));
-    await writeFile(path.join(root, '.agemu.json'), JSON.stringify({
+    await writeConfig(root, JSON.stringify({
       version: 2, platform: 'ios', app: { type: 'expo', root: '.', port: 8081, launchTarget: 'development-build', bundleId: 'com.example.expo' }, simulator: { udid: 'fixture' },
     }));
     await writeFile(path.join(root, 'xcrun'), `#!${process.execPath}
@@ -234,7 +235,7 @@ if (process.argv[3] === 'list') process.stdout.write(${JSON.stringify(JSON.strin
   it('envelopes a failing fixture process from a command', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'agemu-cli-test-'));
     const executable = path.join(root, 'xcodebuild');
-    await writeFile(path.join(root, '.agemu.json'), JSON.stringify({
+    await writeConfig(root, JSON.stringify({
       version: 2 as const, platform: 'ios' as const, app: { type: 'native' as const, project: 'App.xcodeproj',
       scheme: 'App',
       configuration: 'Debug',
@@ -257,7 +258,7 @@ if (process.argv[3] === 'list') process.stdout.write(${JSON.stringify(JSON.strin
 
   it('records a failed build as a redacted error event that diagnose reports', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'agemu-cli-test-'));
-    await writeFile(path.join(root, '.agemu.json'), JSON.stringify({
+    await writeConfig(root, JSON.stringify({
       version: 2, platform: 'ios', app: { type: 'native', project: 'App.xcodeproj', scheme: 'App', configuration: 'Debug', bundleId: 'com.example.app' },
       simulator: { udid: 'fixture' }, redactions: ['xcodebuild'],
     }));
@@ -281,7 +282,7 @@ if (process.argv[3] === 'list') process.stdout.write(${JSON.stringify(JSON.strin
 
   it('records a successful app launch once and does not double-record observe', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'agemu-cli-test-'));
-    await writeFile(path.join(root, '.agemu.json'), JSON.stringify({
+    await writeConfig(root, JSON.stringify({
       version: 2, platform: 'ios', app: { type: 'native', project: 'App.xcodeproj', scheme: 'App', configuration: 'Debug', bundleId: 'com.example.app' },
       simulator: { udid: 'PHONE' },
     }));
@@ -306,7 +307,7 @@ if (process.argv[3] === 'list') process.stdout.write(${JSON.stringify(JSON.strin
   it('redacts configured secrets from success and --debug failure envelopes', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'agemu-cli-test-'));
     const failFlag = path.join(root, 'fail');
-    await writeFile(path.join(root, '.agemu.json'), JSON.stringify({
+    await writeConfig(root, JSON.stringify({
       version: 2, platform: 'ios', app: { type: 'native', project: 'App.xcodeproj', scheme: 'App', configuration: 'Debug', bundleId: 'com.secret-app.x' },
       simulator: { udid: 'PHONE' }, redactions: ['secret-app'],
     }));
@@ -337,7 +338,7 @@ if (process.argv[3] === 'launch') {
 
   it('redacts an unredacted handler error message and its --debug stack', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'agemu-cli-test-'));
-    await writeFile(path.join(root, '.agemu.json'), JSON.stringify({
+    await writeConfig(root, JSON.stringify({
       version: 2, platform: 'ios', app: { type: 'native', project: 'App.xcodeproj', scheme: 'App', configuration: 'Debug', bundleId: 'com.example.app' },
       simulator: { udid: 'PHONE' }, redactions: ['secret-app'],
     }));
@@ -358,7 +359,7 @@ if (process.argv[3] === 'launch') {
 
   it('keeps a successful command successful when its event cannot be recorded', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'agemu-cli-test-'));
-    await writeFile(path.join(root, '.agemu.json'), JSON.stringify({
+    await writeConfig(root, JSON.stringify({
       version: 2, platform: 'ios', app: { type: 'native', project: 'App.xcodeproj', scheme: 'App', configuration: 'Debug', bundleId: 'com.example.app' },
       simulator: { udid: 'PHONE' },
     }));
@@ -379,7 +380,7 @@ if (process.argv[3] === 'list') process.stdout.write(${JSON.stringify(JSON.strin
   it('reports a stopped configured Simulator without attempting an app launch', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'agemu-cli-stopped-app-'));
     const calls = path.join(root, 'calls.txt');
-    await writeFile(path.join(root, '.agemu.json'), JSON.stringify({
+    await writeConfig(root, JSON.stringify({
       version: 2, platform: 'ios', app: { type: 'native', project: 'App.xcodeproj', scheme: 'App', configuration: 'Debug', bundleId: 'com.example.app' },
       simulator: { udid: 'PHONE' },
     }));
@@ -402,7 +403,7 @@ if (process.argv[3] === 'list') process.stdout.write(${JSON.stringify(JSON.strin
   it('uses a configured UDID before an explicit name selector', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'agemu-cli-test-'));
     const executable = path.join(root, 'xcrun');
-    await writeFile(path.join(root, '.agemu.json'), JSON.stringify({
+    await writeConfig(root, JSON.stringify({
       version: 2 as const, platform: 'ios' as const, app: { type: 'native' as const, project: 'App.xcodeproj',
       scheme: 'App',
       configuration: 'Debug',
@@ -436,7 +437,7 @@ if (process.argv[3] === 'list') process.stdout.write(${JSON.stringify(JSON.strin
   it('uses an explicit UDID before the configured UDID', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'agemu-cli-test-'));
     const executable = path.join(root, 'xcrun');
-    await writeFile(path.join(root, '.agemu.json'), JSON.stringify({
+    await writeConfig(root, JSON.stringify({
       version: 2 as const, platform: 'ios' as const, app: { type: 'native' as const, project: 'App.xcodeproj',
       scheme: 'App',
       configuration: 'Debug',
@@ -470,7 +471,7 @@ if (process.argv[3] === 'list') process.stdout.write(${JSON.stringify(JSON.strin
   it('uses an explicit name-runtime pair before the configured pair', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'agemu-cli-test-'));
     const executable = path.join(root, 'xcrun');
-    await writeFile(path.join(root, '.agemu.json'), JSON.stringify({
+    await writeConfig(root, JSON.stringify({
       version: 2 as const, platform: 'ios' as const, app: { type: 'native' as const, project: 'App.xcodeproj',
       scheme: 'App',
       configuration: 'Debug',
@@ -505,7 +506,7 @@ if (process.argv[3] === 'list') process.stdout.write(${JSON.stringify(JSON.strin
     const root = await mkdtemp(path.join(tmpdir(), 'agemu-cli-test-'));
     const executable = path.join(root, 'xcrun');
     const calls = path.join(root, 'calls.txt');
-    await writeFile(path.join(root, '.agemu.json'), JSON.stringify({
+    await writeConfig(root, JSON.stringify({
       version: 2, platform: 'ios', app: { type: 'native', project: 'App.xcodeproj', scheme: 'App', configuration: 'Debug', bundleId: 'com.example.app' },
       simulator: { name: 'Configured Phone', runtime: 'iOS-18-0' },
     }));
@@ -539,7 +540,7 @@ if (process.argv[3] === 'list') process.stdout.write(${JSON.stringify(JSON.strin
   it('rejects an empty --udid without shutting down any Simulator', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'agemu-cli-test-'));
     const calls = path.join(root, 'calls.txt');
-    await writeFile(path.join(root, '.agemu.json'), JSON.stringify({
+    await writeConfig(root, JSON.stringify({
       version: 2, platform: 'ios', app: { type: 'native', project: 'App.xcodeproj', scheme: 'App', configuration: 'Debug', bundleId: 'com.example.app' },
       simulator: { udid: 'CONFIGURED' },
     }));
@@ -580,7 +581,7 @@ if (process.argv[3] === 'list') process.stdout.write(${JSON.stringify(JSON.strin
   it('runs no simctl command for app uninstall without --yes', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'agemu-cli-test-'));
     const calls = path.join(root, 'calls.txt');
-    await writeFile(path.join(root, '.agemu.json'), JSON.stringify({
+    await writeConfig(root, JSON.stringify({
       version: 2, platform: 'ios', app: { type: 'native', project: 'App.xcodeproj', scheme: 'App', configuration: 'Debug', bundleId: 'com.example.app' },
       simulator: { udid: 'PHONE' },
     }));
@@ -610,7 +611,7 @@ if (process.argv[3] === 'list') process.stdout.write(${JSON.stringify(JSON.strin
   it('refuses app uninstall for Expo Go before the --yes guard and runs no simctl command', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'agemu-cli-test-'));
     const calls = path.join(root, 'calls.txt');
-    await writeFile(path.join(root, '.agemu.json'), JSON.stringify({
+    await writeConfig(root, JSON.stringify({
       version: 2, platform: 'ios', app: { type: 'expo', root: '.', port: 8081, launchTarget: 'expo-go', hostBundleId: 'host.exp.Exponent' }, simulator: { udid: 'PHONE' },
     }));
     await writeFile(path.join(root, 'xcrun'), `#!${process.execPath}\nrequire('node:fs').appendFileSync(${JSON.stringify(calls)}, process.argv.slice(2).join(' ') + '\\n');\n`);
